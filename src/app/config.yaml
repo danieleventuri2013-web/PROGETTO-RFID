@@ -1,0 +1,66 @@
+# Configurazione Step 1 — test read/write nel parallelepipedo
+#
+# Hardware (da MANUALI/Offerta-Parti):
+#   SIM7200  modulo RFID UHF (Impinj E710), 4 porte SMA, 5-30 dBm
+#   SLD1090  baseboard: USB / RS232 / Ethernet TCP / WiFi / 4G / RS485
+#   SLP1027  antenna 8 dBi circolare, HPBW 68°, 220x220x24 mm (902-928 MHz)
+#
+# Il trasporto e' selezionato dalla chiave qui sotto: usa 'serial' OPPURE 'tcp'.
+
+# --- Trasporto SERIALE (USB-CDC o RS232 tramite SLD1090) ---
+serial:
+  port: COM3              # Linux: /dev/ttyUSB0 ; SLD1090 USB => "USB" nel DEMO
+  baudrate: 115200        # SIM7200: 9600-921600, default 115200
+  timeout_s: 2.0
+  inter_byte_timeout_s: 0.1
+
+# --- Trasporto TCP (SLD1090 Ethernet/WiFi) ---
+# tcp:
+#   host: 192.168.1.100    # IP default SLD1090 (reset: 192.168.1.100/24, gw .254)
+#   port: 8080             # lettore = server TCP, porta 8080 (Basic Steps of Command Development §1.2)
+#   timeout_s: 2.0
+
+reader:
+  region: 0x08            # EU 865-868 MHz (Italia). Modulo CE = 10.72000300.02
+  boot_timeout_ms: 3000
+  response_timeout_ms: 2000
+  # SIM7200: potenza max 30 dBm (33 dBm versione full-band). Partire conservativi.
+  max_power_dbm: 30
+
+# Antenne SLP1027: 8 dBi, polarizzazione circolare, HPBW 68°.
+# Geometria: 2 antenne affiancate sulla base + 1 verticale in altezza.
+# Potenze in cBm (centesimi di dBm): 2000 = 20.00 dBm.
+antennas:
+  - {id: 1, role: floor_left,  read_power: 2000, write_power: 2000}
+  - {id: 2, role: floor_right, read_power: 2000, write_power: 2000}
+  - {id: 3, role: wall_90,     read_power: 2000, write_power: 2000}
+
+# Geometria volume (antenne SLP1027, HPBW 68°):
+#   distanza consigliata tra le due antenne orizzontali (pavimento/tetto)
+#   = circa 1.5x lato antenna a 68° di beamwidth per copertura uniforme.
+#   Valore indicativo: 30-50 cm di altezza tra le piastre.
+geometry:
+  antenna_hpbw_deg: 68
+  antenna_gain_dbi: 8
+  antenna_size_mm: [220, 220, 24]
+  # base = 2 antenne affiancate (440 mm), profondità 220 mm, altezza 220 mm
+  volume_mm: [440, 220, 220]
+
+inventory:
+  antennas: [1, 2, 3]
+  timeout_ms: 1000
+  metadata_flags: 0x0007   # BIT0 ReadCount | BIT1 RSSI | BIT2 AntennaID
+
+tag_access:
+  bank_reserved: 0x00
+  bank_epc: 0x01
+  bank_tid: 0x02
+  bank_user: 0x03
+  access_password_hex: "00000000"
+  timeout_ms: 1000
+  write_data_hex: "12345678"   # 4 byte = 2 word, multiplo di 2
+  read_user_words: 2
+
+logging:
+  dir: logs
+  level: INFO

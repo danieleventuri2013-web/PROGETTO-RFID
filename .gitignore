@@ -1,0 +1,21 @@
+# Documentazione e binari del produttore (NON versionati: ~230 MB)
+MANUALI/
+ULTIMI MANUALI/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Output runtime del lettore
+logs/
+*.log
+
+# OS / editor
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
