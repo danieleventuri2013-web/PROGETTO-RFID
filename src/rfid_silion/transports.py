@@ -19,6 +19,10 @@ import serial
 log = logging.getLogger("rfid_silion.transport")
 
 
+class TransportNotOpenError(RuntimeError):
+    """I/O richiesto su un trasporto non aperto: chiamare open() prima."""
+
+
 class Transport(ABC):
     """Interfaccia I/O grezza byte-oriented con timeout."""
 
@@ -38,6 +42,10 @@ class Transport(ABC):
     @abstractmethod
     def flush_input(self) -> None: ...
 
+    def describe(self) -> str:
+        """Descrizione leggibile del trasporto (per log e health check)."""
+        return type(self).__name__
+
 
 class SerialTransport(Transport):
     """Trasporto seriale (USB-CDC / RS232 / UART tramite adattatore)."""
@@ -49,6 +57,12 @@ class SerialTransport(Transport):
         self.timeout_s = timeout_s
         self.inter_byte_timeout_s = inter_byte_timeout_s
         self._ser: serial.Serial | None = None
+
+    def _require_open(self) -> serial.Serial:
+        if self._ser is None or not self._ser.is_open:
+            raise TransportNotOpenError(
+                f"Trasporto seriale {self.port} non aperto: chiamare open()")
+        return self._ser
 
     def open(self) -> None:
         self._ser = serial.Serial(
@@ -68,13 +82,16 @@ class SerialTransport(Transport):
             log.info("Serial closed")
 
     def write(self, data: bytes) -> None:
-        self._ser.write(data)
+        self._require_open().write(data)
 
     def read(self, n: int) -> bytes:
-        return self._ser.read(n)
+        return self._require_open().read(n)
 
     def flush_input(self) -> None:
-        self._ser.reset_input_buffer()
+        self._require_open().reset_input_buffer()
+
+    def describe(self) -> str:
+        return f"serial {self.port}@{self.baudrate}"
 
 
 class TcpTransport(Transport):
@@ -91,6 +108,12 @@ class TcpTransport(Transport):
         self.timeout_s = timeout_s
         self._sock: socket.socket | None = None
 
+    def _require_open(self) -> socket.socket:
+        if self._sock is None:
+            raise TransportNotOpenError(
+                f"Trasporto TCP {self.host}:{self.port} non aperto: chiamare open()")
+        return self._sock
+
     def open(self) -> None:
         self._sock = socket.create_connection(
             (self.host, self.port), timeout=self.timeout_s)
@@ -106,23 +129,34 @@ class TcpTransport(Transport):
             log.info("TCP closed")
 
     def write(self, data: bytes) -> None:
-        self._sock.sendall(data)
+        self._require_open().sendall(data)
 
     def read(self, n: int) -> bytes:
+        sock = self._require_open()
         try:
-            return self._sock.recv(n)
+            chunk = sock.recv(n)
         except socket.timeout:
             return b""
+        if chunk == b"":
+            # recv() == b'' su TCP significa connessione chiusa dal peer,
+            # non timeout: segnalarlo aiuta a distinguere i due casi nei log.
+            log.warning("TCP: connessione chiusa dal lettore (%s:%d)",
+                        self.host, self.port)
+        return chunk
 
     def flush_input(self) -> None:
+        sock = self._require_open()
         # imposta timeout nullo per svuotare il buffer
-        self._sock.settimeout(0)
+        sock.settimeout(0)
         try:
             while True:
-                chunk = self._sock.recv(4096)
+                chunk = sock.recv(4096)
                 if not chunk:
                     break
         except (BlockingIOError, socket.error):
             pass
         finally:
-            self._sock.settimeout(self.timeout_s)
+            sock.settimeout(self.timeout_s)
+
+    def describe(self) -> str:
+        return f"tcp {self.host}:{self.port}"

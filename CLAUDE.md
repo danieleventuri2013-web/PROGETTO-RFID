@@ -20,15 +20,21 @@ Code comments, docstrings, and user-facing strings are in **Italian** — match 
 ```bash
 pip install -r requirements.txt          # pyserial, pyyaml, matplotlib, numpy
 
-python run.py                            # interactive menu (GUI / Step1 / tests)
+python run.py                            # interactive menu (GUI / Step1 / tests / health)
 python run.py gui                        # GUI directly  (run.bat / ./run.sh = same)
 python run.py step1                      # CLI Step 1 read/write test
-python run.py tests                      # protocol unit tests (no hardware)
+python run.py tests                      # unit tests, no hardware (protocol + reader)
+python run.py health                     # reader health check (JSON report in logs/)
 
-python src/tests/test_protocol.py        # tests directly
+python src/tests/test_protocol.py        # framing/CRC/tag-parser tests directly
+python src/tests/test_reader.py          # reader tests (FakeTransport, counters)
 python src/app/step1_test_rw.py --config src/app/config.yaml --skip-write --skip-epc
 python src/app/gui.py --config src/app/config.yaml
 ```
+
+- `--debug` (gui/step1/health) or env `RFID_DEBUG=1` forces DEBUG logging with
+  hex TX/RX frame dumps. All apps log to per-session files under `logs/` via
+  `rfid_silion.diagnostics.setup_logging`.
 
 - `run.py` is the entry point for everything: it injects `src/` into `PYTHONPATH` and
   **auto-installs missing deps** via pip before launching. Modules under `src/app/` and
@@ -61,10 +67,21 @@ transports — only the bottom layer changes.
    driven by the metadata-flags bitmask.
 5. **`errors.py`** — `status_to_exception()` maps Silion status codes to `SilionError`
    subclasses. `0x0400` → `NoTagError` (non-fatal: "no tag in field").
+6. **`diagnostics.py`** — cross-cutting, no I/O: `setup_logging()` (single logging
+   config for all apps), `checkpoint(log, name, **fields)` (greppable
+   `CHECKPOINT name | k=v` lines), `DiagCounters` (per-reader runtime counters:
+   timeouts vs frame_errors vs status_errors; exposed as `reader.diag`, embedded in
+   every JSON report). `reader.health_check()` returns a JSON-able status dict.
+   Exception split: `SilionTimeoutError` (reader silent) is a subclass of
+   `SilionFrameError` (corrupt frame) — catch order matters for diagnostics.
 
 Apps: `app/step1_test_rw.py` (scripted CLI test → JSON report in `logs/`),
-`app/gui.py` (Tkinter + matplotlib live control + 3D volume view), `app/config.yaml` (single
-source of runtime config).
+`app/gui.py` (Tkinter + matplotlib live control + 3D volume view), `app/health_check.py`
+(quick CLI diagnosis → JSON, exit 0/1/2), `app/config.yaml` (single source of runtime
+config). GUI note: all reader operations are serialized behind `self._lock` (the 1 s
+polling skips a cycle instead of queueing); GUI "Salva config" merges into the existing
+YAML and parks the inactive transport section as `serial_disabled`/`tcp_disabled`
+(transport selection is by key presence, `serial` wins).
 
 ## Critical, non-obvious behaviors
 

@@ -1,9 +1,11 @@
 """Parsing dei tag dal buffer del lettore (comando 0x29)."""
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from .protocol import (
+    SilionFrameError,
     META_READ_COUNT,
     META_RSSI,
     META_ANTENNA_ID,
@@ -13,6 +15,8 @@ from .protocol import (
     META_PROTOCOL_ID,
     META_TAG_DATA,
 )
+
+log = logging.getLogger("rfid_silion.tags")
 
 
 @dataclass
@@ -40,6 +44,18 @@ class Tag:
         return " ".join(parts)
 
 
+def _need(data: bytes, pos: int, n: int, what: str) -> None:
+    """Verifica che restino almeno `n` byte per il campo `what`.
+
+    Un buffer troncato indica una risposta corrotta o un disallineamento del
+    parser: meglio un errore esplicito (con offset) di un IndexError anonimo.
+    """
+    if pos + n > len(data):
+        raise SilionFrameError(
+            f"Tag buffer truncated: need {n} byte(s) for {what} at offset "
+            f"{pos}, only {len(data) - pos} available (buffer={len(data)}B)")
+
+
 def parse_tag_buffer(data: bytes, metadata_flags: int) -> list[Tag]:
     """Parser della risposta di Get Tag Buffer (0x29).
 
@@ -63,6 +79,9 @@ def parse_tag_buffer(data: bytes, metadata_flags: int) -> list[Tag]:
     del blocco metadati (prima di EpcLength); NON e' un campo sempre presente.
     Con il default ``metadata_flags=0x0007`` (ReadCount|RSSI|AntennaID) si parsano
     solo i primi tre metadati.
+
+    Solleva ``SilionFrameError`` se il buffer e' troncato rispetto al numero
+    di tag dichiarato (risposta corrotta / parser disallineato).
     """
     if len(data) < 4:
         return []
@@ -78,8 +97,10 @@ def parse_tag_buffer(data: bytes, metadata_flags: int) -> list[Tag]:
 
         # --- blocco metadati (ordine = bit crescente) ---
         if flags & META_READ_COUNT:
+            _need(data, pos, 1, "ReadCount")
             read_count = data[pos]; pos += 1
         if flags & META_RSSI:
+            _need(data, pos, 1, "RSSI")
             rssi = data[pos]
             if rssi >= 128:          # byte signed (complemento a 2)
                 rssi -= 256
@@ -88,39 +109,50 @@ def parse_tag_buffer(data: bytes, metadata_flags: int) -> list[Tag]:
             # Il byte antenna codifica (TX<<4 | RX): l'antenna LOGICA e' il nibble
             # basso, con 0 -> 16 (come ParseNextTag del codice C di riferimento
             # Silion). Setup monostatico: 0x11->1, 0x22->2, 0x33->3.
+            _need(data, pos, 1, "AntennaID")
             ant_id = data[pos] & 0x0F
             if ant_id == 0:
                 ant_id = 16
             pos += 1
         if flags & META_FREQUENCY:
+            _need(data, pos, 3, "Frequency")
             freq = (data[pos] << 16) | (data[pos + 1] << 8) | data[pos + 2]
             pos += 3
         if flags & META_TIMESTAMP:
+            _need(data, pos, 4, "Timestamp")
             ts = int.from_bytes(data[pos:pos + 4], "big")
             pos += 4
         if flags & META_PHASE:
+            _need(data, pos, 2, "Phase")
             phase = (data[pos] << 8) | data[pos + 1]
             pos += 2
         if flags & META_PROTOCOL_ID:
+            _need(data, pos, 1, "ProtocolID")
             proto_id = data[pos]; pos += 1
         if flags & META_TAG_DATA:
+            _need(data, pos, 2, "TagDataLength")
             tag_data_bits = (data[pos] << 8) | data[pos + 1]
             pos += 2
             n = tag_data_bits // 8
+            _need(data, pos, n, "TagData")
             embedded = bytes(data[pos:pos + n])
             pos += n
 
         # --- blocco EPC (sempre presente) ---
         # EpcLength e' la lunghezza in BIT di PC + EPC + TagCRC.
+        _need(data, pos, 2, "EpcLength")
         epc_len_bits = (data[pos] << 8) | data[pos + 1]
         pos += 2
+        _need(data, pos, 2, "PC")
         pc = (data[pos] << 8) | data[pos + 1]
         pos += 2
         epc_bytes = (epc_len_bits // 8) - 4   # togli PC(2) + CRC(2)
         if epc_bytes < 0:
             epc_bytes = 0
+        _need(data, pos, epc_bytes, "EPC")
         epc = data[pos:pos + epc_bytes]
         pos += epc_bytes
+        _need(data, pos, 2, "TagCRC")
         crc = (data[pos] << 8) | data[pos + 1]
         pos += 2
 
@@ -137,4 +169,10 @@ def parse_tag_buffer(data: bytes, metadata_flags: int) -> list[Tag]:
             protocol_id=proto_id,
             embedded_data=embedded,
         ))
+
+    if pos != len(data):
+        # non fatale: il conteggio tag e' stato rispettato, ma restano byte
+        # non parsati -> probabile flag metadati inatteso; utile nei log.
+        log.warning("Tag buffer: %d byte residui non parsati dopo %d tag",
+                    len(data) - pos, tag_count)
     return tags

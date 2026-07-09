@@ -18,8 +18,6 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import logging
-import math
 import threading
 from collections import defaultdict
 from pathlib import Path
@@ -41,8 +39,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rfid_silion.reader import SIM7200Reader
 from rfid_silion.transports import SerialTransport, TcpTransport
 from rfid_silion import protocol as P
-from rfid_silion.errors import SilionError, NoTagError
+from rfid_silion.errors import NoTagError
 from rfid_silion.tags import Tag
+from rfid_silion.diagnostics import setup_logging
 
 # --- Geometria volume (cm) ---------------------------------------------------
 # SLP1027: 220 mm di lato. 2 antenne affiancate formano la base (44x22 cm),
@@ -197,6 +196,10 @@ class RFIDGui:
         self.btn_verify = ttk.Button(f, text="Read + Verify", command=lambda: self._run_async(self.do_verify))
         self.btn_verify.grid(row=1, column=3)
 
+        self.btn_diag = ttk.Button(f, text="Report diagnostico",
+                                   command=lambda: self._run_async(self.do_diag_report))
+        self.btn_diag.grid(row=1, column=6, padx=8)
+
         self.poll_var = tk.BooleanVar(value=False)
         ttk.Checkbutton(f, text="Polling continuo (1s)", variable=self.poll_var,
                         command=self.toggle_poll).grid(row=1, column=4, columnspan=2)
@@ -236,11 +239,12 @@ class RFIDGui:
             self.pw_labels[(ant, k)].config(text=str(v))
 
     def _populate_from_cfg(self):
-        s = self.cfg.get("serial", {})
+        # accetta anche le sezioni "parcheggiate" da save_config (trasporto inattivo)
+        s = self.cfg.get("serial") or self.cfg.get("serial_disabled") or {}
         self.ser_port.insert(0, s.get("port", "COM3"))
         self.ser_baud.insert(0, str(s.get("baudrate", 115200)))
         self.ser_timeout.insert(0, str(s.get("timeout_s", 2.0)))
-        t = self.cfg.get("tcp", {})
+        t = self.cfg.get("tcp") or self.cfg.get("tcp_disabled") or {}
         self.tcp_host.insert(0, t.get("host", "192.168.1.100"))
         self.tcp_port.insert(0, str(t.get("port", 8080)))
         self.tcp_timeout.insert(0, str(t.get("timeout_s", 2.0)))
@@ -313,8 +317,14 @@ class RFIDGui:
             self._set_status(True)
         except Exception as e:
             self.log(f"Errore connessione: {e}")
-            messagebox.showerror("Connessione", str(e))
+            # chiudi il trasporto se era stato aperto (boot fallito a meta')
+            if self.reader is not None:
+                try:
+                    self.reader.close()
+                except Exception:
+                    pass
             self.reader = None
+            messagebox.showerror("Connessione", str(e))
 
     def _disconnect(self):
         if self.poll_var.get():
@@ -335,33 +345,67 @@ class RFIDGui:
         def _do():
             try:
                 region = REGIONS[self.region_var.get()]
-                self.reader.set_region(region)
                 powers = [(ant, self.pw_vars[ant]["read"].get() * 100,
                                 self.pw_vars[ant]["write"].get() * 100) for ant in (1, 2, 3)]
-                self.reader.set_antennas_power(powers)
+                with self._lock:
+                    self.reader.set_region(region)
+                    self.reader.set_antennas_power(powers)
                 self.log(f"Regione+potenze applicate: {powers}")
             except Exception as e:
                 self.log(f"Errore impostazioni: {e}")
         self._run_async(_do)
 
     def save_config(self):
-        cfg = {
-            "serial": {
+        """Salva in config.yaml i parametri della GUI preservando le altre sezioni.
+
+        La sezione del trasporto NON attivo viene rinominata in
+        `serial_disabled`/`tcp_disabled`: reader_from_config seleziona il
+        trasporto per presenza di chiave (e 'serial' vince su 'tcp'), quindi
+        lasciare entrambe le sezioni attive renderebbe ambigua la selezione.
+        NB: yaml.safe_dump non conserva i commenti del file originale.
+        """
+        cfg = dict(self.cfg or {})
+        active = self.transport_var.get()          # "serial" | "tcp"
+        other = "tcp" if active == "serial" else "serial"
+        section = dict(cfg.get(active) or cfg.get(f"{active}_disabled") or {})
+        if active == "serial":
+            section.update({
                 "port": self.ser_port.get(),
                 "baudrate": int(self.ser_baud.get() or 115200),
                 "timeout_s": float(self.ser_timeout.get() or 2.0),
-            },
-            "reader": {"region": REGIONS[self.region_var.get()]},
-            "antennas": [
-                {"id": ant, "role": r,
-                 "read_power": self.pw_vars[ant]["read"].get() * 100,
-                 "write_power": self.pw_vars[ant]["write"].get() * 100}
-                for ant, r in [(1, "floor"), (2, "floor"), (3, "wall_90")]
-            ],
-        }
-        with open(self.cfg_path, "w", encoding="utf-8") as f:
-            yaml.safe_dump(cfg, f, sort_keys=False)
-        self.log(f"Config salvata in {self.cfg_path}")
+            })
+        else:
+            section.update({
+                "host": self.tcp_host.get(),
+                "port": int(self.tcp_port.get() or 8080),
+                "timeout_s": float(self.tcp_timeout.get() or 2.0),
+            })
+        cfg[active] = section
+        cfg.pop(f"{active}_disabled", None)
+        if other in cfg:
+            cfg[f"{other}_disabled"] = cfg.pop(other)
+
+        reader_cfg = dict(cfg.get("reader") or {})
+        reader_cfg["region"] = REGIONS[self.region_var.get()]
+        cfg["reader"] = reader_cfg
+
+        default_roles = {1: "floor_left", 2: "floor_right", 3: "wall_90"}
+        old_ants = {a.get("id"): a for a in cfg.get("antennas") or []}
+        cfg["antennas"] = []
+        for ant in (1, 2, 3):
+            a = dict(old_ants.get(ant) or {"id": ant, "role": default_roles[ant]})
+            a["read_power"] = self.pw_vars[ant]["read"].get() * 100
+            a["write_power"] = self.pw_vars[ant]["write"].get() * 100
+            cfg["antennas"].append(a)
+
+        self.cfg = cfg
+        try:
+            with open(self.cfg_path, "w", encoding="utf-8") as f:
+                yaml.safe_dump(cfg, f, sort_keys=False)
+        except OSError as e:
+            self.log(f"Errore salvataggio config: {e}")
+            return
+        self.log(f"Config salvata in {self.cfg_path} (commenti YAML non conservati)")
 
     # ------------------------------------------------------------------ #
     # Operazioni tag
@@ -372,8 +416,34 @@ class RFIDGui:
             return False
         return True
 
+    def _hex_bytes(self, s: str, name: str, even: bool = True) -> bytes | None:
+        """Converte un campo esadecimale della GUI in bytes; None se non valido."""
+        s = (s or "").strip().replace(" ", "")
+        try:
+            b = bytes.fromhex(s)
+        except ValueError:
+            self.log(f"{name}: valore esadecimale non valido: '{s}'")
+            return None
+        if even and len(b) % 2 != 0:
+            self.log(f"{name}: la lunghezza deve essere pari (word da 16 bit)")
+            return None
+        return b
+
+    def _password_bytes(self) -> bytes | None:
+        """Password di accesso dal campo GUI: esattamente 4 byte (8 cifre hex)."""
+        pwd = self._hex_bytes(self.acc_pwd.get() or "00000000",
+                              "Password accesso", even=False)
+        if pwd is not None and len(pwd) != 4:
+            self.log("Password accesso: servono esattamente 4 byte (8 cifre hex)")
+            return None
+        return pwd
+
     def do_inventory(self):
         if not self._guard():
+            return
+        # lock non bloccante: se il ciclo precedente (polling) e' ancora in
+        # corso si salta il giro invece di accodare accessi alla seriale
+        if not self._lock.acquire(blocking=False):
             return
         try:
             self.reader.set_antennas_for_inventory([(a, a) for a in (1, 2, 3)])
@@ -396,14 +466,24 @@ class RFIDGui:
             self.root.after(0, lambda: self._update_plots([]))
         except Exception as e:
             self.log(f"Errore inventory: {e}")
+        finally:
+            self._lock.release()
 
     def do_read(self):
         if not self._guard():
             return
+        pwd = self._password_bytes()
+        if pwd is None:
+            return
         try:
-            pwd = bytes.fromhex(self.acc_pwd.get() or "00000000")
             words = int(self.read_words.get() or 2)
-            res = self.reader.read_try_all_antennas([1, 2, 3], P.BANK_USER, 0, words, pwd, 1000)
+        except ValueError:
+            self.log(f"Parole da leggere: numero non valido: '{self.read_words.get()}'")
+            return
+        try:
+            with self._lock:
+                res = self.reader.read_try_all_antennas([1, 2, 3], P.BANK_USER, 0,
+                                                        words, pwd, 1000)
             for ant, r in res.items():
                 if r["ok"]:
                     self.log(f"Read USER ant{ant}: {r['data'].hex().upper()}")
@@ -415,30 +495,64 @@ class RFIDGui:
     def do_write(self):
         if not self._guard():
             return
+        data = self._hex_bytes(self.write_data.get(), "Dati scrittura")
+        if data is None:
+            return
+        if not data or len(data) > 64:
+            self.log(f"Dati scrittura: lunghezza {len(data)} byte non valida "
+                     "(1..64 byte, multiplo di 2)")
+            return
+        pwd = self._password_bytes()
+        if pwd is None:
+            return
         try:
-            data = bytes.fromhex(self.write_data.get())
-            pwd = bytes.fromhex(self.acc_pwd.get() or "00000000")
-            res = self.reader.write_try_all_antennas([1, 2, 3], P.BANK_USER, 0, data, pwd, 1000)
+            with self._lock:
+                res = self.reader.write_try_all_antennas([1, 2, 3], P.BANK_USER, 0,
+                                                         data, pwd, 1000)
             for ant, r in res.items():
                 self.log(f"Write USER ant{ant}: {'OK' if r['ok'] else 'FAIL '+r['error']}")
         except Exception as e:
             self.log(f"Errore write: {e}")
 
     def do_verify(self):
+        """Rilegge la banca USER e confronta con i dati di scrittura attesi."""
         if not self._guard():
             return
-        self.do_read()
-        # confronto
-        data = bytes.fromhex(self.write_data.get())
+        data = self._hex_bytes(self.write_data.get(), "Dati scrittura")
+        if not data:
+            return
+        pwd = self._password_bytes()
+        if pwd is None:
+            return
         try:
-            pwd = bytes.fromhex(self.acc_pwd.get() or "00000000")
-            res = self.reader.read_try_all_antennas([1, 2, 3], P.BANK_USER, 0, len(data)//2, pwd, 1000)
+            with self._lock:
+                res = self.reader.read_try_all_antennas([1, 2, 3], P.BANK_USER, 0,
+                                                        len(data) // 2, pwd, 1000)
+            expected = data.hex().upper()
             for ant, r in res.items():
                 if r["ok"]:
-                    match = r["data"].hex().upper() == data.hex().upper()
-                    self.log(f"Verify ant{ant}: letto={r['data'].hex().upper()} match={match}")
+                    got = r["data"].hex().upper()
+                    self.log(f"Verify ant{ant}: letto={got} match={got == expected}")
+                else:
+                    self.log(f"Verify ant{ant}: FAIL {r['error']}")
         except Exception as e:
             self.log(f"Errore verify: {e}")
+
+    def do_diag_report(self):
+        """Salva in logs/ un report JSON per l'assistenza (health check + contatori)."""
+        if not self._guard():
+            return
+        try:
+            with self._lock:
+                rep = self.reader.health_check()
+            out_dir = Path(self.cfg.get("logging", {}).get("dir", "logs"))
+            out_dir.mkdir(parents=True, exist_ok=True)
+            path = out_dir / f"diagnostica_gui_{dt.datetime.now():%Y%m%d_%H%M%S}.json"
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump(rep, fh, indent=2, ensure_ascii=False, default=str)
+            self.log(f"Report diagnostico salvato: {path} (ok={rep['ok']})")
+        except Exception as e:
+            self.log(f"Errore report diagnostico: {e}")
 
     # ------------------------------------------------------------------ #
     # Polling
@@ -593,16 +707,20 @@ def plt_color_for_rssi(rssi: int | None) -> str:
 
 def load_config(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+        return yaml.safe_load(f) or {}
 
 
 def main():
     ap = argparse.ArgumentParser(description="GUI SIM7200 RFID")
     ap.add_argument("--config", default=str(Path(__file__).with_name("config.yaml")))
+    ap.add_argument("--debug", action="store_true",
+                    help="log DEBUG (dump esadecimale frame TX/RX)")
     args = ap.parse_args()
     cfg = load_config(args.config)
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    log_cfg = cfg.get("logging", {})
+    setup_logging(level=log_cfg.get("level", "INFO"),
+                  log_dir=log_cfg.get("dir", "logs"),
+                  file_prefix="gui", force_debug=args.debug)
     root = tk.Tk()
     RFIDGui(root, cfg, Path(args.config))
     root.mainloop()

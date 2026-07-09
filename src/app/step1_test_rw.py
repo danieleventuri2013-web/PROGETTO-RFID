@@ -9,10 +9,13 @@ Esegue la sequenza:
   6. lettura banca USER su ciascuna antenna
   7. scrittura banca USER + rilettura di verifica
   8. (opzionale) scrittura EPC
-  9. salva report JSON in logs/
+  9. salva report JSON in logs/ (include i contatori diagnostici)
 
 Uso:
   python -m app.step1_test_rw --config src/app/config.yaml
+  Opzioni: --skip-write --skip-epc --debug
+
+Exit code: 0 = completato, 1 = errore fatale (vedi campo "error" nel report).
 """
 from __future__ import annotations
 
@@ -20,39 +23,22 @@ import argparse
 import datetime as dt
 import json
 import logging
-import os
 import sys
-import time
 from pathlib import Path
 
 import yaml
 
 # importa il package locale
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from rfid_silion.reader import SIM7200Reader, reader_from_config
-from rfid_silion import protocol as P
-from rfid_silion.errors import SilionError, NoTagError
+from rfid_silion.reader import reader_from_config
+from rfid_silion import protocol as P  # noqa: F401  (banche/comandi da config)
+from rfid_silion.errors import SilionError
+from rfid_silion.diagnostics import setup_logging, checkpoint
 
 
 def load_config(path: str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
-
-
-def setup_logging(cfg: dict) -> Path:
-    log_dir = Path(cfg.get("logging", {}).get("dir", "logs"))
-    log_dir.mkdir(parents=True, exist_ok=True)
-    level = getattr(logging, cfg.get("logging", {}).get("level", "INFO"))
-    logging.basicConfig(
-        level=level,
-        format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(log_dir / f"step1_{dt.datetime.now():%Y%m%d_%H%M%S}.log",
-                                encoding="utf-8"),
-        ],
-    )
-    return log_dir
+        return yaml.safe_load(f) or {}
 
 
 def hex2bytes(h: str) -> bytes:
@@ -66,13 +52,17 @@ def main() -> int:
                     help="non scrivere sul tag (solo lettura)")
     ap.add_argument("--skip-epc", action="store_true",
                     help="non scrivere l'EPC")
+    ap.add_argument("--debug", action="store_true",
+                    help="log DEBUG (dump esadecimale frame TX/RX)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
-    log_dir = setup_logging(cfg)
+    log_dir = Path(cfg.get("logging", {}).get("dir", "logs"))
+    setup_logging(level=cfg.get("logging", {}).get("level", "INFO"),
+                  log_dir=log_dir, file_prefix="step1",
+                  force_debug=args.debug)
     log = logging.getLogger("step1")
 
-    s = cfg["serial"] if "serial" in cfg else None
     r = cfg["reader"]
     ants_cfg = cfg["antennas"]
     inv = cfg["inventory"]
@@ -85,6 +75,7 @@ def main() -> int:
         "steps": [],
     }
 
+    reader = None
     try:
         with reader_from_config(cfg) as reader:
 
@@ -192,12 +183,18 @@ def main() -> int:
         log.exception("Errore fatale")
         report["error"] = str(e)
     finally:
+        if reader is not None:
+            # contatori diagnostici della sessione (timeout, CRC, status err.)
+            report["diagnostics"] = reader.diag.snapshot()
         report["finished_at"] = dt.datetime.now().isoformat()
         out = log_dir / f"step1_{dt.datetime.now():%Y%m%d_%H%M%S}.json"
+        log_dir.mkdir(parents=True, exist_ok=True)
         with open(out, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False, default=str)
+        checkpoint(log, "step1_done", ok=("error" not in report),
+                   report=out.name)
         print(f"\nReport salvato in: {out}")
-    return 0
+    return 1 if "error" in report else 0
 
 
 def _ser(d: dict) -> dict:

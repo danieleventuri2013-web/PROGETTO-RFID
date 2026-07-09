@@ -19,6 +19,15 @@ class SilionFrameError(Exception):
     """Errore di framing/CRC nella risposta del lettore."""
 
 
+class SilionTimeoutError(SilionFrameError):
+    """Timeout del trasporto: nessuna risposta (completa) dal lettore.
+
+    Sottoclasse di SilionFrameError per retrocompatibilita' (chi intercettava
+    SilionFrameError continua a catturare anche i timeout), ma distinguibile
+    per la diagnostica (contatore `timeouts` vs `frame_errors`).
+    """
+
+
 def crc16(payload: bytes) -> int:
     """CRC-16 CCITT (poly 0x1021, init 0xFFFF) su `payload`.
 

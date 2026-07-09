@@ -119,6 +119,23 @@ def test_parse_tag_buffer_timestamp_flags():
     assert t.rssi is None and t.pc == 0x31C1 and t.crc == 0xFB15
 
 
+def test_parse_tag_buffer_truncated_raises():
+    """0x29 con buffer troncato: errore esplicito, non IndexError anonimo.
+
+    Un buffer piu' corto di quanto dichiarato da TagCount indica una risposta
+    corrotta o un disallineamento del parser: parse_tag_buffer deve sollevare
+    SilionFrameError con il campo e l'offset in cui i byte sono finiti.
+    """
+    flags = 0x0007
+    header = bytes([0x00, 0x07, 0x00, 0x01])
+    truncated = bytes([0x05, 0xC8, 0x11, 0x00, 0x80, 0x30])  # tronco a meta' PC
+    try:
+        parse_tag_buffer(header + truncated, flags)
+        assert False, "atteso SilionFrameError"
+    except P.SilionFrameError:
+        pass
+
+
 def test_data_length_limit():
     try:
         P.build_packet(0x22, b"\x00" * 253)

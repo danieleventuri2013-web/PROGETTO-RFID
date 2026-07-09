@@ -4,13 +4,15 @@ Launcher multipiattaforma: imposta PYTHONPATH, verifica/installa le dipendenze
 e mostra un menu per scegliere cosa avviare:
   1) GUI di controllo            (src/app/gui.py)
   2) CLI Step 1 test read/write  (src/app/step1_test_rw.py)
-  3) Test del protocollo         (src/tests/test_protocol.py)
+  3) Test protocollo + reader    (src/tests/)
+  4) Health check lettore        (src/app/health_check.py)
 
 Uso diretto:
   python run.py            -> menu interattivo
   python run.py gui        -> avvia direttamente la GUI
   python run.py step1      -> avvia lo Step 1
-  python run.py tests      -> test del protocollo
+  python run.py tests      -> test senza hardware
+  python run.py health     -> health check (diagnosi rapida)
 
 Funziona su Windows / Linux / macOS.
 """
@@ -85,9 +87,19 @@ def run_step1() -> int:
     return step1_test_rw.main()
 
 
+def run_health() -> int:
+    from app import health_check
+    sys.argv = ["health_check.py", "--config", str(SRC / "app" / "config.yaml")]
+    return health_check.main()
+
+
 def run_tests() -> int:
-    from tests import test_protocol
-    return test_protocol._run_all() if hasattr(test_protocol, "_run_all") else 0
+    rc = 0
+    from tests import test_protocol, test_reader
+    for mod in (test_protocol, test_reader):
+        if hasattr(mod, "_run_all"):
+            rc |= mod._run_all()
+    return rc
 
 
 # mapping nomi -> funzioni (definito dopo le funzioni)
@@ -95,6 +107,7 @@ ACTIONS = {
     "1": ("GUI di controllo", run_gui),
     "2": ("CLI Step 1 (test read/write)", run_step1),
     "3": ("Test del protocollo (senza hardware)", run_tests),
+    "4": ("Health check lettore (diagnosi rapida)", run_health),
 }
 
 
@@ -104,7 +117,7 @@ def main() -> int:
 
     # argomento diretto
     direct = {"gui": run_gui, "step1": run_step1, "tests": run_tests,
-              "test": run_tests}
+              "test": run_tests, "health": run_health}
     if len(sys.argv) > 1 and sys.argv[1].lower() in direct:
         return direct[sys.argv[1].lower()]()
 
