@@ -121,3 +121,26 @@ Stato: **RISOLTO** in questo branch oppure **APERTO** (con motivazione).
 4. Migrazione test a pytest (i test attuali sono già compatibili).
 5. Persistenza SQLite delle letture (previsto dal piano, §5 PIANO_PROGETTO.md).
 6. Chiusura rilievi aperti #18–#20.
+---
+
+## Aggiornamento v0.3.0 — 2026-07-22
+
+È stato eseguito un secondo passaggio completo sui rilievi ancora aperti:
+
+- trasporti: errori I/O normalizzati, disconnessione TCP distinta dal timeout,
+  timeout temporanei applicati anche al socket/seriale e nuovo contatore
+  `transport_errors`;
+- protocollo/reader/parser: controlli rigorosi sulle lunghezze e sulle opzioni
+  di risposta, configurazione separata dei timeout, potenza massima applicata
+  dal driver, parser tag fail-fast su buffer ambigui o residui;
+- GUI: un solo worker I/O, aggiornamenti Tk tramite coda, chiusura ordinata,
+  inventory singolo/continuo/temporizzato con accumulatore limitato;
+- sicurezza operativa: Step 1 read-only per default e scritture abilitate solo
+  esplicitamente dopo inventory con un unico EPC; conferma aggiuntiva in GUI;
+- qualità: packaging `pyproject.toml`, Ruff, copertura minima e CI
+  multipiattaforma.
+
+Verifica automatica finale: **32/32 test superati**, Ruff senza rilievi,
+branch coverage **70,80%** (soglia 65%). Restano necessariamente da eseguire
+le prove con lettore fisico per porta TCP 8080, RF/potenze e comportamento
+reale delle tre antenne.

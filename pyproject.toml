@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rfid-silion"
+version = "0.3.0"
+description = "Driver Python multipiattaforma per lettore UHF RFID Silion SIM7200"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "pyserial>=3.5",
+  "pyyaml>=6.0",
+  "matplotlib>=3.6",
+  "numpy>=1.24",
+]
+
+[project.scripts]
+rfid-silion-service = "rfid_silion.service_host:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "pytest-cov>=5.0",
+  "ruff>=0.6",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["rfid_silion*"]
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]
+addopts = "-q --strict-markers --cov=rfid_silion --cov=lims --cov=webui --cov-report=term-missing"
+python_files = ["test_*.py"]
+
+[tool.coverage.run]
+branch = true
+# Tutti e tre i livelli: il driver, la tracciabilita' dei campioni e
+# l'interfaccia operativa. Misurare solo il driver lascerebbe scoperta proprio
+# la parte che decide se un campione risulta arrivato o mancante.
+source = ["src/rfid_silion", "src/lims", "src/webui"]
+
+[tool.coverage.report]
+fail_under = 65
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B"]
+ignore = ["E501"]

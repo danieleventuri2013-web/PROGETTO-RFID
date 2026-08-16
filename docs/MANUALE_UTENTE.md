@@ -1,6 +1,6 @@
 # Manuale utente — Programma di controllo lettore RFID SIM7200 (bozza)
 
-Versione programma: 0.2.0 · Data: 2026-07-09 · Pubblico: operatori/utenti finali
+Versione programma: 0.3.0 · Data: 2026-07-22 · Pubblico: operatori/utenti finali
 
 ---
 
@@ -31,8 +31,9 @@ affiancate sotto + 1 verticale di lato). Permette di:
    ```
    pip install -r requirements.txt
    ```
-   (Se si salta questo passo, `run.py` installa da solo ciò che manca al primo
-   avvio.)
+   Il launcher segnala le dipendenze mancanti senza modificare l'ambiente.
+   In alternativa, autorizzarne esplicitamente l'installazione con
+   `python run.py --install-deps`.
 
 ## 4. Avvio del programma
 
@@ -41,17 +42,24 @@ oppure da terminale:
 
 ```
 python run.py            menu con le scelte qui sotto
-python run.py gui        interfaccia grafica (consigliata)
+python run.py gui        interfaccia grafica standalone
+python run.py service-gui interfaccia grafica tramite service (consigliata)
 python run.py step1      test automatico di lettura/scrittura
 python run.py health     controllo rapido "sta tutto funzionando?"
 python run.py tests      autotest interni (non serve il lettore)
 ```
 
+Su Windows è anche possibile fare doppio clic su
+**`avvia_test_grafico_rfid.bat`**. Il launcher apre la GUI e avvia dietro di essa
+il processo service che sarà usato dal futuro framework.
+
 ## 5. Collegare il lettore
 
 **Via USB (consigliato per iniziare):** collegare il cavo, annotare la porta
 COM (Gestione Dispositivi → Porte COM e LPT, es. `COM3`). Nella GUI scegliere
-"Seriale", inserire la porta e premere **Connetti**.
+"Seriale", premere **Aggiorna porte**, selezionare la COM rilevata e premere
+**Connetti**. Il campo resta editabile per inserire manualmente una porta non
+elencata.
 
 **Via rete:** collegare il cavo Ethernet, impostare il PC sulla stessa rete
 (es. IP `192.168.1.10`), nella GUI scegliere "TCP/IP", host `192.168.1.100`,
@@ -76,10 +84,16 @@ La finestra è divisa in quattro zone:
 
 ## 7. Cercare i tag (Inventory)
 
-Premere **Inventory**: il lettore interroga le 3 antenne e mostra quanti tag
-ha trovato, con quale antenna e con che potenza di segnale. Spuntando
-**"Polling continuo (1s)"** la ricerca si ripete da sola ogni secondo (utile
-per spostare il tag nel volume e vedere il grafico aggiornarsi).
+Selezionare le antenne desiderate, quindi usare:
+
+- **Inventory singolo** per un solo ciclo;
+- **Avvia inventario** per una sessione continua;
+- **Avvia per durata** per fermarsi automaticamente dopo i secondi indicati;
+- **Stop inventario** per interrompere una sessione continua.
+
+La tabella aggrega le letture per EPC, antenna e RSSI. Il numero massimo di EPC
+mantenuti in memoria è configurabile; gli EPC più vecchi vengono rimossi se il
+limite viene superato.
 
 ## 8. Leggere i dati di un tag (Read)
 
@@ -99,8 +113,34 @@ leggere (di norma 2).
 La "Password accesso" va toccata solo se i tag sono protetti (8 cifre
 esadecimali; `00000000` = nessuna password).
 
-> Attenzione: la scrittura agisce sul **primo tag che risponde**. Per scrivere
-> un tag specifico, mettere solo quel tag nel volume.
+> La scrittura agisce sul **primo tag che risponde**. La GUI la abilita solo
+> dopo una sessione Inventory che abbia rilevato esattamente un EPC e richiede
+> una conferma esplicita. Lasciare comunque nel volume soltanto il tag target.
+
+### Cambiare l'EPC del tag
+
+Usare soltanto un tag di prova o sacrificabile e seguire questa sequenza:
+
+1. lasciare un solo tag nel volume ed eseguire **Inventory singolo**;
+2. inserire il nuovo EPC esadecimale nel campo **Nuovo EPC (hex)** oppure premere
+   **AUTO 96 bit** per generare un candidato casuale di 12 byte;
+3. controllare attentamente vecchio e nuovo EPC, quindi premere **Scrivi EPC**;
+4. confermare l'avviso: la GUI ripete un inventory di sicurezza, cambia l'EPC e
+   prova automaticamente a rileggere il nuovo valore.
+
+**AUTO non scrive nulla da solo.** Il service non riutilizza un candidato nella
+stessa sessione e usa 96 bit casuali per default. Questo non costituisce una
+garanzia di
+unicità aziendale o globale. Il futuro framework dovrà registrare gli EPC già
+assegnati e rifiutare duplicati. Se la verifica automatica non trova il nuovo
+EPC, non ripetere subito la scrittura: identificare prima il tag e controllare il
+log.
+
+### Test Step 1 da terminale
+
+`python run.py step1` esegue per default inventory e letture senza scrivere.
+Le scritture vanno abilitate esplicitamente con `--write` o `--write-epc`
+e vengono bloccate se l'inventory non rileva esattamente un EPC.
 
 ## 10. Salvare ed esportare i risultati
 

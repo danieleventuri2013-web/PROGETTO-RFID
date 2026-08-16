@@ -3,12 +3,19 @@
 Verifica CRC-16, build/parse dei frame usando gli esempi del manuale
 MANUALI/Communication_Protocol_Doc__20210716.
 """
+
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from rfid_silion import protocol as P
-from rfid_silion.tags import parse_tag_buffer
+from rfid_silion.tags import (
+    Tag,
+    TagReadAccumulator,
+    parse_tag_buffer,
+    summarize_tag_reads,
+)
 
 
 def test_crc_boot_firmware():
@@ -31,8 +38,7 @@ def test_crc_get_antenna_option00():
 def test_crc_set_antenna_access():
     """Set Antenna access option 0x00, ant 1: FF 03 91 00 01 01 -> CRC 62 87."""
     pkt = P.build_packet(P.CMD_SET_ANTENNA_PORTS, bytes([0x00, 0x01, 0x01]))
-    assert pkt == bytes([0xFF, 0x03, 0x91, 0x00, 0x01, 0x01, 0x62, 0x87]), \
-        pkt.hex(" ").upper()
+    assert pkt == bytes([0xFF, 0x03, 0x91, 0x00, 0x01, 0x01, 0x62, 0x87]), pkt.hex(" ").upper()
 
 
 def test_crc_set_region():
@@ -43,8 +49,11 @@ def test_crc_set_region():
 
 def test_parse_response_boot():
     """Risposta Boot Firmware del manuale."""
-    raw = bytes.fromhex("FF 14 04 00 00 13 04 15 00 A8 00 00 01 "
-                        "20 13 05 22 13 05 23 00 00 00 00 10".replace(" ", ""))
+    raw = bytes.fromhex(
+        "FF 14 04 00 00 13 04 15 00 A8 00 00 01 20 13 05 22 13 05 23 00 00 00 00 10".replace(
+            " ", ""
+        )
+    )
     # CRC del manuale non fornito nel testo: ricalcoliamo per validare il parser
     crc = P.crc16(raw[1:])
     frame = raw + bytes([(crc >> 8) & 0xFF, crc & 0xFF])
@@ -77,14 +86,24 @@ def test_parse_tag_buffer_default_flags():
     header = bytes([0x00, 0x07, 0x00, 0x02])
     # Tag A: RC=5, RSSI=0xC8(-56), Ant byte 0x11 (TX1|RX1 -> logica 1),
     #        EpcLen=0x0080(128bit -> 12B EPC), PC=0x3000
-    epc_a = bytes.fromhex("E200001722110123456789AB")          # 12 byte
-    tag_a = (bytes([0x05, 0xC8, 0x11]) + bytes([0x00, 0x80]) +
-             bytes([0x30, 0x00]) + epc_a + bytes([0xAB, 0xCD]))
+    epc_a = bytes.fromhex("E200001722110123456789AB")  # 12 byte
+    tag_a = (
+        bytes([0x05, 0xC8, 0x11])
+        + bytes([0x00, 0x80])
+        + bytes([0x30, 0x00])
+        + epc_a
+        + bytes([0xAB, 0xCD])
+    )
     # Tag B: RC=2, RSSI=0xA0(-96), Ant byte 0x22 (-> logica 2),
     #        EpcLen=0x0060(96bit -> 8B EPC), PC=0x2000
-    epc_b = bytes.fromhex("AABBCCDDEEFF0011")                   # 8 byte
-    tag_b = (bytes([0x02, 0xA0, 0x22]) + bytes([0x00, 0x60]) +
-             bytes([0x20, 0x00]) + epc_b + bytes([0x12, 0x34]))
+    epc_b = bytes.fromhex("AABBCCDDEEFF0011")  # 8 byte
+    tag_b = (
+        bytes([0x02, 0xA0, 0x22])
+        + bytes([0x00, 0x60])
+        + bytes([0x20, 0x00])
+        + epc_b
+        + bytes([0x12, 0x34])
+    )
 
     tags = parse_tag_buffer(header + tag_a + tag_b, flags)
     assert len(tags) == 2, tags
@@ -105,10 +124,16 @@ def test_parse_tag_buffer_timestamp_flags():
     """
     flags = 0x0015
     header = bytes([0x00, 0x15, 0x00, 0x01])
-    epc = bytes.fromhex("111122223333444455556666")            # 12 byte
+    epc = bytes.fromhex("111122223333444455556666")  # 12 byte
     # ordine 0x0015: ReadCount(0x03), AntennaID(byte 0x11 -> logica 1), Timestamp(4)
-    tag = (bytes([0x03, 0x11]) + bytes([0x00, 0x00, 0x00, 0x64]) +
-           bytes([0x00, 0x80]) + bytes([0x31, 0xC1]) + epc + bytes([0xFB, 0x15]))
+    tag = (
+        bytes([0x03, 0x11])
+        + bytes([0x00, 0x00, 0x00, 0x64])
+        + bytes([0x00, 0x80])
+        + bytes([0x31, 0xC1])
+        + epc
+        + bytes([0xFB, 0x15])
+    )
 
     tags = parse_tag_buffer(header + tag, flags)
     assert len(tags) == 1, tags
@@ -131,15 +156,116 @@ def test_parse_tag_buffer_truncated_raises():
     truncated = bytes([0x05, 0xC8, 0x11, 0x00, 0x80, 0x30])  # tronco a meta' PC
     try:
         parse_tag_buffer(header + truncated, flags)
-        assert False, "atteso SilionFrameError"
+        raise AssertionError("atteso SilionFrameError")
     except P.SilionFrameError:
         pass
+
+
+def test_summarize_tag_reads_groups_epc_and_sums_counts():
+    tags = [
+        Tag("EPC_A", pc=0x3000, crc=0x1111, read_count=2, rssi=-60, antenna_id=1),
+        Tag("EPC_A", pc=0x3000, crc=0x1111, read_count=3, rssi=-48, antenna_id=2),
+        Tag("EPC_B", pc=0x3000, crc=0x2222, read_count=None, rssi=None, antenna_id=None),
+    ]
+
+    rows = summarize_tag_reads(tags)
+
+    assert [row.epc for row in rows] == ["EPC_A", "EPC_B"]
+    assert rows[0].reads == 5
+    assert rows[0].antennas == (1, 2)
+    assert rows[0].best_rssi == -48
+    assert rows[0].last_rssi == -48
+    assert rows[0].observations == 2
+    assert rows[1].reads == 1
+    assert rows[1].antennas == ()
+    assert rows[1].best_rssi is None
+    assert rows[1].last_rssi is None
+
+
+def test_parse_tag_buffer_rejects_short_header_and_invalid_lengths():
+    invalid = [
+        b"\x00\x00\x00",
+        bytes.fromhex("00000001000130001234"),  # EPC length 1 bit
+        bytes.fromhex("0000000100213000AABBCCDD1234"),  # 33 bit
+    ]
+    for payload in invalid:
+        try:
+            parse_tag_buffer(payload, 0)
+            raise AssertionError(f"buffer non valido accettato: {payload.hex()}")
+        except P.SilionFrameError:
+            pass
+
+
+def test_parse_tag_buffer_rejects_trailing_bytes():
+    try:
+        parse_tag_buffer(bytes.fromhex("00000000AA"), 0)
+        raise AssertionError("byte residuo accettato")
+    except P.SilionFrameError:
+        pass
+
+
+def test_tag_read_accumulator_is_incremental_and_bounded():
+    acc = TagReadAccumulator(max_unique_epcs=2)
+    acc.add(
+        [
+            Tag("A", 0, 0, read_count=2, rssi=-60, antenna_id=1),
+            Tag("B", 0, 0, read_count=1, rssi=-55, antenna_id=2),
+        ]
+    )
+    acc.add(
+        [
+            Tag("A", 0, 0, read_count=3, rssi=-45, antenna_id=3),
+            Tag("C", 0, 0, read_count=1, rssi=-70, antenna_id=1),
+        ]
+    )
+    rows = acc.summaries()
+    assert [row.epc for row in rows] == ["A", "C"]
+    assert rows[0].reads == 5 and rows[0].antennas == (1, 3)
+    assert acc.record_count == 4 and acc.evicted_epcs == 1
+
+
+def test_tag_read_accumulator_presence_by_missed_cycles():
+    acc = TagReadAccumulator(max_unique_epcs=10)
+    tag_a = Tag("A", 0, 0, read_count=2, rssi=-50, antenna_id=1)
+    tag_b = Tag("B", 0, 0, read_count=1, rssi=-60, antenna_id=2)
+
+    assert acc.update_presence([tag_a, tag_b], remove_after_missed_cycles=2) == ()
+    assert acc.update_presence([tag_a], remove_after_missed_cycles=2) == ()
+    assert {row.epc for row in acc.summaries()} == {"A", "B"}
+
+    assert acc.update_presence([tag_a], remove_after_missed_cycles=2) == ("B",)
+    rows = acc.summaries()
+    assert [row.epc for row in rows] == ["A"]
+    assert rows[0].reads == 6
+    assert acc.expired_epcs == 1
+
+
+def test_tag_read_accumulator_presence_by_seconds():
+    acc = TagReadAccumulator()
+    tag = Tag("A", 0, 0)
+
+    assert acc.update_presence([tag], remove_after_seconds=5.0, now=10.0) == ()
+    assert acc.update_presence([], remove_after_seconds=5.0, now=14.9) == ()
+    assert [row.epc for row in acc.summaries()] == ["A"]
+    assert acc.update_presence([], remove_after_seconds=5.0, now=15.0) == ("A",)
+    assert acc.summaries() == []
+
+
+def test_tag_read_accumulator_requires_one_valid_presence_threshold():
+    invalid = ({}, {"remove_after_missed_cycles": 0}, {"remove_after_seconds": 0})
+    for kwargs in invalid:
+        acc = TagReadAccumulator()
+        try:
+            acc.update_presence([], **kwargs)
+            raise AssertionError(f"soglia di presenza non valida accettata: {kwargs}")
+        except ValueError:
+            pass
 
 
 def test_data_length_limit():
     try:
         P.build_packet(0x22, b"\x00" * 253)
-        assert False, "dovrebbe sollevare"
+        raise AssertionError("dovrebbe sollevare")
     except ValueError:
         pass
 

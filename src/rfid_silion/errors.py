@@ -2,6 +2,7 @@
 
 Tabella da MANUALI/Communication_Protocol_Doc__20210716/html/Status_Code.html
 """
+
 from __future__ import annotations
 
 

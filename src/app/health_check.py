@@ -15,6 +15,7 @@ Uso:
 
 Exit code: 0 = tutto OK, 1 = problemi rilevati, 2 = connessione fallita.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -29,9 +30,9 @@ import yaml
 # importa il package locale
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from rfid_silion import __version__
-from rfid_silion.reader import reader_from_config
+from rfid_silion.diagnostics import checkpoint, setup_logging
 from rfid_silion.errors import NoTagError
-from rfid_silion.diagnostics import setup_logging, checkpoint
+from rfid_silion.reader import reader_from_config
 
 log = logging.getLogger("health")
 
@@ -69,15 +70,14 @@ def run_health_check(cfg: dict, with_inventory: bool = False) -> dict:
             if connected is not None:
                 missing = [a for a in configured_ants if a not in connected]
                 if missing:
-                    report["warnings"].append(
-                        f"Antenne configurate ma non rilevate: {missing}")
+                    report["warnings"].append(f"Antenne configurate ma non rilevate: {missing}")
 
             if with_inventory:
-                reader.set_antennas_for_inventory(
-                    [(a, a) for a in configured_ants])
+                reader.set_antennas_for_inventory([(a, a) for a in configured_ants])
                 try:
                     tags = reader.inventory(
-                        timeout_ms=cfg.get("inventory", {}).get("timeout_ms", 1000))
+                        timeout_ms=cfg.get("inventory", {}).get("timeout_ms", 1000)
+                    )
                     report["inventory_test"] = {
                         "tags": len(tags),
                         "epcs": sorted({t.epc for t in tags}),
@@ -87,17 +87,24 @@ def run_health_check(cfg: dict, with_inventory: bool = False) -> dict:
                         "tags": 0,
                         "note": "nessun tag nel campo (non e' un guasto)",
                     }
+                except Exception as e:
+                    log.exception("Health check: inventory di prova fallito")
+                    report["inventory_test"] = {
+                        "tags": 0,
+                        "ok": False,
+                        "error": str(e),
+                    }
+                    report["ok"] = False
 
             # snapshot finale dei contatori (dopo tutte le operazioni)
             report["counters"] = reader.diag.snapshot()
     except Exception as e:
-        log.exception("Health check: connessione/boot falliti")
+        log.exception("Health check: connessione o boot falliti")
         report["connection_error"] = str(e)
         report["ok"] = False
 
     report["finished_at"] = dt.datetime.now().isoformat(timespec="seconds")
-    checkpoint(log, "health_check_cli", ok=report["ok"],
-               warnings=len(report["warnings"]))
+    checkpoint(log, "health_check_cli", ok=report["ok"], warnings=len(report["warnings"]))
     return report
 
 
@@ -106,12 +113,15 @@ def _print_summary(report: dict) -> None:
         return "[OK]  " if ok else "[FAIL]"
 
     print("\n=== HEALTH CHECK SIM7200 ===")
-    print(f"{mark('connection_error' not in report)} Connessione: "
-          f"{report.get('transport', report.get('connection_error', '?'))}")
+    print(
+        f"{mark('connection_error' not in report)} Connessione: "
+        f"{report.get('transport', report.get('connection_error', '?'))}"
+    )
     if "firmware_info" in report:
         fi = report["firmware_info"]
-        print(f"{mark(True)} Boot firmware: FW {fi['firmware_version']} "
-              f"HW {fi['hardware_version']}")
+        print(
+            f"{mark(True)} Boot firmware: FW {fi['firmware_version']} HW {fi['hardware_version']}"
+        )
     health = report.get("health", {})
     if "antennas_connected" in health:
         print(f"{mark(True)} Antenne connesse: {health['antennas_connected']}")
@@ -122,29 +132,39 @@ def _print_summary(report: dict) -> None:
     if "inventory_test" in report:
         it = report["inventory_test"]
         note = f" ({it['note']})" if "note" in it else ""
-        print(f"{mark(True)} Inventory di prova: {it['tags']} tag{note}")
+        ok = it.get("ok", True)
+        detail = f": {it['error']}" if "error" in it else ""
+        print(f"{mark(ok)} Inventory di prova: {it['tags']} tag{note}{detail}")
     c = report.get("counters", {})
     if c:
-        print(f"       Contatori: comandi={c['commands_sent']} "
-              f"ok={c['responses_ok']} timeout={c['timeouts']} "
-              f"frame_err={c['frame_errors']} status_err={c['status_errors']}")
-    print(f"Esito complessivo: {'OK' if report['ok'] and not report['warnings'] else 'PROBLEMI RILEVATI'}")
+        print(
+            f"       Contatori: comandi={c['commands_sent']} "
+            f"ok={c['responses_ok']} timeout={c['timeouts']} "
+            f"frame_err={c['frame_errors']} trasporto_err={c.get('transport_errors', 0)} "
+            f"status_err={c['status_errors']}"
+        )
+    print(
+        f"Esito complessivo: {'OK' if report['ok'] and not report['warnings'] else 'PROBLEMI RILEVATI'}"
+    )
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Health check lettore SIM7200")
     ap.add_argument("--config", default=str(Path(__file__).with_name("config.yaml")))
-    ap.add_argument("--with-inventory", action="store_true",
-                    help="esegue anche un inventory di prova")
-    ap.add_argument("--debug", action="store_true",
-                    help="log DEBUG (dump esadecimale frame TX/RX)")
+    ap.add_argument(
+        "--with-inventory", action="store_true", help="esegue anche un inventory di prova"
+    )
+    ap.add_argument("--debug", action="store_true", help="log DEBUG (dump esadecimale frame TX/RX)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
     log_dir = Path(cfg.get("logging", {}).get("dir", "logs"))
-    setup_logging(level=cfg.get("logging", {}).get("level", "INFO"),
-                  log_dir=log_dir, file_prefix="health",
-                  force_debug=args.debug)
+    setup_logging(
+        level=cfg.get("logging", {}).get("level", "INFO"),
+        log_dir=log_dir,
+        file_prefix="health",
+        force_debug=args.debug,
+    )
 
     report = run_health_check(cfg, with_inventory=args.with_inventory)
     _print_summary(report)

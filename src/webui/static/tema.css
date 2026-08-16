@@ -1,0 +1,412 @@
+/* ==========================================================================
+   Tema — i colori, i caratteri e le misure di tutta l'interfaccia.
+   Qui non c'e' nessun componente: solo il vocabolario con cui sono scritti.
+
+   La tavolozza viene dall'istologia: ematossilina ed eosina, i due coloranti
+   con cui e' colorato ogni vetrino al mondo. Non e' decorazione a tema, c'e' un
+   legame preciso: l'eosina rende visibile il tessuto invisibile, il campo RF
+   rende visibile il tag invisibile. Fanno lo stesso mestiere.
+
+   Da cui la regola che regge tutta l'interfaccia:
+   --eosina si usa SOLO per l'attivita' radio e per lo stato attivo.
+   Un'occhiata allo schermo dice se il lettore sta parlando con un tag.
+   ========================================================================== */
+
+:root {
+  color-scheme: light dark;
+
+  /* -- Campo chiaro ------------------------------------------------------ */
+  --fondo: #f3f1f7;
+  --fondo-alt: #eae6f1;
+  --superficie: #ffffff;
+  --superficie-alt: #f7f5fb;
+  --bordo: #ddd6e8;
+  --bordo-forte: #c3b8d6;
+
+  --ematossilina: #3b2a63;
+  --ematossilina-tenue: #6d5c96;
+  --ematossilina-debole: #9a8dba;
+
+  --eosina: #d9536b;
+  --eosina-tenue: #f0c3cc;
+  --eosina-velo: rgba(217, 83, 107, 0.14);
+
+  --conferma: #1f7a63;
+  --conferma-velo: rgba(31, 122, 99, 0.12);
+  --allarme: #a31621;
+  --allarme-velo: rgba(163, 22, 33, 0.1);
+  --attesa: #8a6d00;
+  --attesa-velo: rgba(138, 109, 0, 0.12);
+
+  --ombra-1: 0 1px 2px rgba(30, 18, 55, 0.06), 0 2px 8px rgba(30, 18, 55, 0.05);
+  --ombra-2: 0 2px 4px rgba(30, 18, 55, 0.08), 0 12px 32px rgba(30, 18, 55, 0.1);
+
+  /* -- Caratteri ---------------------------------------------------------
+     Nessun font scaricato: il laboratorio e' isolato dalla rete. Tre facce
+     gia' presenti su Windows, scelte per ruolo.
+     Bahnschrift e' il grottesco condensato derivato dal DIN: registro da
+     pannello strumenti, riservato ai numeri e alle etichette di sezione. */
+  --f-strumenti: "Bahnschrift", "DIN Condensed", "Segoe UI Semibold", sans-serif;
+  --f-testo: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+
+  --t-micro: 0.6875rem;
+  --t-piccolo: 0.8125rem;
+  --t-corpo: 0.9375rem;
+  --t-medio: 1.0625rem;
+  --t-grande: 1.375rem;
+  --t-titolo: 1.75rem;
+  --t-eroe: clamp(3rem, 7vw, 5.5rem);
+
+  /* -- Misure ------------------------------------------------------------- */
+  --s1: 4px;
+  --s2: 8px;
+  --s3: 12px;
+  --s4: 16px;
+  --s5: 24px;
+  --s6: 32px;
+  --s7: 48px;
+  --r1: 4px;
+  --r2: 8px;
+  --r3: 14px;
+  /* Larga abbastanza per «ACCETTAZIONE», che e' la voce piu' lunga: una
+     scritta tagliata in una barra di navigazione e' un difetto, non un vezzo. */
+  --rail: 106px;
+  --testa: 56px;
+
+  --moto-breve: 140ms;
+  --moto-medio: 320ms;
+  --moto-lungo: 900ms;
+  --curva: cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+
+/* -- Campo scuro: solo i token cambiano, la struttura resta la stessa ------ */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-tema="chiaro"]) {
+    --fondo: #15101f;
+    --fondo-alt: #1b1529;
+    --superficie: #211a31;
+    --superficie-alt: #2a2140;
+    --bordo: #362b4d;
+    --bordo-forte: #4b3d69;
+
+    --ematossilina: #b9a8e0;
+    --ematossilina-tenue: #9384bb;
+    --ematossilina-debole: #6e6191;
+
+    --eosina: #f27e93;
+    --eosina-tenue: #7a3446;
+    --eosina-velo: rgba(242, 126, 147, 0.16);
+
+    --conferma: #3ebf9e;
+    --conferma-velo: rgba(62, 191, 158, 0.14);
+    --allarme: #f2555f;
+    --allarme-velo: rgba(242, 85, 95, 0.14);
+    --attesa: #e0b64a;
+    --attesa-velo: rgba(224, 182, 74, 0.14);
+
+    --ombra-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
+    --ombra-2: 0 2px 4px rgba(0, 0, 0, 0.45), 0 12px 32px rgba(0, 0, 0, 0.45);
+  }
+}
+
+:root[data-tema="scuro"] {
+  --fondo: #15101f;
+  --fondo-alt: #1b1529;
+  --superficie: #211a31;
+  --superficie-alt: #2a2140;
+  --bordo: #362b4d;
+  --bordo-forte: #4b3d69;
+
+  --ematossilina: #b9a8e0;
+  --ematossilina-tenue: #9384bb;
+  --ematossilina-debole: #6e6191;
+
+  --eosina: #f27e93;
+  --eosina-tenue: #7a3446;
+  --eosina-velo: rgba(242, 126, 147, 0.16);
+
+  --conferma: #3ebf9e;
+  --conferma-velo: rgba(62, 191, 158, 0.14);
+  --allarme: #f2555f;
+  --allarme-velo: rgba(242, 85, 95, 0.14);
+  --attesa: #e0b64a;
+  --attesa-velo: rgba(224, 182, 74, 0.14);
+
+  --ombra-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.3);
+  --ombra-2: 0 2px 4px rgba(0, 0, 0, 0.45), 0 12px 32px rgba(0, 0, 0, 0.45);
+}
+
+/* ==========================================================================
+   Fondamenta
+   ========================================================================== */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+/* `hidden` deve vincere sul `display` dei componenti.
+   Senza questa riga una pastiglia o una scheda nascosta resta nel flusso a
+   altezza zero: si vede il bordo, e nei contenitori flex lascia un vuoto. */
+[hidden] {
+  display: none !important;
+}
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--fondo);
+  color: var(--ematossilina);
+  font-family: var(--f-testo);
+  font-size: var(--t-corpo);
+  line-height: 1.5;
+  /* Cifre a larghezza fissa ovunque: un conteggio che sale non deve ballare. */
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3 {
+  margin: 0;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+p {
+  margin: 0 0 var(--s3);
+}
+
+a {
+  color: var(--eosina);
+}
+
+/* Fuoco sempre visibile: la postazione si usa anche solo da tastiera, con il
+   lettore di codici a barre che chiude i campi con Invio. */
+:focus-visible {
+  outline: 2px solid var(--eosina);
+  outline-offset: 2px;
+  border-radius: var(--r1);
+}
+
+::selection {
+  background: var(--eosina-velo);
+}
+
+/* ==========================================================================
+   Primitive tipografiche
+   ========================================================================== */
+.etichetta {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ematossilina-tenue);
+}
+
+.cifra {
+  font-family: var(--f-strumenti);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+.hex {
+  font-family: var(--f-mono);
+  font-size: var(--t-piccolo);
+  letter-spacing: 0.02em;
+  /* `anywhere` e non `break-all`: un EPC di 24 cifre deve poter andare a capo,
+     ma un `0x08` in mezzo a una frase non deve spezzarsi in «0x0 / 8». */
+  overflow-wrap: anywhere;
+}
+
+.tenue {
+  color: var(--ematossilina-tenue);
+}
+
+/* ==========================================================================
+   Controlli
+   ========================================================================== */
+button,
+input,
+select,
+textarea {
+  font: inherit;
+  color: inherit;
+}
+
+.bottone {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: 10px var(--s4);
+  border: 1px solid var(--bordo-forte);
+  border-radius: var(--r2);
+  background: var(--superficie);
+  color: var(--ematossilina);
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--moto-breve) var(--curva),
+    border-color var(--moto-breve) var(--curva),
+    transform var(--moto-breve) var(--curva);
+}
+
+.bottone:hover:not(:disabled) {
+  background: var(--superficie-alt);
+  border-color: var(--ematossilina-debole);
+}
+
+.bottone:active:not(:disabled) {
+  transform: translateY(1px);
+}
+
+.bottone:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+/* Azione principale che NON tocca la radio: registrare, stampare, confermare.
+   Piena, ma in ematossilina. Se portasse l'eosina, il colore smetterebbe di
+   voler dire «il lettore sta trasmettendo» e non direbbe piu' niente. */
+.bottone--primario {
+  background: var(--ematossilina);
+  border-color: var(--ematossilina);
+  color: var(--superficie);
+}
+
+.bottone--primario:hover:not(:disabled) {
+  background: var(--ematossilina);
+  border-color: var(--ematossilina);
+  filter: brightness(1.15);
+}
+
+/* L'eosina e' solo di chi accende il trasmettitore. */
+.bottone--radio {
+  background: var(--eosina);
+  border-color: var(--eosina);
+  color: #fff;
+}
+
+.bottone--radio:hover:not(:disabled) {
+  background: var(--eosina);
+  border-color: var(--eosina);
+  filter: brightness(1.08);
+}
+
+:root[data-tema="scuro"] .bottone--radio,
+.bottone--radio {
+  color: #fff;
+}
+
+.bottone--sobrio {
+  background: transparent;
+  border-color: transparent;
+  color: var(--ematossilina-tenue);
+  font-weight: 500;
+}
+
+.bottone--sobrio:hover:not(:disabled) {
+  background: var(--superficie-alt);
+  border-color: var(--bordo);
+}
+
+.campo {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.campo > input,
+.campo > select,
+.campo > textarea {
+  padding: 9px var(--s3);
+  border: 1px solid var(--bordo-forte);
+  border-radius: var(--r2);
+  background: var(--superficie);
+  transition: border-color var(--moto-breve) var(--curva);
+}
+
+.campo > input:focus,
+.campo > select:focus,
+.campo > textarea:focus {
+  border-color: var(--eosina);
+  outline: none;
+  box-shadow: 0 0 0 3px var(--eosina-velo);
+}
+
+.campo > input[data-invalido="1"] {
+  border-color: var(--allarme);
+}
+
+.campo--mono > input {
+  font-family: var(--f-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+/* ==========================================================================
+   Superfici
+   ========================================================================== */
+.scheda {
+  background: var(--superficie);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r3);
+  box-shadow: var(--ombra-1);
+}
+
+.pastiglia {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 9px;
+  border-radius: 999px;
+  border: 1px solid var(--bordo-forte);
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.pastiglia--ok {
+  color: var(--conferma);
+  border-color: var(--conferma);
+  background: var(--conferma-velo);
+}
+
+.pastiglia--allarme {
+  color: var(--allarme);
+  border-color: var(--allarme);
+  background: var(--allarme-velo);
+}
+
+.pastiglia--attesa {
+  color: var(--attesa);
+  border-color: var(--attesa);
+  background: var(--attesa-velo);
+}
+
+.pastiglia--radio {
+  color: var(--eosina);
+  border-color: var(--eosina);
+  background: var(--eosina-velo);
+}
+
+/* ==========================================================================
+   Movimento
+
+   Chi ha chiesto meno animazioni ottiene gli stessi stati, senza il tragitto:
+   l'informazione non sta nel movimento, sta nel colore e nel testo.
+   ========================================================================== */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+  }
+}

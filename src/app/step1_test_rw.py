@@ -13,10 +13,11 @@ Esegue la sequenza:
 
 Uso:
   python -m app.step1_test_rw --config src/app/config.yaml
-  Opzioni: --skip-write --skip-epc --debug
+  Opzioni: --write --write-epc --debug (default: sola lettura)
 
 Exit code: 0 = completato, 1 = errore fatale (vedi campo "error" nel report).
 """
+
 from __future__ import annotations
 
 import argparse
@@ -30,10 +31,10 @@ import yaml
 
 # importa il package locale
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from rfid_silion.reader import reader_from_config
 from rfid_silion import protocol as P  # noqa: F401  (banche/comandi da config)
+from rfid_silion.diagnostics import checkpoint, setup_logging
 from rfid_silion.errors import SilionError
-from rfid_silion.diagnostics import setup_logging, checkpoint
+from rfid_silion.reader import reader_from_config
 
 
 def load_config(path: str) -> dict:
@@ -48,19 +49,27 @@ def hex2bytes(h: str) -> bytes:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Step 1 - test RFID parallelepipedo")
     ap.add_argument("--config", default=str(Path(__file__).with_name("config.yaml")))
-    ap.add_argument("--skip-write", action="store_true",
-                    help="non scrivere sul tag (solo lettura)")
-    ap.add_argument("--skip-epc", action="store_true",
-                    help="non scrivere l'EPC")
-    ap.add_argument("--debug", action="store_true",
-                    help="log DEBUG (dump esadecimale frame TX/RX)")
+    ap.add_argument(
+        "--write",
+        action="store_true",
+        help="abilita esplicitamente la scrittura USER (default: sola lettura)",
+    )
+    ap.add_argument(
+        "--write-epc", action="store_true", help="abilita esplicitamente la modifica EPC"
+    )
+    ap.add_argument("--skip-write", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--skip-epc", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--debug", action="store_true", help="log DEBUG (dump esadecimale frame TX/RX)")
     args = ap.parse_args()
 
     cfg = load_config(args.config)
     log_dir = Path(cfg.get("logging", {}).get("dir", "logs"))
-    setup_logging(level=cfg.get("logging", {}).get("level", "INFO"),
-                  log_dir=log_dir, file_prefix="step1",
-                  force_debug=args.debug)
+    setup_logging(
+        level=cfg.get("logging", {}).get("level", "INFO"),
+        log_dir=log_dir,
+        file_prefix="step1",
+        force_debug=args.debug,
+    )
     log = logging.getLogger("step1")
 
     r = cfg["reader"]
@@ -78,7 +87,6 @@ def main() -> int:
     reader = None
     try:
         with reader_from_config(cfg) as reader:
-
             # 1. boot
             log.info("=== 1. Boot firmware ===")
             info = reader.boot_firmware()
@@ -99,72 +107,88 @@ def main() -> int:
             log.info("=== 4. Diagnostica connessione antenne ===")
             try:
                 connected = reader.get_antenna_connection()
-                report["steps"].append({"step": "antenna_connection",
-                                        "ok": True, "connected": connected})
+                report["steps"].append(
+                    {"step": "antenna_connection", "ok": True, "connected": connected}
+                )
                 missing = [a for a in antennas if a not in connected]
                 if missing:
                     log.warning("Antenne non rilevate come connesse: %s", missing)
             except SilionError as e:
-                report["steps"].append({"step": "antenna_connection",
-                                        "ok": False, "error": str(e)})
+                report["steps"].append({"step": "antenna_connection", "ok": False, "error": str(e)})
                 log.warning("Get antenna connection non supportato: %s", e)
 
             # 5. inventory
             log.info("=== 5. Inventory sincrono (antenne %s) ===", antennas)
             reader.set_antennas_for_inventory([(a, a) for a in antennas])
-            tags = reader.inventory(timeout_ms=inv["timeout_ms"],
-                                    metadata_flags=inv["metadata_flags"])
-            report["steps"].append({
-                "step": "inventory",
-                "ok": True,
-                "tag_count": len(tags),
-                "tags": [t.__dict__ for t in tags],
-            })
+            tags = reader.inventory(
+                timeout_ms=inv["timeout_ms"], metadata_flags=inv["metadata_flags"]
+            )
+            report["steps"].append(
+                {
+                    "step": "inventory",
+                    "ok": True,
+                    "tag_count": len(tags),
+                    "tags": [t.__dict__ for t in tags],
+                }
+            )
             print(f"\n--- Inventory: {len(tags)} tag ---")
             for t in tags:
                 print(f"  {t}")
 
             if not tags:
-                log.warning("Nessun tag rilevato. Verificare la presenza di un tag "
-                            "nel parallelepipedo e le potenze.")
+                log.warning(
+                    "Nessun tag rilevato. Verificare la presenza di un tag "
+                    "nel parallelepipedo e le potenze."
+                )
                 report["steps"].append({"step": "no_tag", "ok": False})
+
+            unique_epcs = sorted({tag.epc for tag in tags})
+            safe_write_target = len(unique_epcs) == 1
+            if (args.write or args.write_epc) and not safe_write_target:
+                warning = (
+                    "Scrittura bloccata: serve esattamente un EPC nel campo; "
+                    f"rilevati {len(unique_epcs)}"
+                )
+                log.warning(warning)
+                report["steps"].append({"step": "write_safety", "ok": False, "error": warning})
 
             # 6. lettura USER
             log.info("=== 6. Lettura banca USER (addr 0, %d word) ===", ta["read_user_words"])
             pwd = hex2bytes(ta["access_password_hex"])
             read_res = reader.read_try_all_antennas(
-                antennas, ta["bank_user"], 0, ta["read_user_words"], pwd,
-                ta["timeout_ms"])
+                antennas, ta["bank_user"], 0, ta["read_user_words"], pwd, ta["timeout_ms"]
+            )
             report["steps"].append({"step": "read_user", "result": _ser(read_res)})
             _print_antenna_results("READ USER", read_res)
 
             # 7. scrittura USER + verifica
-            if not args.skip_write:
+            if args.write and not args.skip_write and safe_write_target:
                 wdata = hex2bytes(ta["write_data_hex"])
                 log.info("=== 7. Scrittura banca USER: %s ===", ta["write_data_hex"])
                 write_res = reader.write_try_all_antennas(
-                    antennas, ta["bank_user"], 0, wdata, pwd, ta["timeout_ms"])
+                    antennas, ta["bank_user"], 0, wdata, pwd, ta["timeout_ms"]
+                )
                 report["steps"].append({"step": "write_user", "result": _ser(write_res)})
                 _print_antenna_results("WRITE USER", write_res)
 
                 log.info("=== 7b. Rilettura di verifica ===")
                 verify = reader.read_try_all_antennas(
-                    antennas, ta["bank_user"], 0, len(wdata) // 2, pwd,
-                    ta["timeout_ms"])
-                report["steps"].append({"step": "verify_user",
-                                        "result": _ser(verify)})
+                    antennas, ta["bank_user"], 0, len(wdata) // 2, pwd, ta["timeout_ms"]
+                )
+                report["steps"].append({"step": "verify_user", "result": _ser(verify)})
                 _print_antenna_results("VERIFY USER", verify)
                 # confronto
                 expected = wdata.hex().upper()
                 for ant, res in verify.items():
                     if res["ok"]:
                         got = res["data"].hex().upper()
-                        res["match"] = (got == expected)
-                        log.info("Ant %d: scritto=%s letto=%s match=%s",
-                                 ant, expected, got, res["match"])
+                        res["match"] = got == expected
+                        log.info(
+                            "Ant %d: scritto=%s letto=%s match=%s", ant, expected, got, res["match"]
+                        )
 
             # 8. scrittura EPC (opzionale)
-            if not args.skip_epc and tags:
+            if args.write_epc and not args.skip_epc and safe_write_target:
                 # incrementa ultimo byte dell'EPC corrente per test
                 cur = bytes.fromhex(tags[0].epc)
                 new_epc = bytearray(cur)
@@ -172,11 +196,11 @@ def main() -> int:
                 log.info("=== 8. Write EPC -> %s ===", new_epc.hex().upper())
                 try:
                     reader.write_tag_epc(bytes(new_epc), pwd, ta["timeout_ms"])
-                    report["steps"].append({"step": "write_epc", "ok": True,
-                                            "new_epc": new_epc.hex().upper()})
+                    report["steps"].append(
+                        {"step": "write_epc", "ok": True, "new_epc": new_epc.hex().upper()}
+                    )
                 except SilionError as e:
-                    report["steps"].append({"step": "write_epc", "ok": False,
-                                            "error": str(e)})
+                    report["steps"].append({"step": "write_epc", "ok": False, "error": str(e)})
                     log.warning("Write EPC fallita: %s", e)
 
     except Exception as e:
@@ -191,8 +215,7 @@ def main() -> int:
         log_dir.mkdir(parents=True, exist_ok=True)
         with open(out, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False, default=str)
-        checkpoint(log, "step1_done", ok=("error" not in report),
-                   report=out.name)
+        checkpoint(log, "step1_done", ok=("error" not in report), report=out.name)
         print(f"\nReport salvato in: {out}")
     return 1 if "error" in report else 0
 

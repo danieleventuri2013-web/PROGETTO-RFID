@@ -3,6 +3,357 @@
 Formato ispirato a [Keep a Changelog](https://keepachangelog.com/it/1.1.0/).
 Sezioni: Added / Changed / Fixed / Security / Diagnostics / Documentation.
 
+## [Unreleased]
+
+### Added — interfaccia operativa nel browser (`src/webui/`)
+
+- **`python run.py webui`**: la postazione di lavoro, che sostituisce le due GUI
+  Tkinter nell'uso quotidiano (restano come strumenti da banco). Sola libreria
+  standard: nessuna dipendenza nuova, nessun CDN, nessun carattere scaricato,
+  nessuna compilazione — il laboratorio è isolato e deve restarlo.
+- **Due canali distinti, di proposito.** `POST /rpc` passa il corpo a
+  `RFIDRPCDispatcher` così com'è, riusando validazione, negoziazione di versione e
+  mappatura degli errori già collaudate; `POST /api/<operazione>` va al livello di
+  flusso sopra `lims.*`; `GET /api/eventi` è SSE.
+- **Una sola operazione radio alla volta**, con `409` a chi arriva mentre è
+  occupato — non una coda: metterla in coda farebbe credere all'operatore di aver
+  avviato qualcosa che parte dopo, su un tag che nel frattempo ha tolto dal piatto.
+  Le operazioni che non toccano la radio restano disponibili durante un sigillo.
+- **Solo `127.0.0.1` e solo con token** rigenerato a ogni avvio, come prescrive
+  `docs/CONTRATTO_SERVICE.md` per qualunque adapter HTTP.
+- **La scena del banco**: disegno SVG della postazione che cambia stato insieme al
+  lavoro e *costituisce* l'istruzione. Nessun fotogramma parte da un timer: ogni
+  stato corrisponde a un passo realmente riportato dal backend. Dopo una scrittura
+  riuscita l'interfaccia non avanza a tempo — aspetta che la sorveglianza del
+  piatto veda il tag andarsene.
+- **La postazione sorveglia il piatto**: nessun pulsante per dire «l'ho appoggiato».
+  La lettura serve comunque, perché la guardia di scrittura pretende un inventory
+  con un tag solo.
+- Schermate: accettazione, sigillo (conteggio `trovati / attesi` in evidenza, mai
+  verde se i due numeri non coincidono), ricezione (tre errori distinti per la
+  distinta, avvertenze sanitarie *prima* di aprire la scatola), strumenti
+  (potenze, Gen2, profilazione tag, campagna guidata in tre passi, e il grafico
+  del return loss per frequenza con la banda ETSI marcata e la soglia VSWR — è il
+  disegno da portare al fornitore delle antenne), registro e parco tag.
+- Anteprima e stampa dell'etichetta subito dopo la scrittura, con il contenitore
+  ancora in mano. L'anteprima mostra i dati e lo ZPL sorgente, dichiarando di non
+  essere un'anteprima di stampa: nel browser lo ZPL non si rasterizza, e un
+  disegno inventato sarebbe peggio.
+- `src/tests/test_webui.py`: 21 test che parlano al server via HTTP vero, come farà
+  il browser — percorso completo dall'accettazione alla riconciliazione compreso.
+
+### Added — anagrafiche, archivio pazienti, annullo
+
+- **Impostazioni → Questo laboratorio**: nome, sigla, indirizzo, telefono, email e
+  referente. La sigla compare in alto, il nome sulle etichette e nella distinta.
+  `lims.lab_name` continua a funzionare come ripiego: le configurazioni installate
+  non perdono il nome stampato.
+- **Impostazioni → Operatori**: elenco di chi puo' lavorare alla postazione. In
+  alto si sceglie da un menu invece di digitare, e un nome fuori elenco viene
+  rifiutato — il registro deve poter dire chi ha scritto un tag anche fra due
+  anni, e un nome scritto a mano ogni volta diverso lo rende inutilizzabile.
+  Si mostra la **sigla**, o il **cognome** se la sigla manca.
+- **Impostazioni → Laboratori destinatari**: riempiono il menu a tendina del
+  sigillo (prima era un campo libero) e la loro email prepara il messaggio di
+  spedizione. Due voci con la stessa identita' vengono rifiutate: nel menu
+  sarebbero indistinguibili.
+- **«Prepara l'email al destinatario»**: apre il programma di posta con indirizzo,
+  oggetto e testo gia' scritti. **Dichiara che l'allegato va messo a mano**, perche'
+  una pagina web non puo' allegare un file — dirlo dopo significherebbe una mail
+  vuota gia' partita. Nel corpo non finisce nessun dato di paziente.
+- **Testata divisa in tre zone** con filetti veri: laboratorio, operatore in
+  servizio, stato del lettore. Senza operatore scelto il menu si colora d'ambra.
+- **Archivio pazienti** (nuova schermata): ricerca unica su cognome, nome, codice
+  fiscale o numero di accettazione, e per ogni accettazione **quanti pezzi, quanti
+  scritti, quanti spediti, dove, quando (data e ora), chi ha supervisionato e con
+  che esito il sigillo**. Il verdetto «tutto a buon fine» ha un significato preciso:
+  ogni contenitore attivo scritto, partito, e sigillo completo. `traccia_contenitore`
+  risale da un EPC al paziente e a ogni operazione registrata, per una verifica
+  esterna.
+- **Schema archivio v3**: `shipments` guadagna `operator`, `sealed_at`, `sent_at`,
+  `sealing_ok`, `sealing_detail`. Prima quei dati stavano solo in `tag_events`,
+  mescolati a tutto il resto: se un'autorita' chiede conto di un campione la
+  risposta deve stare in una riga, non in una ricostruzione.
+  La migrazione e' scritta come funzione e aggiunge **solo le colonne mancanti**:
+  `ALTER TABLE ADD COLUMN` non e' ripetibile, e uno script interrotto a meta'
+  avrebbe impedito per sempre di riaprire l'archivio.
+- **«Annulla l'accettazione»** nella postazione di scrittura. Annulla i contenitori
+  non ancora scritti e torna al modulo; **quelli gia' scritti restano**, perche' il
+  tag e' scritto una volta sola e quei contenitori esistono ormai nel mondo fisico,
+  con l'etichetta addosso. Il dialogo lo dice prima di procedere.
+- **Date e ore in formato italiano** in tutta l'interfaccia (`16/08/2026, 19:13`).
+  L'archivio continua a conservare ISO 8601, che e' giusto per un file.
+
+### Fixed — due interfacce sulla stessa porta
+
+**La causa vera dei «token non valido» inspiegabili.** `HTTPServer` imposta
+`SO_REUSEADDR`, e **su Windows quel flag permette a un secondo processo di legarsi
+a una porta gia' occupata** invece di fallire. Avviando l'interfaccia due volte
+restavano due server vivi sulla 8770, ognuno con il suo token: il browser finiva
+su uno dei due a caso e l'indirizzo stampato dall'altro veniva rifiutato. Sembrava
+un problema di token, ed era un problema di porta.
+
+- La porta ora e' **esclusiva** (`SO_EXCLUSIVEADDRUSE` su Windows,
+  `allow_reuse_address = False` ovunque): la seconda istanza non parte.
+- `run.py webui` prende la porta **prima** di annunciare l'indirizzo, e se e'
+  occupata spiega cosa fare invece di stampare un indirizzo che non funzionera'.
+- L'indirizzo attivo viene scritto in `logs/webui_url.txt` e rimosso alla chiusura:
+  se la finestra del terminale viene chiusa per sbaglio, resta un posto dove leggerlo.
+- **`webui.token` in `config.yaml`**: token fisso opzionale. Vuoto (predefinito) ne
+  genera uno nuovo a ogni avvio; valorizzato rende l'indirizzo stabile, così su una
+  postazione dedicata si puo' tenere un collegamento sul desktop.
+
+### Fixed — un token scaduto adesso si spiega
+
+- **Il token cambia a ogni avvio**, quindi un indirizzo salvato nei preferiti non
+  funziona più. La pagina si caricava lo stesso (non è segreta: è il *comando* a
+  essere protetto) e poi falliva una chiamata alla volta con un avviso criptico.
+  Ora un `401` porta una schermata che copre tutto e dice cosa fare; senza token
+  nell'indirizzo compare subito, senza nemmeno provare.
+- Il flusso SSE si chiude invece di ritentare all'infinito contro un token rifiutato.
+- **Metodi HTTP non previsti** (i browser mandano `OPTIONS` da soli, per estensioni
+  o service worker) ricevevano la pagina `501` in inglese della libreria standard,
+  che sembra un guasto del lettore. Ora è un `405` con la spiegazione.
+- `run.py webui` stampa l'indirizzo con `flush=True` e dentro una cornice: senza,
+  avviando da `.bat` o da un IDE lo stdout resta nel buffer e l'indirizzo compare
+  solo alla chiusura del programma — cioè quando non serve più.
+
+### Added — schermata Impostazioni
+
+- **Collegamento al lettore**: seriale con elenco delle porte di sistema
+  (`serial.tools.list_ports`) e riconoscimento di quella probabile, oppure TCP/IP.
+  Su USB la baseboard si presenta come porta seriale: **USB e RS232 sono lo stesso
+  trasporto** e l'interfaccia lo dice, invece di offrire una terza voce finta.
+- L'API **HTTP+JSON** dei firmware recenti compare come scheda esplicitamente non
+  disponibile: esiste nel manuale ma `HttpTransport` non c'è, e nasconderla farebbe
+  cercare all'operatore una voce che il manuale promette.
+- «Collega con questi parametri» è stop → `replace_config` → `start`, ed è **anche
+  la prova del collegamento**: se il lettore risponde con la sua versione, cavo e
+  parametri sono giusti.
+- «Salva come predefinito» riscrive `config.yaml` con scrittura in due tempi
+  (file temporaneo + `replace`): un'interruzione a metà lascia la configurazione
+  vecchia, non nessuna configurazione. La sezione di trasporto inattiva viene
+  parcheggiata come `serial_disabled`/`tcp_disabled`, perché il trasporto si sceglie
+  per presenza della chiave e lasciarle entrambe ne sceglierebbe una a caso.
+- **Avanzate**: banda di lavoro (comando `0x97`) con avvertenza esplicita che in
+  Italia l'unica ammessa è 865–868 MHz e conferma obbligatoria per qualunque altra;
+  risparmio energetico, permanenza per antenna, duty cycle, filtro RSSI e modo di
+  riporto, parametri di inventory, timeout del driver e potenza massima.
+- **`ReaderTuning.duty_cycle_full_ms` / `duty_cycle_period_ms`**: `set_duty_cycle`
+  esisteva nel driver ma non era raggiungibile da nessuna interfaccia. I due valori
+  si impostano insieme, e la coppia incompleta viene rifiutata invece che ignorata.
+
+### Changed — la calibrazione spiega cosa fa
+
+Ogni scheda di **Strumenti** dice ora cosa misura, come si esegue la prova e come
+si legge il risultato: perché la potenza più bassa è quella giusta, cosa sono
+sessione/target/Q/modalità RF in parole piane, perché la profilazione dei tag va
+fatta per prima e con un tag solo, perché i tag di controllo *fuori* dal contenitore
+non sono facoltativi, e come si legge il grafico del return loss.
+
+### Added — il filtro Select arriva fino al contratto del servizio
+
+- `ReadRequest.select_epc` → `read_try_all_antennas(select_epc=)`. Prima il filtro
+  esisteva solo in `reader.read_tag_data` e non era raggiungibile da `lims`.
+- **`TagIO.survey_field` ora legge il payload di ogni tag anche con la scatola
+  piena**, isolandolo per EPC. Prima si arrendeva con più di un tag nel campo, e il
+  laboratorio destinatario poteva contare i contenitori ma non sapere *cosa* fosse
+  arrivato — che era metà del motivo per cui i dati viaggiano nel tag.
+  Senza filtro il comando colpisce il primo tag che risponde: il payload finirebbe
+  attribuito al contenitore sbagliato, e il conteggio tornerebbe lo stesso.
+
+### Changed
+
+- `LimsDatabase(single_thread=False)` per l'uso da più thread, che serve al server
+  HTTP. Chi lo disattiva si prende l'onere di serializzare le sequenze:
+  `webui.workflow` lo fa con un lock sulle operazioni che scrivono più righe.
+- `TagIO.provision(on_step=…)`: i passi si possono seguire mentre accadono invece
+  di ricostruirli dopo da `ProvisionResult.steps`.
+- `geometry.antenna_positions_mm` in `config.yaml`: la scena disegna il banco vero
+  (tre antenne a pavimento), non un montaggio ideale.
+- `AVVIA.bat` / `avvia.sh`: l'interfaccia operativa diventa la voce principale.
+
+### Added — affidabilità di lettura e flusso operativo completo
+
+- **Leve radio nel driver**, tutte assenti prima e tutte verificate byte per byte
+  contro gli esempi del manuale EX10 2024-12:
+  - formato esteso «Moduletech» (`build_extended_packet`/`parse_extended_response`).
+    Il SubCRC non è documentato come formula: ricavato dagli esempi (somma dei byte
+    modulo 256) e riprodotto su tutti e cinque, che i test conservano come casi noti;
+  - `0x9B` parametri Gen2: session, target con ribaltamento automatico A↔B, Q,
+    e **RF MODE `0x71` (−93 dBm, 5 dB in più del default)**, con rilettura di
+    conferma perché il manuale avverte che una modalità non supportata viene
+    accettata e poi silenziosamente sostituita;
+  - `0xAA4A` diagnostica antenna: return loss per frequenza e VSWR. È lo strumento
+    che misura quanto le antenne siano disadattate in banda EU invece di dedurlo;
+  - `0xAA58`/`0xAA59` inventory asincrono in modalità tag densi, con il ciclo di
+    ascolto dei pacchetti auto-caricati;
+  - **filtro Select** su `read_tag_data`/`write_tag_data`: si punta un EPC preciso
+    anche con altri tag nel campo;
+  - **embedded read** nell'inventory: la memoria di *tutti* i tag in un giro solo;
+  - `0x95`, `0x98`, `0x9A`, `0xAA5B`: le impostazioni che, lasciate al valore di
+    fabbrica, sabotano in silenzio la lettura ripetuta.
+- **`lims.sealing`** — certificazione del contenuto di una scatola alla chiusura.
+  Verifica a insieme chiuso contro la distinta, passate multiple che variano
+  potenza, antenne, sessione e modalità RF per decorrelare i fallimenti, criterio
+  di arresto esplicito e record di sigillo con l'evidenza per tag. La promessa che
+  regge tutto: **non dichiarare mai completo un insieme che non lo è.**
+- **`lims.campaign`** e `run.py campaign` — taratura sui dati con due obiettivi
+  opposti: massimo dentro il contenitore, **zero fughe** dai tag di controllo
+  posti fuori. La configurazione consigliata è la potenza più bassa che legge
+  tutto senza leggere il tavolo accanto.
+- **`lims.labels`** — etichette ZPL con Data Matrix dell'EPC; è l'unica parte
+  leggibile senza lettore RFID. Interfaccia astratta di stampa, con invio TCP 9100
+  e scrittura su file per l'anteprima.
+- **`lims.manifest`** — distinta di spedizione cifrata (AES-256-GCM, nonce
+  esplicito) e riconciliazione all'arrivo, dove un contenitore inatteso conta
+  quanto uno mancante.
+- **Tag sul coperchio**: schema EPC dedicato per l'identità della scatola. Il
+  sigillo lo riconosce, non lo conta fra i contenitori e non lo scambia per un
+  intruso; due coperchi nel campo invalidano il sigillo.
+- **Scrittura unica, annullamento e sostituzione** (schema DB v2): un tag scritto
+  non si riscrive salvo autorizzazione esplicita che lascia traccia; un contenitore
+  rotto o un tag guasto si annullano e si sostituiscono **alla stessa posizione**
+  «n di N»; un EPC non torna mai disponibile.
+- **Variazione del numero di contenitori in corso d'opera**: si corregge
+  liberamente ciò che non è ancora scritto, e le discrepanze sui già scritti
+  vengono elencate invece che nascoste. La conferma si chiede alla **prima
+  scrittura**, quando l'operatore ha i campioni davanti.
+- Terza schermata in `run.py lims`: sigillo, spedizione, esportazione della
+  distinta; e importazione con riconciliazione in ricezione.
+- `docs/AFFIDABILITA_LETTURA.md`.
+
+### Changed
+- `SERVICE_API_VERSION` a **1.2** (`configure_gen2`, `tune_reader`,
+  `antenna_diagnostics`), sempre in modo additivo.
+- `TagReadAccumulator` conta i cicli e traccia `first_seen_cycle`: da lì il tasso
+  di rilevamento per tag.
+- `parse_tag_record` estratta da `parse_tag_buffer` per riusarla sui pacchetti
+  asincroni invece di duplicare il parser più delicato del driver.
+- `survey_field(expected_epcs=…)` confronta con la distinta: senza, un'accettazione
+  di cui non arriva **nessun** contenitore restava invisibile.
+- `config.yaml` allineato al montaggio reale del prototipo: tre antenne a
+  pavimento, 1 e 2 in lettura con il contenitore sopra, 3 per la scrittura.
+
+### Added — tracciabilità campioni (`src/lims/`)
+- Nuovo pacchetto `lims`, client del solo contratto `RFIDService`: non importa
+  mai `reader`, `protocol` o `transports`. Porta i dati di paziente, reperto e
+  contenitore **dentro il tag**, così che un campione arrivi al laboratorio
+  successivo autosufficiente, senza rete condivisa né database spedito a parte.
+- `lims.codec`: schema binario versionato. EPC pseudonimo di 12 byte in chiaro
+  (laboratorio, accettazione, *n* di *N*, coda casuale) e payload del campione.
+  Codice fiscale di 16 caratteri impacchettato in 11 byte in base 36, con
+  verifica del carattere di controllo. Codebook di materiali, fissativi e sedi.
+- `lims.crypto`: sigillo AES-256-GCM del payload. Il nonce deriva da EPC e
+  revisione invece di occupare spazio sul tag; i dati autenticati comprendono il
+  **TID**, l'identificativo di fabbrica non riscrivibile, così che un tag clonato
+  su un chip diverso non superi la verifica. Portachiavi con `key_id` per la
+  rotazione, tenuto fuori dal database e fuori dai log.
+- `lims.db`: archivio SQLite (pazienti, accettazioni, reperti, contenitori,
+  spedizioni, traccia delle operazioni). Il vincolo `UNIQUE` su `containers.epc`
+  è il registro di unicità che `generate_epc` non può garantire da solo.
+- `lims.tagio`: orchestrazione. `provision()` segue l'ordine imposto dalle
+  guardie del servizio (inventory → TID → cambio EPC → inventory → payload →
+  verifica), spezzando la scrittura in blocchi da 64 byte quando serve.
+  `survey_field()` legge un carico e segnala i contenitori mancanti **dal solo
+  EPC**, senza bisogno della chiave.
+- `lims.profiler` e `python run.py tag-profile`: nel progetto non è mai entrato
+  un datasheet dei tag, e la capacità dipende dal chip. Il comando legge il TID
+  (costruttore e modello secondo ISO/IEC 15963) e **misura** la USER memory per
+  ricerca binaria, con verdetto sull'idoneità. Non richiede modifiche al driver.
+- `app/lims_gui.py` e `python run.py lims`: schermata di **accettazione**
+  (registrazione paziente/reperto e scrittura guidata, un contenitore per volta)
+  e di **ricezione** (lettura del volume con evidenza dei contenitori mancanti e
+  dei tag non riconosciuti).
+- `docs/SCHEMA_DATI_TAG.md`: il contratto verso il laboratorio destinatario.
+
+### Added — driver
+- Comando **Lock Tag `0x25`** (`protocol.build_lock_bits`, `reader.lock_tag`,
+  `service.lock`, `rfid.lock`), con la disposizione dei bit presa dalla Figura 6
+  del manuale EX10 2024-12 §6.3. Il manuale vieta l'opzione `0x05` per questo
+  comando: si usa `0x00`. Le operazioni permanenti richiedono
+  `allow_permanent=true`, perché non sono annullabili da nessuna password.
+- `TagIO.set_access_password()`: scrive la password nella banca RESERVED al
+  posto del valore di fabbrica `00000000`. Il lock da solo non basta, perché si
+  sblocca con la password.
+
+### Changed
+- `SERVICE_API_VERSION` passa a **1.1** (aggiunta puramente additiva di `lock`).
+  Il controllo di versione in `rpc.py` non è più a uguaglianza esatta: un client
+  che dichiara `"1.0"` resta servito, come il contratto promette per le 1.x.
+  Prima il solo passaggio a 1.1 li avrebbe respinti tutti.
+- Nuova dipendenza `cryptography`; sezione `lims:` in `config.yaml`.
+
+### Added
+- `rfid_silion.service`: confine black box API 1.0 con DTO JSON-safe,
+  lifecycle idempotente, health, snapshot ed eventi sequenziali.
+- Contratto `docs/CONTRATTO_SERVICE.md` per la futura integrazione nel framework
+  principale tramite adapter di processo/HTTP/IPC.
+- `RFIDRPCDispatcher`: adapter JSON-RPC 2.0 trasporto-agnostico con discovery,
+  negoziazione API, batch, notification ed errori standard.
+- `service_host.py` e `python run.py service`: processo locale JSON Lines su
+  stdin/stdout, con log separati su stderr/file.
+- `RFIDProcessClient`: adapter Python sincrono che gestisce il subprocess,
+  negozia API 1.0 e implementa `RFIDBackend` per framework e GUI condivisa.
+- `EventRequest` e `RFIDBackend.events()`: polling uniforme con cursore,
+  limiti della cronologia e rilevamento esplicito degli eventi persi.
+- `avvia_service_rfid.bat` e `testa_service_hardware.bat`: avvio service
+  e smoke test hardware in sola lettura con report JSONL.
+- `avvia_test_grafico_rfid.bat` e `python run.py service-gui`: banco prova
+  grafico collegato a un processo service separato.
+- `EpcGenerationRequest` / `WriteEpcRequest` e RPC `generate_epc` /
+  `write_epc`: candidato EPC casuale e cambio EPC protetto con verifica richiesta.
+- Test headless del service, del canale RPC e del client subprocess; suite portata
+  a 56 test.
+- Piano di collaudo hardware black-box per seriale/TCP, prove negative,
+  sicurezza write, stabilità ed architettura GUI a singolo owner.
+
+### Changed
+- La GUI offre elenco porte COM aggiornabile con campo manuale e controlli EPC
+  manuale/AUTO; AUTO compila soltanto il candidato e la scrittura resta separata,
+  confermata e verificata.
+- La GUI dipende esclusivamente da `RFIDService` per connessione, configurazione,
+  inventory, read/write, verifica e diagnostica; non usa più direttamente
+  protocollo, trasporti o `SIM7200Reader`.
+- `RFIDBackend` e `RFIDServiceBinding` introducono backend iniettabile e
+  ownership lifecycle owned/shared; la GUI aperta dal framework usa la stessa
+  istanza e non chiude né duplica il trasporto.
+- Le scritture del service richiedono un `expected_epc` e un ultimo inventory
+  contenente esclusivamente quel tag; la GUI ripete un inventory di sicurezza
+  immediatamente prima della scrittura.
+- `run.py tests` include i test del contratto JSON-RPC e dell'host JSONL.
+## [0.3.0] — 2026-07-22
+
+### Added
+- Packaging e toolchain in `pyproject.toml`: metadati installabili, dipendenze
+  di sviluppo, Ruff, pytest e branch coverage minima 65%.
+- CI GitHub Actions su Windows/Linux e Python 3.10/3.13.
+- `TagReadAccumulator`: aggregazione incrementale con limite configurabile
+  degli EPC per sessioni inventory lunghe.
+- Test dedicati ai trasporti seriale/TCP; suite portata a 32 test.
+
+### Changed
+- GUI con executor I/O singolo e coda thread-safe verso Tkinter; inventory
+  singolo, continuo o temporizzato, selezione antenne e stop esplicito.
+- `run.py` non installa o aggiorna più pacchetti implicitamente; usare
+  `--install-deps` per autorizzare l'installazione delle sole dipendenze mancanti.
+- Step 1 è read-only per default; `--write` e `--write-epc` abilitano
+  esplicitamente le operazioni distruttive.
+- Regione selezionabile dalla GUI limitata a EU `0x08`.
+
+### Fixed
+- Disconnessione TCP distinta da un normale timeout; errori seriali/TCP
+  normalizzati e conteggiati separatamente.
+- Timeout boot/risposta applicati al trasporto e limite di potenza configurato
+  applicato dal driver.
+- Validazione rigorosa delle risposte antenna, inventory e read, e dei buffer
+  tag troncati, disallineati o con byte residui.
+- Health check con inventory opzionale: gli errori dell'inventory non vengono
+  più classificati come errori di connessione.
+- Chiusura GUI ordinata e nessun accesso ai widget Tk dai worker.
+- Scritture GUI/Step 1 bloccate senza una sessione inventory con un solo EPC;
+  conferma esplicita in GUI.
+
 ## [0.2.0] — 2026-07-09 (branch `feature/diagnostics-logging-documentation`)
 
 Revisione per controllabilità, manutenibilità e diagnosticabilità.

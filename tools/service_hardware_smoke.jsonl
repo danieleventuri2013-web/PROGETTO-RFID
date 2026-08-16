@@ -1,0 +1,8 @@
+{"jsonrpc":"2.0","id":"describe","method":"rfid.describe","params":{}}
+{"jsonrpc":"2.0","id":"start","api_version":"1.0","method":"rfid.start","params":{}}
+{"jsonrpc":"2.0","id":"configure","api_version":"1.0","method":"rfid.configure","params":{"region":8,"powers":[{"antenna_id":1,"read_power_cdbm":1900,"write_power_cdbm":2000},{"antenna_id":2,"read_power_cdbm":2000,"write_power_cdbm":2000},{"antenna_id":3,"read_power_cdbm":2000,"write_power_cdbm":2000}]}}
+{"jsonrpc":"2.0","id":"health","api_version":"1.0","method":"rfid.health","params":{"check_antennas":true}}
+{"jsonrpc":"2.0","id":"inventory","api_version":"1.0","method":"rfid.inventory","params":{"antennas":[1,2,3],"timeout_ms":1000,"metadata_flags":7}}
+{"jsonrpc":"2.0","id":"snapshot","api_version":"1.0","method":"rfid.snapshot","params":{}}
+{"jsonrpc":"2.0","id":"events","api_version":"1.0","method":"rfid.events","params":{"after_sequence":0}}
+{"jsonrpc":"2.0","id":"stop","api_version":"1.0","method":"rfid.stop","params":{}}

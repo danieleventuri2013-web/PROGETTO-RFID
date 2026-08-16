@@ -1,0 +1,1926 @@
+/* ==========================================================================
+   Componenti e schermate. Il vocabolario (colori, caratteri, misure) sta in
+   tema.css; qui si costruisce soltanto.
+   ========================================================================== */
+
+body {
+  display: grid;
+  grid-template-columns: var(--rail) 1fr;
+  grid-template-rows: var(--testa) 1fr;
+  grid-template-areas:
+    "testa testa"
+    "rail  palco";
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* ==========================================================================
+   Testata
+   ========================================================================== */
+.testa {
+  grid-area: testa;
+  display: flex;
+  align-items: stretch;
+  background: var(--superficie);
+  border-bottom: 1px solid var(--bordo);
+}
+
+/* Tre zone divise da filetti veri: laboratorio, operatore, lettore sono tre
+   informazioni indipendenti, e affiancarle senza stacco le fa leggere come una
+   riga sola di cui non si capisce dove finisce una e comincia l'altra. */
+.testa__zona {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  padding: 0 var(--s4);
+  min-width: 0;
+}
+
+.testa__zona--laboratorio {
+  flex: 0 1 auto;
+  border-right: 1px solid var(--bordo);
+}
+
+.testa__zona--operatore {
+  flex: 0 0 auto;
+  border-right: 1px solid var(--bordo);
+}
+
+.testa__zona--lettore {
+  flex: 1 1 auto;
+  justify-content: flex-end;
+}
+
+.testa__lab {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 0;
+  line-height: 1.2;
+}
+
+.testa__lab b {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-medio);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.testa__lab small {
+  font-size: var(--t-micro);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.testa__zona--operatore select {
+  padding: 5px var(--s2);
+  border: 1px solid var(--bordo-forte);
+  border-radius: var(--r1);
+  background: var(--superficie-alt);
+  font-family: var(--f-strumenti);
+  font-size: var(--t-piccolo);
+  letter-spacing: 0.06em;
+  max-width: 180px;
+}
+
+/* Nessun operatore scelto: si vede, perché ogni scrittura finirà a registro
+   senza un nome accanto. */
+.testa__zona--operatore select[data-vuoto="1"] {
+  border-color: var(--attesa);
+  color: var(--attesa);
+}
+
+.marchio {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-width: 0;
+}
+
+/* Il segno del marchio e' un vetrino colorato: viola in alto, rosa in basso.
+   Ematossilina ed eosina, nell'ordine in cui si usano al banco. */
+.marchio__segno {
+  width: 6px;
+  height: 26px;
+  border-radius: 3px;
+  background: linear-gradient(180deg, var(--ematossilina) 0 55%, var(--eosina) 55% 100%);
+  flex: none;
+}
+
+.marchio__nome {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-medio);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.testa__contesto {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  margin-left: auto;
+}
+
+.testa__operatore {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.testa__operatore input {
+  width: 96px;
+  padding: 5px var(--s2);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r1);
+  background: var(--superficie-alt);
+  font-family: var(--f-mono);
+  font-size: var(--t-piccolo);
+  text-transform: uppercase;
+}
+
+.testa__azioni {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.spia {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+/* Solo lo stato "in attivita'" pulsa, e pulsa in eosina: e' il campo acceso. */
+.pastiglia[data-stato="attivo"] {
+  color: var(--eosina);
+  border-color: var(--eosina);
+  background: var(--eosina-velo);
+}
+
+.pastiglia[data-stato="attivo"] .spia {
+  animation: battito 1.1s var(--curva) infinite;
+}
+
+.pastiglia[data-stato="pronto"] {
+  color: var(--conferma);
+  border-color: var(--conferma);
+  background: var(--conferma-velo);
+}
+
+.pastiglia[data-stato="errore"] {
+  color: var(--allarme);
+  border-color: var(--allarme);
+  background: var(--allarme-velo);
+}
+
+@keyframes battito {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.35; transform: scale(0.7); }
+}
+
+/* ==========================================================================
+   Barra delle sezioni
+   ========================================================================== */
+.rail {
+  grid-area: rail;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: var(--s3) var(--s2);
+  background: var(--fondo-alt);
+  border-right: 1px solid var(--bordo);
+  overflow-y: auto;
+}
+
+.rail__voce {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: var(--s3) 2px;
+  border: 0;
+  border-radius: var(--r2);
+  background: transparent;
+  color: var(--ematossilina-tenue);
+  font-family: var(--f-strumenti);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--moto-breve) var(--curva), color var(--moto-breve) var(--curva);
+}
+
+.rail__voce svg {
+  width: 22px;
+  height: 22px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.6;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.rail__voce:hover {
+  background: var(--superficie);
+  color: var(--ematossilina);
+}
+
+.rail__voce[aria-current="page"] {
+  background: var(--superficie);
+  color: var(--ematossilina);
+  box-shadow: inset 3px 0 0 var(--eosina);
+}
+
+/* ==========================================================================
+   Palco e schermate
+   ========================================================================== */
+.palco {
+  grid-area: palco;
+  overflow-y: auto;
+  padding: var(--s5);
+}
+
+.schermata {
+  display: none;
+  max-width: 1180px;
+  margin: 0 auto;
+}
+
+.schermata--attiva {
+  display: block;
+  animation: entra var(--moto-medio) var(--curva);
+}
+
+@keyframes entra {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: none; }
+}
+
+.pannello {
+  padding: var(--s5);
+  margin-bottom: var(--s5);
+  background: var(--superficie);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r3);
+  box-shadow: var(--ombra-1);
+}
+
+.pannello--nascosto {
+  display: none;
+}
+
+.pannello__testa {
+  margin-bottom: var(--s5);
+}
+
+.pannello__testa h2 {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-titolo);
+  letter-spacing: 0.02em;
+}
+
+.pannello__testa p {
+  margin: var(--s1) 0 0;
+}
+
+/* ==========================================================================
+   Modulo di accettazione
+   ========================================================================== */
+.modulo__griglia {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: var(--s4);
+}
+
+.modulo__largo {
+  grid-column: span 2;
+}
+
+/* Una griglia con pochi campi: senza questo l'unico campo si stira per tutta la
+   larghezza del pannello e sembra un errore di impaginazione. */
+.modulo__griglia--corta {
+  grid-template-columns: repeat(auto-fit, minmax(210px, 300px));
+  justify-content: start;
+}
+
+.campo__nota {
+  font-size: var(--t-micro);
+}
+
+.avvertenze {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin: var(--s5) 0 0;
+  padding: 0;
+  border: 0;
+}
+
+.avvertenze legend {
+  padding: 0 0 var(--s2);
+}
+
+.interruttore {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px var(--s3);
+  border: 1px solid var(--bordo-forte);
+  border-radius: 999px;
+  font-size: var(--t-piccolo);
+  cursor: pointer;
+  transition: border-color var(--moto-breve) var(--curva), background var(--moto-breve) var(--curva);
+}
+
+.interruttore:has(input:checked) {
+  border-color: var(--attesa);
+  background: var(--attesa-velo);
+  color: var(--attesa);
+  font-weight: 600;
+}
+
+.interruttore input {
+  accent-color: var(--attesa);
+}
+
+/* -- Il conteggio: il dato che l'operatore sbaglia piu' spesso ------------- */
+.conteggio {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--s5);
+  margin-top: var(--s5);
+  padding: var(--s4);
+  background: var(--attesa-velo);
+  border: 1px solid var(--attesa);
+  border-radius: var(--r2);
+}
+
+.conteggio__riga {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  margin-top: 6px;
+}
+
+.conteggio__numero {
+  width: 92px;
+  padding: 6px var(--s2);
+  border: 1px solid var(--bordo-forte);
+  border-radius: var(--r2);
+  background: var(--superficie);
+  font-size: 2.25rem;
+  line-height: 1.1;
+  text-align: center;
+}
+
+.conteggio__numero::-webkit-outer-spin-button,
+.conteggio__numero::-webkit-inner-spin-button {
+  appearance: none;
+  margin: 0;
+}
+
+.conteggio__passo {
+  width: 40px;
+  height: 40px;
+  justify-content: center;
+  padding: 0;
+  font-size: var(--t-grande);
+}
+
+.conteggio__avviso {
+  flex: 1 1 320px;
+  margin: 0;
+  font-size: var(--t-piccolo);
+  line-height: 1.55;
+}
+
+.modulo__azioni {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  margin-top: var(--s5);
+}
+
+.cartella__errore:not(:empty),
+#errore-accettazione:not(:empty) {
+  color: var(--allarme);
+}
+
+/* ==========================================================================
+   Postazione di scrittura
+   ========================================================================== */
+.postazione {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(300px, 0.9fr);
+  gap: var(--s5);
+  align-items: start;
+}
+
+/* -- La scena: vedi scena.js per gli stati -------------------------------- */
+.scena {
+  margin: 0;
+  padding: var(--s4);
+  background: var(--superficie-alt);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r3);
+  color: var(--ematossilina);
+}
+
+.scena svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.scena__banco line {
+  stroke: var(--ematossilina-debole);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.scena__antenna rect {
+  fill: var(--superficie);
+  stroke: var(--ematossilina-tenue);
+  stroke-width: 2;
+}
+
+.scena__antenna line {
+  stroke: var(--ematossilina-debole);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 6;
+}
+
+.scena__didascalia {
+  fill: var(--ematossilina-tenue);
+  font-family: var(--f-strumenti);
+  font-size: 12px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.scena__vetro {
+  fill: url(#vetro);
+  stroke: var(--ematossilina-tenue);
+  stroke-width: 2;
+}
+
+.scena__coperchio,
+.scena__campione {
+  fill: var(--ematossilina-debole);
+  opacity: 0.5;
+}
+
+.scena__tag rect {
+  fill: var(--superficie);
+  stroke: var(--ematossilina-tenue);
+  stroke-width: 1.5;
+}
+
+.scena__tag line {
+  stroke: var(--ematossilina-debole);
+  stroke-width: 1.2;
+}
+
+/* L'eosina compare solo qui: sono gli archi del campo radio. */
+.scena__campo path {
+  fill: none;
+  stroke: var(--eosina);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  opacity: 0;
+}
+
+.scena__anello {
+  fill: none;
+  stroke: var(--conferma);
+  stroke-width: 3;
+  opacity: 0;
+}
+
+.scena__freccia {
+  fill: none;
+  stroke: var(--ematossilina-tenue);
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  opacity: 0;
+}
+
+.scena__stato {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s4);
+  margin-top: var(--s3);
+  padding-top: var(--s3);
+  border-top: 1px solid var(--bordo);
+}
+
+.scena__passo {
+  font-size: var(--t-grande);
+  white-space: nowrap;
+}
+
+.scena__istruzione {
+  font-size: var(--t-medio);
+  color: var(--ematossilina-tenue);
+}
+
+/* -- Stati della scena ---------------------------------------------------- */
+.scena[data-stato="attesa"] .scena__contenitore {
+  animation: appoggia 2.6s var(--curva) infinite;
+  opacity: 0.42;
+}
+
+.scena[data-stato="attesa"] .scena__vetro {
+  stroke-dasharray: 7 6;
+}
+
+.scena[data-stato="rilevato"] .onda--1 {
+  animation: impulso 1.5s var(--curva) infinite;
+}
+
+.scena[data-stato="scrittura"] .onda {
+  animation: impulso 1.2s var(--curva) infinite;
+}
+
+.scena[data-stato="scrittura"] .onda--2 { animation-delay: 0.2s; }
+.scena[data-stato="scrittura"] .onda--3 { animation-delay: 0.4s; }
+
+.scena[data-stato="verificato"] .scena__anello {
+  animation: conferma 700ms var(--curva) forwards;
+}
+
+.scena[data-stato="rimuovi"] .scena__contenitore {
+  animation: solleva 1.6s var(--curva) infinite;
+}
+
+.scena[data-stato="rimuovi"] .scena__freccia {
+  animation: indica 1.6s var(--curva) infinite;
+}
+
+.scena[data-stato="errore"] .scena__vetro {
+  stroke: var(--allarme);
+}
+
+.scena[data-stato="errore"] .scena__istruzione,
+.scena[data-stato="errore"] .scena__passo {
+  color: var(--allarme);
+}
+
+.scena[data-stato="verificato"] .scena__istruzione {
+  color: var(--conferma);
+}
+
+@keyframes appoggia {
+  0%   { transform: translateY(-26px); opacity: 0.15; }
+  55%  { transform: translateY(0); opacity: 0.5; }
+  85%  { transform: translateY(0); opacity: 0.5; }
+  100% { transform: translateY(-26px); opacity: 0.15; }
+}
+
+@keyframes impulso {
+  0%   { opacity: 0; transform: scale(0.9); }
+  35%  { opacity: 0.9; }
+  100% { opacity: 0; transform: scale(1.06); }
+}
+
+@keyframes conferma {
+  from { opacity: 0.9; r: 20; }
+  to   { opacity: 0; r: 90; }
+}
+
+@keyframes solleva {
+  0%, 100% { transform: translateY(0); }
+  50%      { transform: translateY(-22px); }
+}
+
+@keyframes indica {
+  0%, 100% { opacity: 0.2; transform: translateX(0); }
+  50%      { opacity: 1; transform: translateX(8px); }
+}
+
+/* Senza movimento gli stati restano tutti leggibili.
+   Gli archi del campo RF partono da `opacity: 0` e diventano visibili solo
+   dentro l'animazione: azzerare le animazioni li spegnerebbe del tutto, e con
+   loro l'unico segno che il lettore sta trasmettendo. Qui si accendono fermi. */
+@media (prefers-reduced-motion: reduce) {
+  .scena[data-stato="rilevato"] .onda--1,
+  .scena[data-stato="scrittura"] .onda {
+    opacity: 0.85;
+  }
+
+  .scena[data-stato="verificato"] .scena__anello {
+    opacity: 1;
+    r: 66;
+  }
+
+  .scena[data-stato="rimuovi"] .scena__freccia {
+    opacity: 1;
+  }
+
+  .scena[data-stato="rimuovi"] .scena__contenitore {
+    transform: translateY(-22px);
+  }
+}
+
+/* -- La cartella del campione in lavorazione ------------------------------ */
+.cartella {
+  padding: var(--s4);
+  background: var(--superficie);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r3);
+}
+
+.cartella__testa {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+
+.cartella__paziente {
+  font-size: var(--t-grande);
+  line-height: 1.25;
+  text-transform: uppercase;
+}
+
+.cartella__cf {
+  margin: var(--s1) 0 var(--s4);
+  color: var(--ematossilina-tenue);
+}
+
+.cartella__dati {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px var(--s3);
+  margin: 0 0 var(--s4);
+  font-size: var(--t-piccolo);
+}
+
+.cartella__dati dt {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ematossilina-tenue);
+}
+
+.cartella__dati dd {
+  margin: 0;
+}
+
+.cartella__avvertenze {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 var(--s4);
+  padding: 0;
+  list-style: none;
+}
+
+.cartella__avvertenze li {
+  padding: 3px 10px;
+  border: 1px solid var(--allarme);
+  border-radius: 999px;
+  background: var(--allarme-velo);
+  color: var(--allarme);
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+/* -- Riepilogo di cio' che e' finito nel chip ----------------------------- */
+.riepilogo {
+  margin-top: var(--s4);
+  padding: var(--s3);
+  border: 1px solid var(--conferma);
+  border-radius: var(--r2);
+  background: var(--conferma-velo);
+  animation: entra var(--moto-medio) var(--curva);
+}
+
+.riepilogo .etichetta {
+  color: var(--conferma);
+}
+
+.riepilogo__dati {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 4px var(--s3);
+  margin: var(--s2) 0 0;
+  font-size: var(--t-piccolo);
+}
+
+.riepilogo__dati dt {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ematossilina-tenue);
+}
+
+.riepilogo__dati dd {
+  margin: 0;
+  min-width: 0;
+}
+
+.riepilogo__dati dd.hex {
+  font-size: var(--t-micro);
+}
+
+.cartella__azioni {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  margin-top: var(--s4);
+}
+
+.cartella__azioni .bottone {
+  justify-content: center;
+}
+
+/* -- I passi della scrittura, spuntati mentre accadono -------------------- */
+.passi {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-top: 1px solid var(--bordo);
+}
+
+.passi:empty {
+  border-top: 0;
+}
+
+.passi li {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  padding: 5px 0;
+  font-size: var(--t-piccolo);
+  color: var(--ematossilina-tenue);
+  animation: entra var(--moto-breve) var(--curva);
+}
+
+.passi li::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--conferma);
+  flex: none;
+}
+
+.passi li[data-esito="corso"]::before {
+  background: var(--eosina);
+  animation: battito 1s var(--curva) infinite;
+}
+
+.passi li[data-esito="errore"] {
+  color: var(--allarme);
+}
+
+.passi li[data-esito="errore"]::before {
+  background: var(--allarme);
+}
+
+/* ==========================================================================
+   Serie dei contenitori
+   ========================================================================== */
+.serie {
+  margin-top: var(--s5);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--bordo);
+}
+
+.serie__testa {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  margin-bottom: var(--s3);
+}
+
+.serie__comandi {
+  display: flex;
+  gap: var(--s2);
+}
+
+.serie__elenco {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.serie__voce {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 92px;
+  padding: var(--s2) var(--s3);
+  border: 1px solid var(--bordo-forte);
+  border-radius: var(--r2);
+  background: var(--superficie-alt);
+  transition: border-color var(--moto-breve) var(--curva), background var(--moto-breve) var(--curva);
+}
+
+.serie__voce b {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-medio);
+}
+
+.serie__voce small {
+  font-size: var(--t-micro);
+  color: var(--ematossilina-tenue);
+}
+
+.serie__voce[data-stato="scritto"] {
+  border-color: var(--conferma);
+  background: var(--conferma-velo);
+  color: var(--conferma);
+}
+
+.serie__voce[data-stato="corso"] {
+  border-color: var(--eosina);
+  background: var(--eosina-velo);
+  color: var(--eosina);
+}
+
+.serie__voce[data-stato="errore"] {
+  border-color: var(--allarme);
+  background: var(--allarme-velo);
+  color: var(--allarme);
+}
+
+/* ==========================================================================
+   Sigillo e spedizione
+   ========================================================================== */
+.preparazione {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: var(--s4);
+}
+
+.preparazione .campo {
+  flex: 1 1 320px;
+}
+
+#errore-spedizione:not(:empty) {
+  color: var(--allarme);
+}
+
+.sigillo {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+  gap: var(--s5);
+  align-items: start;
+}
+
+.volume {
+  margin: 0;
+  padding: var(--s4);
+  background: var(--superficie-alt);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r3);
+}
+
+.volume svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.volume__antenne rect {
+  fill: var(--superficie);
+  stroke: var(--ematossilina-tenue);
+  stroke-width: 2;
+}
+
+.volume__scatola {
+  fill: none;
+  stroke: var(--ematossilina);
+  stroke-width: 2.5;
+  stroke-dasharray: 10 7;
+}
+
+.volume[data-stato="lettura"] .volume__scatola {
+  stroke: var(--eosina);
+  animation: respiro 1.4s var(--curva) infinite;
+}
+
+.volume[data-stato="completo"] .volume__scatola {
+  stroke: var(--conferma);
+  stroke-dasharray: none;
+}
+
+.volume[data-stato="incompleto"] .volume__scatola {
+  stroke: var(--allarme);
+  stroke-dasharray: none;
+}
+
+@keyframes respiro {
+  0%, 100% { opacity: 0.45; }
+  50% { opacity: 1; }
+}
+
+/* Un punto per contenitore atteso. Spento finche' non e' stato letto: e' il
+   quadro d'insieme che l'operatore confronta con quello che ha in mano. */
+.volume__punti circle {
+  fill: var(--superficie);
+  stroke: var(--ematossilina-debole);
+  stroke-width: 2;
+  transition: fill var(--moto-medio) var(--curva), stroke var(--moto-medio) var(--curva);
+}
+
+.volume__punti circle[data-trovato="1"] {
+  fill: var(--conferma);
+  stroke: var(--conferma);
+}
+
+.volume__punti circle[data-trovato="0"] {
+  fill: var(--allarme-velo);
+  stroke: var(--allarme);
+}
+
+.volume__nota {
+  margin: var(--s3) 0 0;
+  font-size: var(--t-piccolo);
+}
+
+/* -- Il verdetto: il conteggio e' l'eroe della schermata ------------------ */
+.verdetto {
+  padding: var(--s4);
+  background: var(--superficie);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r3);
+}
+
+.verdetto__conteggio {
+  margin: var(--s1) 0 0;
+  font-size: var(--t-eroe);
+  line-height: 1;
+  letter-spacing: -0.03em;
+}
+
+.verdetto[data-esito="completo"] .verdetto__conteggio { color: var(--conferma); }
+.verdetto[data-esito="incompleto"] .verdetto__conteggio { color: var(--allarme); }
+.verdetto[data-esito="lettura"] .verdetto__conteggio { color: var(--eosina); }
+
+.verdetto__esito {
+  margin: var(--s3) 0 var(--s4);
+  font-size: var(--t-medio);
+  line-height: 1.4;
+}
+
+.verdetto[data-esito="completo"] .verdetto__esito { color: var(--conferma); font-weight: 600; }
+.verdetto[data-esito="incompleto"] .verdetto__esito { color: var(--allarme); font-weight: 600; }
+
+.verdetto__dettagli {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 4px var(--s3);
+  margin: 0 0 var(--s4);
+  font-size: var(--t-piccolo);
+}
+
+.verdetto__dettagli dt {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ematossilina-tenue);
+}
+
+.verdetto__dettagli dd {
+  margin: 0;
+}
+
+.verdetto__azioni {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.verdetto__azioni .bottone {
+  justify-content: center;
+}
+
+/* -- I mancanti, con nome e paziente -------------------------------------- */
+.mancanti {
+  margin-top: var(--s5);
+  padding: var(--s4);
+  border: 1px solid var(--allarme);
+  border-radius: var(--r3);
+  background: var(--allarme-velo);
+}
+
+.mancanti__titolo {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-grande);
+  color: var(--allarme);
+}
+
+.mancanti__elenco {
+  margin: var(--s3) 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--s2);
+}
+
+.mancanti__elenco li {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  background: var(--superficie);
+  border-radius: var(--r2);
+}
+
+.mancanti__elenco b {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-medio);
+  color: var(--allarme);
+}
+
+/* -- La prova: le passate che giustificano il verdetto -------------------- */
+.prova {
+  margin-top: var(--s5);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--bordo);
+}
+
+.prova summary {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ematossilina-tenue);
+  cursor: pointer;
+}
+
+.prova__nota {
+  margin: var(--s3) 0 0;
+  font-size: var(--t-piccolo);
+}
+
+.tabella {
+  width: 100%;
+  margin-top: var(--s3);
+  border-collapse: collapse;
+  font-size: var(--t-piccolo);
+}
+
+.tabella th {
+  padding: 6px var(--s2);
+  border-bottom: 1px solid var(--bordo-forte);
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--ematossilina-tenue);
+}
+
+.tabella td {
+  padding: 6px var(--s2);
+  border-bottom: 1px solid var(--bordo);
+}
+
+/* Tabelle in cui si scrive: i campi non hanno cornice propria, la griglia
+   basta. Cornici dentro cornici renderebbero illeggibile una riga di sei celle. */
+.tabella--modificabile {
+  margin-bottom: var(--s3);
+}
+
+.tabella--modificabile input[type="text"],
+.tabella--modificabile input[type="email"] {
+  width: 100%;
+  padding: 5px var(--s2);
+  border: 1px solid transparent;
+  border-radius: var(--r1);
+  background: var(--superficie-alt);
+}
+
+.tabella--modificabile input:focus {
+  border-color: var(--eosina);
+  outline: none;
+  background: var(--superficie);
+}
+
+.tabella--modificabile input[type="checkbox"] {
+  accent-color: var(--conferma);
+}
+
+.tabella--modificabile td {
+  vertical-align: middle;
+}
+
+.riga__togli {
+  padding: 2px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--r1);
+  background: transparent;
+  color: var(--ematossilina-debole);
+  font-size: var(--t-medio);
+  line-height: 1;
+  cursor: pointer;
+}
+
+.riga__togli:hover {
+  border-color: var(--allarme);
+  color: var(--allarme);
+}
+
+.tabella__vuota td {
+  padding: var(--s4) var(--s2);
+  color: var(--ematossilina-tenue);
+  font-style: italic;
+}
+
+/* ==========================================================================
+   Ricezione
+   ========================================================================== */
+.importa {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+}
+
+#errore-distinta:not(:empty) {
+  color: var(--allarme);
+}
+
+.distinta {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 5px var(--s4);
+  margin: var(--s4) 0 0;
+  padding-top: var(--s4);
+  border-top: 1px solid var(--bordo);
+  font-size: var(--t-piccolo);
+}
+
+.distinta dt {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ematossilina-tenue);
+}
+
+.distinta dd {
+  margin: 0;
+}
+
+/* L'avvertenza sanitaria: grande, prima di tutto, e in allarme — non in
+   eosina, che qui significherebbe «sto leggendo». */
+.biorischio {
+  display: flex;
+  align-items: center;
+  gap: var(--s4);
+  margin-bottom: var(--s5);
+  padding: var(--s4) var(--s5);
+  border: 2px solid var(--allarme);
+  border-radius: var(--r3);
+  background: var(--allarme-velo);
+  color: var(--allarme);
+}
+
+.biorischio__segno {
+  width: 52px;
+  height: 52px;
+  flex: none;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+.biorischio strong {
+  display: block;
+  font-family: var(--f-strumenti);
+  font-size: var(--t-grande);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.biorischio p {
+  margin: 2px 0 0;
+  font-size: var(--t-piccolo);
+  color: var(--ematossilina);
+}
+
+.inattesi {
+  margin-top: var(--s5);
+  padding: var(--s4);
+  border: 1px solid var(--attesa);
+  border-radius: var(--r3);
+  background: var(--attesa-velo);
+}
+
+.inattesi__titolo {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-grande);
+  color: var(--attesa);
+}
+
+.inattesi .mancanti__elenco b {
+  color: var(--attesa);
+}
+
+/* ==========================================================================
+   Strumenti
+   ========================================================================== */
+/* Le spiegazioni della calibrazione: testo lungo, colonna stretta e un filetto
+   che le stacca dai comandi senza farne un riquadro d'allarme. */
+.spiega {
+  max-width: 78ch;
+  margin: 0 0 var(--s5);
+  padding-left: var(--s4);
+  border-left: 2px solid var(--bordo-forte);
+}
+
+.spiega p {
+  margin: 0 0 var(--s3);
+  font-size: var(--t-piccolo);
+  line-height: 1.65;
+  color: var(--ematossilina-tenue);
+}
+
+.spiega p:last-child {
+  margin-bottom: 0;
+}
+
+.spiega b {
+  color: var(--ematossilina);
+}
+
+.spiega strong {
+  color: var(--ematossilina);
+  font-weight: 600;
+}
+
+.antenne {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--s4);
+}
+
+.antenna {
+  padding: var(--s4);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r2);
+  background: var(--superficie-alt);
+}
+
+.antenna__nome {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+.antenna__nome b {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-grande);
+}
+
+.antenna__nome span {
+  font-size: var(--t-micro);
+  color: var(--ematossilina-tenue);
+}
+
+.cursore {
+  margin-top: var(--s3);
+}
+
+.cursore__testa {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.cursore__valore {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-medio);
+}
+
+.cursore input[type="range"] {
+  width: 100%;
+  margin: 2px 0 0;
+  accent-color: var(--eosina);
+}
+
+.diagnostica__comandi {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s4);
+  margin-bottom: var(--s4);
+}
+
+/* -- Grafico del return loss --------------------------------------------- */
+.grafico {
+  margin: 0;
+}
+
+.grafico svg {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.grafico__griglia line {
+  stroke: var(--bordo);
+  stroke-width: 1;
+}
+
+/* La banda ETSI: dove il sistema deve funzionare per legge. */
+.grafico__banda {
+  fill: var(--ematossilina);
+  opacity: 0.13;
+}
+
+.grafico__soglia {
+  fill: none;
+  stroke: var(--allarme);
+  stroke-width: 1.5;
+  stroke-dasharray: 6 5;
+}
+
+.grafico__curva {
+  fill: none;
+  stroke: var(--eosina);
+  stroke-width: 2.5;
+  stroke-linejoin: round;
+  stroke-linecap: round;
+}
+
+.grafico__punti circle {
+  fill: var(--eosina);
+}
+
+.grafico__punti circle[data-oltre="1"] {
+  fill: var(--allarme);
+}
+
+.grafico__assi text {
+  fill: var(--ematossilina-tenue);
+  font-family: var(--f-strumenti);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+}
+
+.grafico figcaption {
+  margin-top: var(--s3);
+  font-size: var(--t-piccolo);
+}
+
+/* -- La ricetta della campagna: tre passi, in ordine ---------------------- */
+.ricetta {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: passo;
+}
+
+.ricetta li {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s4) 0;
+  border-bottom: 1px solid var(--bordo);
+}
+
+.ricetta li::before {
+  counter-increment: passo;
+  content: counter(passo);
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  border-radius: 50%;
+  border: 1px solid var(--bordo-forte);
+  font-family: var(--f-strumenti);
+  font-size: var(--t-corpo);
+  color: var(--ematossilina-tenue);
+}
+
+.ricetta li:last-child {
+  border-bottom: 0;
+}
+
+.ricetta .tenue {
+  display: block;
+  font-size: var(--t-piccolo);
+}
+
+.consigliata {
+  margin-top: var(--s4);
+  padding: var(--s4);
+  border: 1px solid var(--conferma);
+  border-radius: var(--r2);
+  background: var(--conferma-velo);
+}
+
+.consigliata h3 {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-grande);
+  color: var(--conferma);
+}
+
+.consigliata p {
+  margin: var(--s2) 0 0;
+  font-size: var(--t-piccolo);
+}
+
+.parco {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+}
+
+.parco__voce {
+  min-width: 120px;
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--bordo-forte);
+  border-radius: var(--r2);
+  background: var(--superficie-alt);
+}
+
+.parco__voce b {
+  display: block;
+  font-family: var(--f-strumenti);
+  font-size: var(--t-titolo);
+  line-height: 1;
+}
+
+.parco__voce span {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ematossilina-tenue);
+}
+
+/* ==========================================================================
+   Archivio pazienti
+   ========================================================================== */
+.cerca {
+  display: flex;
+  align-items: flex-end;
+  gap: var(--s4);
+  margin-bottom: var(--s5);
+}
+
+.cerca__campo {
+  flex: 1 1 420px;
+  max-width: 560px;
+}
+
+.riga__apri {
+  padding: 3px var(--s3);
+  border: 1px solid var(--bordo-forte);
+  border-radius: var(--r1);
+  background: var(--superficie);
+  color: var(--ematossilina);
+  font-size: var(--t-piccolo);
+  cursor: pointer;
+}
+
+.riga__apri:hover {
+  border-color: var(--eosina);
+  color: var(--eosina);
+}
+
+.accettazione {
+  margin-bottom: var(--s5);
+  padding: var(--s4);
+  border: 1px solid var(--bordo);
+  border-left-width: 4px;
+  border-radius: var(--r2);
+  background: var(--superficie-alt);
+}
+
+/* Il bordo sinistro dice l'esito a colpo d'occhio, prima di leggere. */
+.accettazione[data-esito="completo"] { border-left-color: var(--conferma); }
+.accettazione[data-esito="incompleto"] { border-left-color: var(--attesa); }
+
+.accettazione__testa {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s3);
+  margin-bottom: var(--s3);
+}
+
+.accettazione__numero {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-grande);
+}
+
+.accettazione__riassunto {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s5);
+  margin-bottom: var(--s3);
+  padding: var(--s3);
+  border-radius: var(--r1);
+  background: var(--superficie);
+  font-size: var(--t-piccolo);
+}
+
+.accettazione__riassunto b {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-medio);
+  display: block;
+}
+
+.accettazione__riassunto span {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ematossilina-tenue);
+}
+
+.spedizione {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s3);
+  padding: var(--s2) var(--s3);
+  margin-bottom: var(--s2);
+  border-radius: var(--r1);
+  background: var(--superficie);
+  font-size: var(--t-piccolo);
+}
+
+.spedizione__quando {
+  font-family: var(--f-mono);
+  font-size: var(--t-micro);
+}
+
+/* ==========================================================================
+   Impostazioni
+   ========================================================================== */
+.rail__voce--fondo {
+  margin-top: auto;
+}
+
+.trasporti {
+  display: grid;
+  gap: var(--s3);
+  margin-bottom: var(--s5);
+}
+
+.trasporto {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--bordo-forte);
+  border-radius: var(--r2);
+  background: var(--superficie-alt);
+  cursor: pointer;
+  transition: border-color var(--moto-breve) var(--curva), background var(--moto-breve) var(--curva);
+}
+
+.trasporto input {
+  margin-top: 3px;
+  accent-color: var(--eosina);
+}
+
+.trasporto:has(input:checked) {
+  border-color: var(--eosina);
+  background: var(--eosina-velo);
+}
+
+/* Il collegamento che esiste ma non si puo' scegliere: dichiarato, non nascosto.
+   Nasconderlo farebbe cercare all'operatore una voce che il manuale promette. */
+.trasporto--assente {
+  cursor: default;
+  opacity: 0.65;
+  border-style: dashed;
+}
+
+.trasporto__corpo b {
+  display: block;
+  font-family: var(--f-strumenti);
+  font-size: var(--t-medio);
+}
+
+.trasporto__corpo small {
+  display: block;
+  margin-top: 3px;
+  font-size: var(--t-piccolo);
+  color: var(--ematossilina-tenue);
+  line-height: 1.5;
+}
+
+.porta {
+  display: flex;
+  gap: var(--s2);
+}
+
+.porta select {
+  flex: 1;
+  min-width: 0;
+  padding: 9px var(--s3);
+  border: 1px solid var(--bordo-forte);
+  border-radius: var(--r2);
+  background: var(--superficie);
+  font-family: var(--f-mono);
+}
+
+.sezione {
+  margin: var(--s5) 0 var(--s3);
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--bordo);
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--ematossilina-tenue);
+}
+
+/* L'avvertenza sulla banda non e' un suggerimento: e' un vincolo di legge. */
+.avviso-legale {
+  margin-bottom: var(--s4);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--allarme);
+  border-left-width: 4px;
+  border-radius: var(--r2);
+  background: var(--allarme-velo);
+  font-size: var(--t-piccolo);
+  line-height: 1.6;
+}
+
+#dove-si-salva {
+  margin: var(--s3) 0 0;
+  font-size: var(--t-micro);
+}
+
+#esito-collegamento[data-tipo="errore"],
+#esito-avanzate[data-tipo="errore"] {
+  color: var(--allarme);
+}
+
+#esito-collegamento[data-tipo="ok"],
+#esito-avanzate[data-tipo="ok"] {
+  color: var(--conferma);
+}
+
+/* ==========================================================================
+   Dialogo e avvisi
+   ========================================================================== */
+.dialogo {
+  padding: 0;
+  border: 1px solid var(--bordo-forte);
+  border-radius: var(--r3);
+  background: var(--superficie);
+  color: var(--ematossilina);
+  box-shadow: var(--ombra-2);
+  max-width: 480px;
+}
+
+.dialogo--largo {
+  max-width: 640px;
+  width: calc(100vw - 2 * var(--s5));
+}
+
+/* -- Anteprima dell'etichetta: i dati, non il disegno di stampa ----------- */
+.anteprima {
+  padding: var(--s4);
+  border: 1px dashed var(--bordo-forte);
+  border-radius: var(--r2);
+  background: #fff;
+  color: #111;
+}
+
+.anteprima__paziente {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-grande);
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.anteprima__riga {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s3);
+  margin-top: 4px;
+  font-family: "Consolas", monospace;
+  font-size: var(--t-piccolo);
+  color: #333;
+}
+
+.anteprima__contenitore {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-titolo);
+  line-height: 1;
+}
+
+.anteprima__avvertenze {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: var(--s3);
+}
+
+.anteprima__avvertenze span {
+  padding: 2px 8px;
+  border: 1.5px solid #a31621;
+  border-radius: 3px;
+  color: #a31621;
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.anteprima__codice {
+  margin-top: var(--s3);
+  padding-top: var(--s2);
+  border-top: 1px solid #ccc;
+  font-family: "Consolas", monospace;
+  font-size: 10px;
+  color: #555;
+  word-break: break-all;
+}
+
+.anteprima__nota {
+  margin: var(--s2) 0 0;
+  font-size: var(--t-micro);
+}
+
+.zpl {
+  max-height: 220px;
+  margin: var(--s3) 0 0;
+  padding: var(--s3);
+  overflow: auto;
+  border: 1px solid var(--bordo);
+  border-radius: var(--r1);
+  background: var(--superficie-alt);
+  font-family: var(--f-mono);
+  font-size: var(--t-micro);
+  line-height: 1.5;
+  white-space: pre;
+}
+
+.dialogo::backdrop {
+  background: rgba(20, 12, 38, 0.5);
+  backdrop-filter: blur(2px);
+}
+
+.dialogo form {
+  padding: var(--s5);
+}
+
+.dialogo h3 {
+  margin-bottom: var(--s3);
+  font-family: var(--f-strumenti);
+  font-size: var(--t-grande);
+}
+
+.dialogo menu {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--s2);
+  margin: var(--s5) 0 0;
+  padding: 0;
+}
+
+/* Sbarramento del token: copre tutto perché sotto non c'è niente di usabile. */
+.sbarramento {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: var(--s5);
+  background: var(--fondo);
+}
+
+.sbarramento__scheda {
+  max-width: 560px;
+  padding: var(--s6);
+  background: var(--superficie);
+  border: 1px solid var(--allarme);
+  border-top-width: 4px;
+  border-radius: var(--r3);
+  box-shadow: var(--ombra-2);
+}
+
+.sbarramento__scheda .etichetta {
+  color: var(--allarme);
+}
+
+.sbarramento__scheda h2 {
+  margin: var(--s2) 0 var(--s4);
+  font-family: var(--f-strumenti);
+  font-size: var(--t-titolo);
+}
+
+.sbarramento__scheda p {
+  font-size: var(--t-corpo);
+  line-height: 1.6;
+}
+
+.sbarramento__esempio {
+  padding: var(--s3);
+  border-radius: var(--r2);
+  background: var(--superficie-alt);
+  font-size: var(--t-piccolo);
+}
+
+.sbarramento__esempio em {
+  color: var(--eosina);
+  font-style: normal;
+}
+
+.avvisi {
+  position: fixed;
+  right: var(--s5);
+  bottom: var(--s5);
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  z-index: 10;
+}
+
+.avviso {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  max-width: 380px;
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--bordo-forte);
+  border-left-width: 4px;
+  border-radius: var(--r2);
+  background: var(--superficie);
+  box-shadow: var(--ombra-2);
+  font-size: var(--t-piccolo);
+  animation: entra var(--moto-medio) var(--curva);
+}
+
+.avviso[data-tipo="ok"] { border-left-color: var(--conferma); }
+.avviso[data-tipo="errore"] { border-left-color: var(--allarme); }
+.avviso[data-tipo="attesa"] { border-left-color: var(--attesa); }
+.avviso[data-tipo="radio"] { border-left-color: var(--eosina); }
+
+/* ==========================================================================
+   Schermi stretti — 1366×768 e' il portatile da banco
+   ========================================================================== */
+@media (max-width: 1100px) {
+  .postazione,
+  .sigillo {
+    grid-template-columns: 1fr;
+  }
+
+  .modulo__largo {
+    grid-column: span 1;
+  }
+}
+
+@media (max-width: 720px) {
+  body {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "testa"
+      "palco"
+      "rail";
+    grid-template-rows: var(--testa) 1fr auto;
+  }
+
+  .rail {
+    flex-direction: row;
+    justify-content: space-around;
+    border-right: 0;
+    border-top: 1px solid var(--bordo);
+  }
+
+  .rail__voce[aria-current="page"] {
+    box-shadow: inset 0 3px 0 var(--eosina);
+  }
+
+  .palco {
+    padding: var(--s4);
+  }
+}

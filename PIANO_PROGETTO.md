@@ -10,6 +10,16 @@ Realizzare un'applicazione per pilotare in lettura e scrittura un lettore RFID U
 - **1 antenna "a 90° in verticale"** → costituisce una **parete laterale** e definisce
   l'**altezza** del volume.
 
+### 1.1 Obiettivo di integrazione nel framework principale
+
+Il sottosistema RFID deve evolvere come **black box autonoma in modalità service**.
+Driver, protocollo, trasporto e logica operativa restano indipendenti dalla GUI;
+il framework principale accederà soltanto a contratti input/output versionati,
+lifecycle, health ed eventi serializzabili. La GUI sarà aperta come strumento di
+configurazione, calibrazione, diagnostica e collaudo, non come motore applicativo.
+Ogni modifica e prova hardware futura deve preservare questo confine. Il contratto
+corrente è descritto in `docs/CONTRATTO_SERVICE.md`.
+
 Il tag viene considerato "dentro il parallelepipedo" quando è rilevato in modo stabile da
 **almeno una** delle antenne e, idealmente, quando almeno 2 antenne lo coprono (ridondanza
 spaziale). Lo **Step 1** verifica il funzionamento di base di lettura/scrittura nel volume.
@@ -170,9 +180,11 @@ Banche memoria Gen2: `0x00 RESERVED`, `0x01 EPC`, `0x02 TID`, `0x03 USER`.
 
 ### 4.5 GUI di controllo (`app/gui.py`)
 Interfaccia Tkinter + matplotlib che consente, senza editare YAML/CLI:
-- scelta **trasporto** (seriale USB/RS232 oppure TCP/IP SLD1090) e relativi parametri;
+- scelta **trasporto** (seriale USB/RS232 oppure TCP/IP SLD1090), elenco COM
+  aggiornabile e inserimento manuale dei relativi parametri;
 - impostazione **regione** e **potenze Read/Write** per antenna (slider 5–30 dBm);
-- **Inventory**, **Read USER**, **Write USER**, **Read+Verify** (operazioni in thread separato);
+- **Inventory**, **Read USER**, **Write USER**, **Read+Verify** e cambio EPC
+  manuale/AUTO protetto (operazioni in thread separato);
 - **polling continuo** (1 s) per aggiornamento live;
 - visualizzazione:
   - **grafico lineare** a barre: RSSI letto e potenza configurata per ciascuna antenna;
@@ -180,7 +192,8 @@ Interfaccia Tkinter + matplotlib che consente, senza editare YAML/CLI:
     (2 affiancate sulla base + 1 verticale in altezza), piastre colorate per potenza,
     e **posizione stimata del tag** (centroide pesato sull'RSSI lineare) con linee
     antenna→tag colorate per RSSI.
-Avvio: `python src/app/gui.py --config src/app/config.yaml`
+Avvio di collaudo raccomandato: `python run.py service-gui` oppure
+`avvia_test_grafico_rfid.bat`; driver e hardware restano nel processo service.
 
 ---
 
@@ -209,17 +222,38 @@ Deliverable Step 1:
 - `src/app/config.yaml`
 - log di test in `logs/step1_<timestamp>.json`
 
+### STEP 1-bis — Tracciabilità dei campioni (implementato, da validare su hardware)
+Pacchetto `src/lims/`, sopra il contratto `RFIDService`. Vedi
+[`docs/SCHEMA_DATI_TAG.md`](docs/SCHEMA_DATI_TAG.md).
+- ✅ Profilazione del tag: lettura TID e **misura** della USER memory
+  (`python run.py tag-profile`). È il prerequisito di tutto il resto: la
+  capacità dipende dal chip, e nessun datasheet dei tag è mai entrato nel progetto.
+- ✅ Schema dati versionato: EPC pseudonimo di 12 byte in chiaro, payload del
+  campione cifrato AES-256-GCM e legato al TID del chip.
+- ✅ Archivio SQLite (pazienti, accettazioni, reperti, contenitori, spedizioni,
+  traccia delle operazioni) con registro di unicità degli EPC.
+- ✅ Orchestrazione scrittura/lettura e schermate di accettazione e ricezione
+  (`python run.py lims`), con rilevamento dei contenitori mancanti.
+- ☐ Da fare su hardware reale: misurare i tag effettivi, provare un ciclo
+  completo, misurare la perdita di lettura con contenitori pieni di liquido.
+
 ### STEP 2 — Affidabilità e sicurezza
-- Lock/kill (0x25/0x26 — vedi §4.3), gestione access password.
+- ✅ Lock (0x25) e gestione access password — le operazioni permanenti
+  richiedono consenso esplicito; kill (0x26) resta volutamente non implementato.
 - Calibrazione potenze per antenna (mappa RSSI vs posizione nel volume).
-- Filtri Select per singolo EPC.
+- **Filtri Select per singolo EPC.** Ora è un limite concreto, non teorico: senza
+  Select i comandi di lettura agiscono sul primo tag che risponde, quindi il
+  payload cifrato si legge solo a tag singolo. Alternativa da valutare:
+  l'*embedded read* (`META_TAG_DATA = 0x0080`), già parsato in `tags.py` ma mai
+  richiesto, che restituirebbe la USER memory di tutti i tag in un inventory.
 - Test ripetuti (N cicli) per stimare tasso di successo per antenna e posizione.
 
 ### STEP 3 — Continuo e GUI
 - Asynchronous Inventory (0xAA48 / stop 0xAA49, framing esteso) con callback tag in tempo reale.
 - Dashboard (PyQt): mappa 3D del volume, posizione stimata del tag da RSSI triangolato tra le 3 antenne, statistiche.
 - GPIO/trigger della SLD1090 (4 IN / 4 OUT, 3 relè) per fotocellule e attuatori.
-- Persistenza DB (SQLite) delle letture.
+- ✅ Persistenza DB (SQLite) — realizzata in `lims.db` per il dominio campioni;
+  resta da valutare la persistenza delle *letture grezze* di inventory.
 
 ### STEP 4 — Produzione
 - Packaging, avvio automatico, watchdog trasporto, configurazione remota.

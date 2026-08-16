@@ -1,6 +1,6 @@
 # Documentazione tecnica — Driver e app RFID SIM7200 (bozza)
 
-Versione driver: 0.2.0 · Data: 2026-07-09 · Pubblico: sviluppatori/manutentori
+Versione driver: 0.3.0 · Data: 2026-07-22 · Pubblico: sviluppatori/manutentori
 
 ---
 
@@ -43,9 +43,35 @@ Prorocol-2024-12.pdf` (audit di allineamento completato 2026-06).
 └────────────────────────────────────────────────────────────┘
 ```
 
-Regole di dipendenza: le app usano **solo** `reader.py` (+ costanti di
-`protocol.py`); `protocol.py` e `tags.py` non fanno I/O; solo
-`transports.py` tocca l'hardware/rete.
+Regole di dipendenza: il framework e la GUI usano **solo** `service.py`;
+`service.py` orchestra `reader.py`; `protocol.py` e `tags.py` non fanno I/O;
+solo `transports.py` tocca hardware/rete. Le CLI Step 1 e health restano
+strumenti interni di collaudo e possono accedere al reader, ma non costituiscono
+un contratto d'integrazione esterno.
+
+### 2.1 Confine black box (`service.py`)
+
+`RFIDService` espone API 1.0 headless con DTO, lifecycle idempotente, health,
+eventi sequenziali e risposte JSON-safe. Incapsula selezione trasporto, boot e
+operazioni per antenna. La GUI è un client di questo servizio e non importa più
+reader, protocollo o trasporti. `RFIDRPCDispatcher` traduce JSON-RPC 2.0 nel
+medesimo contratto, mentre `service_host.py` fornisce un processo JSONL su
+stdin/stdout (`python run.py service`). Futuri adapter HTTP/IPC devono riusare il
+dispatcher senza duplicare logica RFID. La specifica normativa interna è
+`docs/CONTRATTO_SERVICE.md`.
+La GUI accetta inoltre un backend iniettato e usa `RFIDServiceBinding` per
+distinguere lifecycle posseduto (standalone) e condiviso (framework).
+`RFIDProcessClient` implementa lo stesso `RFIDBackend` sopra il subprocess
+JSONL: framework e GUI possono condividere un unico client mentre solo l'host
+possiede COM/socket.
+Il DTO `EventRequest` e l'operazione `events()` espongono cursore e limiti
+della cronologia; `history_truncated` impedisce di confondere un overflow con
+un batch completo.
+Le operazioni `generate_epc(EpcGenerationRequest)` e
+`write_epc(WriteEpcRequest)` mantengono nel service anche la generazione e il
+cambio EPC: il comando 0x23 aggiorna il PC, invalida l'inventory precedente e
+richiede una verifica successiva. `python run.py service-gui` collega la GUI di
+collaudo a un host separato tramite `RFIDProcessClient`.
 
 ## 3. Protocollo (sintesi operativa)
 
@@ -170,6 +196,10 @@ Lo snapshot (`diag.snapshot()`) è incluso nel JSON di Step 1
 (conteggiati). Oltre → `SilionFrameError`. Il flush dell'input prima di ogni
 comando (`_command`) resta la prima difesa contro risposte orfane.
 
+I trasporti normalizzano gli errori I/O: timeout, frame corrotto e disconnessione
+sono distinti nei tipi di eccezione e nei contatori diagnostici. Il timeout di
+boot e quello delle risposte ordinarie sono configurabili separatamente.
+
 ## 6. Configurazione (`src/app/config.yaml`)
 
 | Sezione | Chiavi | Note |
@@ -177,10 +207,10 @@ comando (`_command`) resta la prima difesa contro risposte orfane.
 | `serial` | port, baudrate (115200), timeout_s, inter_byte_timeout_s | trasporto attivo se presente |
 | `tcp` | host (192.168.1.100), port (8080), timeout_s | usato solo se `serial` assente |
 | `serial_disabled` / `tcp_disabled` | come sopra | sezione "parcheggiata" dalla GUI (trasporto non attivo) |
-| `reader` | region (0x08 EU), max_power_dbm | regione EU obbligatoria in Italia |
+| `reader` | region (0x08 EU), boot_timeout_ms, response_timeout_ms, max_power_dbm | regione EU obbligatoria in Italia; limite potenza applicato anche dal driver |
 | `antennas` | lista {id, role, read_power, write_power} | potenze in **cdBm**; `role` è solo descrittivo |
-| `inventory` | antennas, timeout_ms, metadata_flags (0x0007) | |
-| `tag_access` | bank_*, access_password_hex, timeout_ms, write_data_hex, read_user_words | |
+| `inventory` | antennas, timeout_ms, metadata_flags, duration_s, max_unique_epcs, stop_after_consecutive_errors | sessioni singole, continue o temporizzate; aggregazione bounded |
+| `tag_access` | bank_*, access_password_hex, timeout_ms, write_data_hex, read_user_words, auto_epc_bytes, auto_epc_prefix_hex | AUTO prepara un candidato EPC; non lo scrive |
 | `logging` | dir (logs), level (INFO) | `--debug`/`RFID_DEBUG` forzano DEBUG |
 | `geometry` | dati antenna/volume | usati solo come documentazione |
 
@@ -191,12 +221,19 @@ Attenzione: `yaml.safe_dump` non conserva i commenti del file.
 ## 7. Test
 
 ```
-python run.py tests                  # tutti (21), senza hardware
-python src/tests/test_protocol.py    # framing/CRC/parser tag (10)
-python src/tests/test_reader.py      # reader con FakeTransport (11)
+python run.py tests                  # tutti (56), senza hardware
+python -m pytest                     # suite + branch coverage (soglia 65%)
+python src/tests/test_protocol.py    # framing/CRC/parser/accumulatore (14)
+python src/tests/test_reader.py      # reader con FakeTransport (15)
+python src/tests/test_transports.py  # seriale/TCP simulati (4)
+python src/tests/test_service.py     # confine headless/DTO/lifecycle/binding (13)
+python src/tests/test_client.py      # subprocess, discovery, errori e chiusura (2)
+python src/tests/test_rpc.py         # JSON-RPC/host JSONL (8)
+python -m ruff check src run.py      # lint statico
 ```
 
-- Plain `assert` + runner `_run_all()`; compatibili con pytest se installato.
+- Test eseguibili sia con il runner `_run_all()` sia con pytest; dipendenze,
+  copertura e Ruff sono configurati in `pyproject.toml`.
 - `test_protocol.py` è anche il **registro dei frame/CRC noti-buoni** dal
   manuale (es. `FF 00 04 1D 0B`; ricordare: `1D 0C` è il CRC di 0x03, non un
   typo di 0x04).
@@ -221,6 +258,7 @@ python src/tests/test_reader.py      # reader con FakeTransport (11)
   setup-time extra).
 - Possibile status `0x0505` high return loss: le SLP1027 sono tarate
   902–928 MHz, fuori banda EU (accettato per il laboratorio).
-- Tkinter e thread: le operazioni girano su thread worker e aggiornano la UI
-  via `root.after` (corretto), ma `messagebox` è ancora chiamato da worker in
-  `_guard` (rilievo #19 del report, rischio basso).
+- La GUI usa un solo worker I/O e una coda di callback elaborata dal thread
+  Tkinter: widget e `messagebox` non vengono più usati dai thread secondari.
+  La chiusura arresta l'inventory e chiude il trasporto prima di distruggere
+  la finestra.

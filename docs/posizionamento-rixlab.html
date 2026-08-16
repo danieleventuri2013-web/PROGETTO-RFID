@@ -1,0 +1,824 @@
+<title>Certificazione del trasporto</title>
+<style>
+/* ==========================================================================
+   Tavolozza: ematossilina ed eosina, i due coloranti dell'istologia.
+   È il sistema di design già costruito nel programma (CLAUDE.md), non una
+   scelta nuova: il documento che propone l'identità è fatto con quell'identità.
+   L'eosina è riservata a un solo ruolo — ciò che distingue questo prodotto —
+   esattamente come nell'interfaccia è riservata all'attività radio.
+   ========================================================================== */
+:root {
+  color-scheme: light dark;
+  --fondo: #f3f1f7;
+  --fondo-alt: #eae6f1;
+  --superficie: #ffffff;
+  --bordo: #ddd6e8;
+  --bordo-forte: #c3b8d6;
+  --ink: #3b2a63;
+  --ink-tenue: #6d5c96;
+  --ink-debole: #9a8dba;
+  --eosina: #d9536b;
+  --eosina-velo: rgba(217, 83, 107, 0.12);
+  --conferma: #1f7a63;
+  --conferma-velo: rgba(31, 122, 99, 0.11);
+  --allarme: #a31621;
+  --allarme-velo: rgba(163, 22, 33, 0.09);
+  --ombra: 0 1px 2px rgba(30, 18, 55, .05), 0 8px 28px rgba(30, 18, 55, .07);
+
+  --display: "Bahnschrift", "DIN Alternate", "Haettenschweiler", "Arial Narrow", system-ui, sans-serif;
+  --testo: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, sans-serif;
+  --mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --fondo: #15101f;
+    --fondo-alt: #1b1529;
+    --superficie: #211a31;
+    --bordo: #362b4d;
+    --bordo-forte: #4b3d69;
+    --ink: #cfc2ec;
+    --ink-tenue: #9d8fc4;
+    --ink-debole: #7a6da0;
+    --eosina: #f27e93;
+    --eosina-velo: rgba(242, 126, 147, .15);
+    --conferma: #3ebf9e;
+    --conferma-velo: rgba(62, 191, 158, .13);
+    --allarme: #f2555f;
+    --allarme-velo: rgba(242, 85, 95, .13);
+    --ombra: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 28px rgba(0, 0, 0, .38);
+  }
+}
+
+:root[data-theme="dark"] {
+  --fondo: #15101f;
+  --fondo-alt: #1b1529;
+  --superficie: #211a31;
+  --bordo: #362b4d;
+  --bordo-forte: #4b3d69;
+  --ink: #cfc2ec;
+  --ink-tenue: #9d8fc4;
+  --ink-debole: #7a6da0;
+  --eosina: #f27e93;
+  --eosina-velo: rgba(242, 126, 147, .15);
+  --conferma: #3ebf9e;
+  --conferma-velo: rgba(62, 191, 158, .13);
+  --allarme: #f2555f;
+  --allarme-velo: rgba(242, 85, 95, .13);
+  --ombra: 0 1px 2px rgba(0, 0, 0, .4), 0 8px 28px rgba(0, 0, 0, .38);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--fondo);
+  color: var(--ink);
+  font-family: var(--testo);
+  font-size: 16px;
+  line-height: 1.62;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+
+.foglio {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 24px 96px;
+}
+
+.colonna { max-width: 68ch; }
+
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+
+.occhiello {
+  font-family: var(--display);
+  font-size: 12px;
+  letter-spacing: .18em;
+  text-transform: uppercase;
+  color: var(--ink-tenue);
+}
+
+/* ---------- Intestazione ---------- */
+.testa {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  padding: 72px 0 40px;
+  flex-wrap: wrap;
+}
+
+.marchio { flex: none; }
+.marchio svg { display: block; }
+
+.testa__testo { flex: 1 1 380px; min-width: 0; }
+
+.testa h1 {
+  font-family: var(--display);
+  font-size: clamp(34px, 5.4vw, 54px);
+  line-height: 1.04;
+  letter-spacing: -.005em;
+  margin: 10px 0 14px;
+}
+
+.tesi {
+  font-size: clamp(17px, 2vw, 20px);
+  line-height: 1.5;
+  color: var(--ink-tenue);
+  margin: 0;
+  max-width: 46ch;
+}
+
+.tesi em { font-style: normal; color: var(--eosina); }
+
+.destinatario {
+  margin-top: 26px;
+  padding-top: 18px;
+  border-top: 1px solid var(--bordo);
+  font-size: 13px;
+  color: var(--ink-debole);
+  display: flex;
+  gap: 22px;
+  flex-wrap: wrap;
+}
+
+/* ---------- Sezioni ---------- */
+section { padding-top: 60px; }
+
+section > h2 {
+  font-family: var(--display);
+  font-size: clamp(24px, 3.2vw, 32px);
+  line-height: 1.14;
+  margin: 8px 0 16px;
+}
+
+section > p, .colonna > p { margin: 0 0 16px; }
+
+.guida {
+  font-size: 17px;
+  color: var(--ink-tenue);
+  max-width: 62ch;
+}
+
+/* ---------- Tabella concorrenti ---------- */
+.scorri { overflow-x: auto; margin-top: 26px; }
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14.5px;
+  min-width: 640px;
+}
+
+thead th {
+  padding: 0 14px 9px;
+  border-bottom: 1.5px solid var(--bordo-forte);
+  font-family: var(--display);
+  font-size: 11.5px;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  text-align: left;
+  color: var(--ink-tenue);
+  font-weight: 400;
+}
+
+tbody td {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--bordo);
+  vertical-align: top;
+}
+
+tbody td:first-child { font-weight: 600; white-space: nowrap; }
+tbody tr:last-child td { border-bottom: none; }
+
+.dove {
+  font-family: var(--display);
+  font-size: 11.5px;
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--ink-debole);
+  white-space: nowrap;
+}
+
+/* ---------- Il rilievo: dove sta il buco ---------- */
+.rilievo {
+  margin-top: 34px;
+  padding: 26px 30px;
+  background: var(--superficie);
+  border: 1px solid var(--bordo);
+  border-left: 4px solid var(--eosina);
+  border-radius: 3px;
+  box-shadow: var(--ombra);
+}
+
+.rilievo p { margin: 0; font-size: 18px; line-height: 1.5; max-width: 56ch; }
+.rilievo strong { color: var(--eosina); }
+
+/* ---------- Argomenti ---------- */
+.argomenti {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(268px, 1fr));
+  gap: 22px;
+  margin-top: 30px;
+}
+
+.argomento {
+  padding: 24px;
+  background: var(--superficie);
+  border: 1px solid var(--bordo);
+  border-radius: 3px;
+}
+
+.argomento h3 {
+  font-family: var(--display);
+  font-size: 18px;
+  line-height: 1.22;
+  margin-bottom: 9px;
+}
+
+.argomento p { margin: 0; font-size: 14.5px; color: var(--ink-tenue); }
+
+/* ---------- Nomi ---------- */
+.esito {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 10px;
+  border-radius: 2px;
+  border: 1px solid currentColor;
+  font-family: var(--display);
+  font-size: 11px;
+  letter-spacing: .11em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.esito--ok { color: var(--conferma); background: var(--conferma-velo); }
+.esito--no { color: var(--allarme); background: var(--allarme-velo); }
+
+.scartati { margin-top: 26px; }
+
+.scartato {
+  display: grid;
+  grid-template-columns: 130px 1fr;
+  gap: 8px 20px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--bordo);
+  align-items: baseline;
+}
+
+.scartato b {
+  font-family: var(--display);
+  font-size: 16px;
+  letter-spacing: .04em;
+}
+
+.scartato span { font-size: 14.5px; color: var(--ink-tenue); }
+
+.candidati {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 22px;
+  margin-top: 30px;
+}
+
+.candidato {
+  display: flex;
+  flex-direction: column;
+  padding: 26px;
+  background: var(--superficie);
+  border: 1px solid var(--bordo);
+  border-radius: 3px;
+  box-shadow: var(--ombra);
+}
+
+.candidato--primo { border-color: var(--eosina); }
+
+.candidato__testa {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.candidato h3 {
+  font-family: var(--display);
+  font-size: 30px;
+  letter-spacing: .05em;
+  line-height: 1;
+}
+
+.candidato__ruolo {
+  font-family: var(--display);
+  font-size: 11px;
+  letter-spacing: .13em;
+  text-transform: uppercase;
+  color: var(--eosina);
+  margin-bottom: 14px;
+  min-height: 1em;
+}
+
+.candidato p { margin: 0 0 14px; font-size: 14.5px; }
+
+.pro-contro { margin-top: auto; padding-top: 12px; border-top: 1px solid var(--bordo); font-size: 13.5px; }
+.pro-contro div { display: flex; gap: 9px; padding: 3px 0; color: var(--ink-tenue); }
+.pro-contro i { font-style: normal; flex: none; width: 1em; }
+.pro-contro .si i { color: var(--conferma); }
+.pro-contro .no i { color: var(--allarme); }
+
+.consiglio {
+  margin-top: 30px;
+  padding: 22px 26px;
+  background: var(--fondo-alt);
+  border-radius: 3px;
+  font-size: 16px;
+  max-width: 62ch;
+}
+
+.consiglio strong { font-family: var(--display); letter-spacing: .04em; font-size: 17px; }
+
+/* ---------- Marchio ---------- */
+.concetti {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 22px;
+  margin-top: 30px;
+}
+
+.concetto {
+  padding: 26px;
+  background: var(--superficie);
+  border: 1px solid var(--bordo);
+  border-radius: 3px;
+  text-align: center;
+}
+
+.concetto svg { display: block; margin: 0 auto 18px; }
+.concetto h3 { font-family: var(--display); font-size: 17px; margin-bottom: 8px; }
+.concetto p { margin: 0; font-size: 14px; color: var(--ink-tenue); text-align: left; }
+
+.scale {
+  display: flex;
+  align-items: flex-end;
+  gap: 26px;
+  margin-top: 30px;
+  padding: 24px 28px;
+  background: var(--fondo-alt);
+  border-radius: 3px;
+  flex-wrap: wrap;
+}
+
+.scale figure { margin: 0; text-align: center; }
+.scale figcaption {
+  margin-top: 9px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--ink-debole);
+}
+
+.scale__nota { flex: 1 1 240px; font-size: 14px; color: var(--ink-tenue); margin: 0; }
+
+/* ---------- Passi di verifica ---------- */
+.passi { margin-top: 28px; padding: 0; list-style: none; counter-reset: p; }
+
+.passi li {
+  display: grid;
+  grid-template-columns: 34px 1fr;
+  gap: 16px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--bordo);
+  align-items: baseline;
+}
+
+.passi li::before {
+  counter-increment: p;
+  content: counter(p);
+  font-family: var(--display);
+  font-size: 17px;
+  color: var(--eosina);
+}
+
+.passi a { color: var(--ink); text-underline-offset: 3px; }
+.passi a:hover { color: var(--eosina); }
+
+/* ---------- Chiusura ---------- */
+.limiti {
+  margin-top: 60px;
+  padding: 24px 28px;
+  border: 1px dashed var(--bordo-forte);
+  border-radius: 3px;
+  font-size: 14.5px;
+  color: var(--ink-tenue);
+  max-width: 68ch;
+}
+
+.limiti b { color: var(--ink); }
+
+code {
+  font-family: var(--mono);
+  font-size: .89em;
+  padding: 1px 5px;
+  background: var(--fondo-alt);
+  border-radius: 2px;
+}
+
+a { color: var(--eosina); }
+
+:focus-visible { outline: 2px solid var(--eosina); outline-offset: 3px; }
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}
+
+@media (max-width: 620px) {
+  .scartato { grid-template-columns: 1fr; gap: 2px; }
+  .testa { padding-top: 46px; }
+}
+</style>
+
+<div class="foglio">
+
+  <header class="testa">
+    <div class="marchio" aria-hidden="true">
+      <svg width="112" height="112" viewBox="0 0 64 64" fill="none">
+        <rect x="5.5" y="11.5" width="53" height="41" rx="5" stroke="currentColor" stroke-width="3"/>
+        <circle cx="20" cy="26" r="4" fill="currentColor"/>
+        <circle cx="32" cy="26" r="4" fill="currentColor"/>
+        <circle cx="44" cy="26" r="4" fill="currentColor"/>
+        <circle cx="20" cy="38" r="4" fill="currentColor"/>
+        <circle cx="32" cy="38" r="4" fill="#d9536b"/>
+        <circle cx="44" cy="38" r="4" fill="currentColor"/>
+      </svg>
+    </div>
+    <div class="testa__testo">
+      <span class="occhiello">Proposta di posizionamento</span>
+      <h1>Certificazione<br>del trasporto</h1>
+      <p class="tesi">
+        Non è tracciabilità dei campioni — quel mercato è affollato.
+        È <em>sapere cosa c'è nella scatola nel momento in cui la si chiude</em>,
+        e farla arrivare a un altro laboratorio che la legge senza condividere alcuna rete.
+      </p>
+      <div class="destinatario">
+        <span>Per RIXLAB S.r.l.</span>
+        <span>Gualdo Tadino (PG)</span>
+        <span>16 agosto 2026</span>
+      </div>
+    </div>
+  </header>
+
+  <section>
+    <span class="occhiello">Il mercato</span>
+    <h2>Cosa esiste già</h2>
+    <p class="guida">
+      Prodotti di tracciabilità campioni esistono, e alcuni sono di aziende molto grandi.
+      Vale la pena guardarli bene, perché sono quasi tutti la stessa cosa — e non è la nostra.
+    </p>
+
+    <div class="scorri">
+      <table>
+        <thead>
+          <tr><th>Prodotto</th><th>Azienda</th><th>Cosa fa</th><th>Dove</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>CEREBRO</td><td>Leica Biosystems</td>
+            <td>Identificazione, tracciamento e workflow del campione dentro il laboratorio, con catena di custodia documentata</td>
+            <td class="dove">Internazionale</td>
+          </tr>
+          <tr>
+            <td>VANTAGE</td><td>Roche / Ventana</td>
+            <td>Workflow di anatomia patologica integrato col sistema informativo di laboratorio</td>
+            <td class="dove">Internazionale</td>
+          </tr>
+          <tr>
+            <td>Specimen&nbsp;Track</td><td>GAO RFID</td>
+            <td>Tracciamento RFID di dati, posizione e storia del campione</td>
+            <td class="dove">Internazionale</td>
+          </tr>
+          <tr>
+            <td>Specimen&nbsp;Tracking</td><td>General Data / Sonitor</td>
+            <td>Verifica dell'identità di contenitore, cassetta e vetrino a ogni passo; catena di custodia via RTLS</td>
+            <td class="dove">Internazionale</td>
+          </tr>
+          <tr>
+            <td>SpyTrace</td><td>AHSI</td>
+            <td>Sistema di tracciabilità dei campioni</td>
+            <td class="dove">Italia</td>
+          </tr>
+          <tr>
+            <td>TDHistoCyto</td><td>Technidata</td>
+            <td>Software per anatomia patologica con strumenti di tracciabilità</td>
+            <td class="dove">Italia</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+
+    <p class="guida" style="margin-top:22px">
+      A questi si aggiungono installazioni già in esercizio al Policlinico Campus Bio-Medico
+      di Roma e all'Istituto Nazionale dei Tumori di Milano, e uno studio della Mayo Clinic
+      su RFID passivi applicati a biopsie.
+    </p>
+
+    <div class="rilievo">
+      <p>
+        Tutti tracciano <strong>dentro</strong> il laboratorio, e tutti sono legati al
+        sistema informativo. Il tag è un puntatore a un database: fuori dalla rete che
+        ospita quel database, l'etichetta non dice più niente.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <span class="occhiello">Il posizionamento</span>
+    <h2>Dove non c'è nessuno</h2>
+    <p class="guida">
+      Il problema che nessuno di quei prodotti risolve è il passaggio da un laboratorio
+      all'altro: la scatola che parte, viaggia e arriva. Tre cose lo rendono possibile.
+    </p>
+
+    <div class="argomenti">
+      <article class="argomento">
+        <h3>I dati viaggiano nel tag</h3>
+        <p>
+          Anagrafica, reperto e numerazione stanno cifrati dentro il chip e legati al suo
+          numero di serie di fabbrica. Il laboratorio destinatario legge la scatola
+          <b>ancora chiusa</b> e sa cosa è arrivato: senza rete condivisa, senza VPN, senza
+          integrare due sistemi informativi.
+        </p>
+      </article>
+      <article class="argomento">
+        <h3>Il sigillo verifica, non scopre</h3>
+        <p>
+          Alla chiusura il sistema confronta con un elenco noto, ripetendo la lettura al
+          variare di potenza, antenne e parametri radio. O li trova tutti, o dice
+          <b>quali</b> mancano, con nome e paziente. Non esiste una schermata verde con un
+          contenitore mancante.
+        </p>
+      </article>
+      <article class="argomento">
+        <h3>Privacy per costruzione</h3>
+        <p>
+          Pseudonimo in chiaro, dati cifrati AES-256-GCM legati al chip: un tag copiato su
+          un altro chip <b>non supera l'autenticazione</b>. Nessun dato di paziente in
+          chiaro, mai. È un argomento di vendita prima che un adempimento.
+        </p>
+      </article>
+    </div>
+  </section>
+
+  <section>
+    <span class="occhiello">Il nome</span>
+    <h2>Otto candidati, due sopravvissuti</h2>
+    <p class="guida">
+      Su ogni nome è stata fatta una verifica preliminare — ricerca mirata su settore
+      medicale, software di laboratorio e prodotti concorrenti. Ha scartato due nomi che
+      sembravano ottimi, quindi è servita.
+    </p>
+
+    <div class="scartati">
+      <div class="scartato">
+        <b>TESSERA <span class="esito esito--no">scartato</span></b>
+        <span>
+          Collide con la <b>Tessera Sanitaria</b> e il Sistema TS. In sanità italiana è
+          inusabile — peccato, perché l'idea della <i>tessera hospitalis</i>, il gettone
+          spezzato le cui metà devono combaciare, era perfetta.
+        </span>
+      </div>
+      <div class="scartato">
+        <b>SIGILLUM <span class="esito esito--no">scartato</span></b>
+        <span>
+          <b>LEAF srls</b> ha già «Sigillum»: smart packaging con tag NFC non clonabili e
+          crittografia asimmetrica per l'autenticità del prodotto. È quasi il nostro stesso
+          concetto: conflitto diretto. Esistono anche <i>Sigillum Sign</i> e un gestionale
+          notarile omonimo.
+        </span>
+      </div>
+      <div class="scartato">
+        <b>CAPSA <span class="esito esito--no">scartato</span></b>
+        <span>Esiste <b>Colasoft Capsa</b>, analizzatore di rete. Settore diverso, ma un software con quel nome c'è già.</span>
+      </div>
+      <div class="scartato">
+        <b>*TRACK / *TRACE <span class="esito esito--no">scartato</span></b>
+        <span>
+          Zona affollatissima: SpyTrace, Specimen Track, Lab Track. Un nome così ci mette
+          <b>dentro</b> la categoria sbagliata — esattamente ciò che non vogliamo.
+        </span>
+      </div>
+      <div class="scartato">
+        <b>INTEGRA <span class="esito esito--no">scartato</span></b>
+        <span>Integra LifeSciences è un grande gruppo del medicale.</span>
+      </div>
+    </div>
+
+    <div class="candidati">
+      <article class="candidato candidato--primo">
+        <div class="candidato__testa">
+          <h3>TESTIMONE</h3>
+          <span class="esito esito--ok">passa</span>
+        </div>
+        <div class="candidato__ruolo">Prima scelta</div>
+        <p>
+          Il testimone è insieme <b>l'oggetto che passa di mano nella staffetta</b> e
+          <b>chi attesta</b>. Le due cose che fa il prodotto, in una parola sola:
+          accompagna il campione da un laboratorio all'altro, e certifica.
+        </p>
+        <div class="pro-contro">
+          <div class="si"><i>+</i><span>Parola comune in un campo estraneo: marchio arbitrario, quindi forte e difendibile — la stessa logica di «Apple» per i computer.</span></div>
+          <div class="si"><i>+</i><span>Registro serio, adatto al contesto clinico.</span></div>
+          <div class="no"><i>−</i><span>Quattro sillabe, e all'estero non si spiega da sola.</span></div>
+        </div>
+      </article>
+
+      <article class="candidato candidato--primo">
+        <div class="candidato__testa">
+          <h3>PLICO</h3>
+          <span class="esito esito--ok">passa</span>
+        </div>
+        <div class="candidato__ruolo">Se conta l'export</div>
+        <p>
+          Il <b>plico sigillato</b> è già un concetto italiano di integrità e custodia:
+          l'involucro chiuso il cui contenuto è garantito. Dice cosa fa il prodotto senza
+          descrivere il software.
+        </p>
+        <div class="pro-contro">
+          <div class="si"><i>+</i><span>Due sillabe, pronunciabile in qualunque lingua, sta bene ovunque.</span></div>
+          <div class="si"><i>+</i><span>Nessuna collisione trovata in ambito medicale o di laboratorio.</span></div>
+          <div class="no"><i>−</i><span>Fuori d'Italia non evoca nulla: nome puro, da riempire di significato.</span></div>
+        </div>
+      </article>
+
+      <article class="candidato">
+        <div class="candidato__testa">
+          <h3>STAFFETTA</h3>
+          <span class="esito esito--ok">passa</span>
+        </div>
+        <div class="candidato__ruolo">Alternativa</div>
+        <p>
+          La corsa a squadre: il campione passa da un laboratorio all'altro e
+          <b>niente cade</b>. Stessa forza di marchio arbitrario.
+        </p>
+        <div class="pro-contro">
+          <div class="si"><i>+</i><span>Immediata, si spiega da sola.</span></div>
+          <div class="no"><i>−</i><span>Registro sportivo, forse troppo leggero per l'anatomia patologica.</span></div>
+        </div>
+      </article>
+
+      <article class="candidato">
+        <div class="candidato__testa">
+          <h3>VIRAGGIO</h3>
+          <span class="esito esito--ok">passa</span>
+        </div>
+        <div class="candidato__ruolo">Alternativa</div>
+        <p>
+          Il cambio di colore che <b>rivela ciò che l'occhio non vede</b>: il mestiere
+          dell'ematossilina e dell'eosina, e la metafora su cui è costruita tutta l'identità
+          visiva del programma.
+        </p>
+        <div class="pro-contro">
+          <div class="si"><i>+</i><span>Coerenza totale con il design già realizzato.</span></div>
+          <div class="no"><i>−</i><span>Lungo, e fuori dal laboratorio non dice niente.</span></div>
+        </div>
+      </article>
+    </div>
+
+    <p class="consiglio">
+      <strong>TESTIMONE</strong> se il mercato è italiano e conta la serietà del registro.
+      <strong>PLICO</strong> se RIXLAB guarda all'export o vuole un nome corto da mettere
+      ovunque. Entrambi vanno verificati sulle banche dati ufficiali prima di investirci un euro.
+    </p>
+  </section>
+
+  <section>
+    <span class="occhiello">Il marchio</span>
+    <h2>Tre strade, una preferita</h2>
+    <p class="guida">
+      La tavolozza viene dall'istologia: <b>ematossilina</b> e <b>eosina</b>, i due coloranti
+      con cui è colorato ogni vetrino al mondo. Non è decorazione a tema — l'eosina rende
+      visibile il tessuto invisibile, il campo RF rende visibile il tag invisibile. Nel
+      programma l'eosina è riservata alla sola attività radio, e un'occhiata allo schermo
+      dice se il lettore sta parlando con un tag.
+    </p>
+
+    <div class="concetti">
+      <article class="concetto">
+        <svg width="72" height="72" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <rect x="5.5" y="11.5" width="53" height="41" rx="5" stroke="currentColor" stroke-width="3"/>
+          <circle cx="20" cy="26" r="4" fill="currentColor"/>
+          <circle cx="32" cy="26" r="4" fill="currentColor"/>
+          <circle cx="44" cy="26" r="4" fill="currentColor"/>
+          <circle cx="20" cy="38" r="4" fill="currentColor"/>
+          <circle cx="32" cy="38" r="4" fill="#d9536b"/>
+          <circle cx="44" cy="38" r="4" fill="currentColor"/>
+        </svg>
+        <h3>A — L'insieme chiuso</h3>
+        <p>
+          La scatola e il suo contenuto, tutto presente. Un punto in eosina: quello che il
+          lettore sta leggendo adesso. È <b>letteralmente la schermata del sigillo</b> già
+          realizzata nel programma, ridotta a segno.
+        </p>
+      </article>
+
+      <article class="concetto">
+        <svg width="72" height="72" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <path d="M29 8a24 24 0 0 0 0 48" stroke="currentColor" stroke-width="3.4" stroke-linecap="round"/>
+          <path d="M35 8a24 24 0 0 1 0 48" stroke="#d9536b" stroke-width="3.4" stroke-linecap="round"/>
+          <path d="M29 20v6M29 32v6M29 44v2" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+          <path d="M35 20v6M35 32v6M35 44v2" stroke="#d9536b" stroke-width="3" stroke-linecap="round"/>
+        </svg>
+        <h3>B — Le due metà</h3>
+        <p>
+          Due semicerchi che insieme formano un cerchio: la <i>tessera hospitalis</i>, il
+          gettone spezzato le cui metà devono combaciare per provare l'identità. Chi spedisce
+          e chi riceve. Elegante, ma richiede spiegazione.
+        </p>
+      </article>
+
+      <article class="concetto">
+        <svg width="72" height="72" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <rect x="14" y="10" width="36" height="44" rx="18" transform="rotate(24 32 32)" stroke="currentColor" stroke-width="3"/>
+          <path d="M22 40 42 24" stroke="#d9536b" stroke-width="6" stroke-linecap="round"/>
+        </svg>
+        <h3>C — Il testimone</h3>
+        <p>
+          Il cilindro della staffetta con una banda in eosina. Diretto, ma funziona solo se
+          il nome scelto è TESTIMONE, e rischia di sembrare sportivo.
+        </p>
+      </article>
+    </div>
+
+    <div class="scale">
+      <figure>
+        <svg width="128" height="128" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <rect x="5.5" y="11.5" width="53" height="41" rx="5" stroke="currentColor" stroke-width="3"/>
+          <circle cx="20" cy="26" r="4" fill="currentColor"/><circle cx="32" cy="26" r="4" fill="currentColor"/>
+          <circle cx="44" cy="26" r="4" fill="currentColor"/><circle cx="20" cy="38" r="4" fill="currentColor"/>
+          <circle cx="32" cy="38" r="4" fill="#d9536b"/><circle cx="44" cy="38" r="4" fill="currentColor"/>
+        </svg>
+        <figcaption>128 px</figcaption>
+      </figure>
+      <figure>
+        <svg width="48" height="48" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <rect x="5.5" y="11.5" width="53" height="41" rx="5" stroke="currentColor" stroke-width="3"/>
+          <circle cx="20" cy="26" r="4" fill="currentColor"/><circle cx="32" cy="26" r="4" fill="currentColor"/>
+          <circle cx="44" cy="26" r="4" fill="currentColor"/><circle cx="20" cy="38" r="4" fill="currentColor"/>
+          <circle cx="32" cy="38" r="4" fill="#d9536b"/><circle cx="44" cy="38" r="4" fill="currentColor"/>
+        </svg>
+        <figcaption>48 px</figcaption>
+      </figure>
+      <figure>
+        <svg width="16" height="16" viewBox="0 0 64 64" fill="none" aria-hidden="true">
+          <rect x="5.5" y="11.5" width="53" height="41" rx="5" stroke="currentColor" stroke-width="4"/>
+          <circle cx="20" cy="26" r="4.5" fill="currentColor"/><circle cx="32" cy="26" r="4.5" fill="currentColor"/>
+          <circle cx="44" cy="26" r="4.5" fill="currentColor"/><circle cx="20" cy="38" r="4.5" fill="currentColor"/>
+          <circle cx="32" cy="38" r="4.5" fill="#d9536b"/><circle cx="44" cy="38" r="4.5" fill="currentColor"/>
+        </svg>
+        <figcaption>16 px</figcaption>
+      </figure>
+      <p class="scale__nota">
+        Il concetto A regge la riduzione: a 16 px resta leggibile come contenitore pieno, e
+        funziona anche in monocromatico. È il criterio che scarta la maggior parte dei
+        marchi belli sulla carta.
+      </p>
+    </div>
+
+    <p class="guida" style="margin-top:26px">
+      Per il logotipo, <b>Bahnschrift</b>: il grottesco condensato derivato dal DIN, già usato
+      nel programma per i numeri grandi. Registro da pannello strumenti, non da app di
+      consumo — ed è installato su ogni Windows, quindi nessun costo di licenza e nessun
+      carattere da distribuire.
+    </p>
+  </section>
+
+  <section>
+    <span class="occhiello">Prima di stampare qualsiasi cosa</span>
+    <h2>La verifica vera sul nome</h2>
+    <p class="guida">
+      Tutte gratuite, si fanno in un'ora. Le classi da controllare sono la <b>9</b> (software)
+      e la <b>42</b> (servizi di sviluppo software); se il prodotto venisse venduto insieme
+      all'hardware, anche la <b>10</b> (apparecchi medicali).
+    </p>
+    <ol class="passi">
+      <li><span><a href="https://www.tmdn.org/tmview/">TMview</a> — aggrega EUIPO, tutti gli uffici nazionali UE e molti extra-UE. Il primo posto dove guardare.</span></li>
+      <li><span><a href="https://uibm.mise.gov.it/">UIBM</a> — marchi italiani.</span></li>
+      <li><span><a href="https://euipo.europa.eu/eSearch/">EUIPO eSearch plus</a> — marchi dell'Unione Europea.</span></li>
+      <li><span><a href="https://branddb.wipo.int/">WIPO Global Brand Database</a> — copertura mondiale.</span></li>
+      <li><span>Registro Imprese: che non esista una società con quella denominazione nel settore.</span></li>
+      <li><span>Domini <code>.it</code>, <code>.eu</code>, <code>.com</code>.</span></li>
+    </ol>
+    <p class="guida" style="margin-top:22px">
+      Poi una <b>ricerca di anteriorità da un mandatario marchi</b>: costa qualche centinaio
+      di euro e copre anche i marchi <i>simili</i>, non solo quelli identici — che è dove
+      nascono i problemi veri.
+    </p>
+  </section>
+
+  <div class="limiti">
+    <b>Limiti di questo documento.</b> La verifica sui nomi è <b>preliminare</b>: esclude le
+    collisioni evidenti — e ne ha già trovate due — ma non garantisce che un nome sia libero.
+    Quella garanzia la dà solo una ricerca di anteriorità professionale. Il quadro dei
+    concorrenti è aggiornato ad agosto 2026 e riflette quanto pubblicamente reperibile.
+  </div>
+
+</div>

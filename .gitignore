@@ -14,8 +14,26 @@ venv/
 logs/
 *.log
 
+# Chiavi di cifratura e archivio pazienti: mai versionati, ovunque si trovino.
+# I dati sono sanitari e le chiavi aprono i tag di tutto il circuito.
+*lims_keys*.json
+*.db
+*.sqlite
+*.sqlite3
+
+# Note personali su contratto e collaborazione: contengono condizioni di lavoro
+# e valutazioni riservate, non hanno niente a che fare col codice.
+NOTE_RISERVATE_*.md
+
 # OS / editor
 Thumbs.db
 .DS_Store
 .vscode/
 .idea/
+# Tooling / coverage / build
+.coverage
+coverage.xml
+htmlcov/
+build/
+dist/
+graphify-out/
