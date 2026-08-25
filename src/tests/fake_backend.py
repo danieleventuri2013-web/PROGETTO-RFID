@@ -97,7 +97,14 @@ class FakeTagBackend:
         # Stato radio corrente, impostato da `configure` / `configure_gen2`:
         # decide quali tag rispondono all'inventory successivo.
         self.read_power_cdbm = 3000
-        self.gen2: dict[str, Any] = {}
+        self.gen2: dict[str, Any] = {
+            "session": 0,
+            "target": 0,
+            "target_dynamic": False,
+            "q": None,
+            "q_dynamic": True,
+            "rf_mode": 0x6B,
+        }
         self.configure_calls = 0
         self.started = False
         self.listeners: list[Any] = []
@@ -124,12 +131,24 @@ class FakeTagBackend:
             for chiave, valore in (
                 ("session", settings.session),
                 ("target", settings.target),
+                ("q", settings.q),
                 ("rf_mode", settings.rf_mode),
             )
             if valore is not None
         }
+        if settings.target is not None:
+            applicati["target_dynamic"] = settings.target_dynamic
+        if settings.q_dynamic:
+            applicati["q"] = None
+            applicati["q_dynamic"] = True
+        elif settings.q is not None:
+            applicati["q_dynamic"] = False
         self.gen2.update(applicati)
         return self._ok("configure_gen2", {"applied": applicati})
+
+    def read_gen2_settings(self) -> ServiceResponse:
+        self.calls.append("read_gen2_settings")
+        return self._ok("read_gen2_settings", {"settings": dict(self.gen2)})
 
     def _visible(self, tag: SimulatedTag, antenna: int) -> bool:
         """Il tag risponde a questa antenna, a questa potenza, in questo ciclo?"""
@@ -175,7 +194,7 @@ class FakeTagBackend:
     def snapshot(self) -> dict[str, Any]:
         return {
             "state": self.state.value,
-            "api_version": "1.2",
+            "api_version": "1.3",
             "antennas": list(self.antennas),
             "tags_in_field": len(self.tags),
         }

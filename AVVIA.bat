@@ -115,7 +115,13 @@ echo.
 echo Misura quanti dati entrano nei tag che hai in mano: modello del chip,
 echo dimensione della memoria utente, presenza del numero di serie di fabbrica.
 echo.
-echo   Posizionare UN SOLO tag davanti alle antenne, poi premere INVIO.
+echo Il valore misurato viene scritto da solo in src\app\config.yaml
+echo (lims.user_memory_bytes). Vale sempre il tag PEGGIORE del lotto: la soglia
+echo scende da sola e non sale, percio' conviene provarne tre o quattro dello
+echo stesso lotto uno dopo l'altro.
+echo.
+echo   Posizionare UN SOLO tag sull'antenna di scrittura, gli altri lontani,
+echo   poi premere INVIO.
 echo.
 pause >nul
 %PY% run.py tag-profile
@@ -135,10 +141,15 @@ echo.
 echo   Senza tag di controllo esterni la campagna sceglierebbe sempre la
 echo   potenza massima, che e' anche quella che legge il tavolo accanto.
 echo.
-echo   Servono gli EPC dei tag: usare la voce 6 per ricavarli, oppure lanciare
-echo   il comando a mano con --inside e --outside.
+echo   ---------------------------------------------------------------------
+echo   QUESTA VOCE NON LANCIA LA CAMPAGNA: da riga di comando servirebbero gli
+echo   EPC dei tag scritti a mano. Si fa dalla voce 6 (interfaccia browser),
+echo   scheda STRUMENTI, riquadro "Campagna di misura": i tre bottoni
+echo   "Rileva i tag dentro" / "Rileva i tag fuori" / "Avvia la campagna"
+echo   trovano gli EPC da soli e mostrano l'avanzamento.
+echo   ---------------------------------------------------------------------
 echo.
-echo   Esempio:
+echo   In alternativa, a mano:
 echo     python run.py campaign --inside-from-shipment 1 --outside AABB... CCDD...
 echo.
 pause

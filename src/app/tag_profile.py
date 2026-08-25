@@ -13,8 +13,19 @@ Esegue in sequenza:
 
 e salva un report JSON in logs/tag_profile_<timestamp>.json.
 
+**Il valore misurato finisce da solo in `config.yaml`** (`lims.user_memory_bytes`,
+piu' un registro `lims.tag_misurato` che dice da dove viene). Trascriverlo a mano
+era il passaggio piu' facile da dimenticare, e dimenticarlo si scopre solo quando
+la scrittura fallisce a meta' sul primo campione vero.
+
+Vale sempre il tag **peggiore** del lotto: la soglia scende da sola e non sale,
+perche' alzarla su un tag piu' capiente renderebbe illeggibili quelli piu'
+piccoli gia' misurati. `--forza` fa ripartire il conteggio da questo tag.
+
 Uso:
   python run.py tag-profile
+  python run.py tag-profile --non-scrivere      # misura e basta
+  python run.py tag-profile --forza             # riparte da questo tag
   python src/app/tag_profile.py --config src/app/config.yaml --debug
 
 Exit code: 0 = tag utilizzabile, 1 = tag non adatto, 2 = profilazione non riuscita.
@@ -32,6 +43,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from app.config_misura import Misura, scrivi_misura
 from lims.profiler import TagProfile, profile_tag, summarize
 from rfid_silion.diagnostics import checkpoint, setup_logging
 from rfid_silion.service import AntennaPower, ReaderSettings, RFIDService
@@ -103,9 +115,10 @@ def _print_summary(profile: TagProfile) -> None:
     if profile.tid is not None:
         print(f"{mark(True)} Chip: {profile.tid.describe()}")
         print(f"       TID: {profile.tid.tid_hex}")
+    suffisso_capienza = " o piu'" if profile.user_capped else ""
     print(
         f"{mark(profile.user_bytes > 0)} USER memory: {profile.user_bytes} byte "
-        f"({profile.user_words} word){' o piu\'' if profile.user_capped else ''}"
+        f"({profile.user_words} word){suffisso_capienza}"
     )
     print(f"       Payload utile dopo la cifratura: {profile.usable_payload_bytes} byte")
     print(f"       Letture eseguite: {profile.reads_performed}")
@@ -118,6 +131,16 @@ def main() -> int:
     ap = argparse.ArgumentParser(description="Profilazione di un tag UHF sconosciuto")
     ap.add_argument("--config", default=str(Path(__file__).with_name("config.yaml")))
     ap.add_argument("--debug", action="store_true", help="log DEBUG (dump esadecimale frame TX/RX)")
+    ap.add_argument(
+        "--non-scrivere",
+        action="store_true",
+        help="misura e basta, senza aggiornare config.yaml",
+    )
+    ap.add_argument(
+        "--forza",
+        action="store_true",
+        help="riparte da questo tag anche se ne era gia' stato misurato uno piu' piccolo",
+    )
     args = ap.parse_args()
 
     cfg = load_config(args.config)
@@ -147,9 +170,60 @@ def main() -> int:
         json.dump(profile.to_dict(), f, indent=2, ensure_ascii=False, default=str)
     print(f"Report salvato in: {out}")
 
+    if profile.ok and not args.non_scrivere:
+        _aggiorna_configurazione(args.config, profile, forza=args.forza)
+
     if not profile.ok:
         return 2
     return 0 if profile.suitable else 1
+
+
+def _aggiorna_configurazione(percorso: str, profile: TagProfile, *, forza: bool) -> None:
+    """Riporta la misura in `config.yaml` e dice cosa e' cambiato.
+
+    Se la memoria e' risultata «tappata» (`user_capped`) il tag ne ha almeno
+    tanta quanta ne e' stata letta, ma la ricerca si e' fermata al limite del
+    comando: scriverla come misura esatta farebbe passare per certo un numero
+    che e' un minimo. Meglio non toccare niente e dirlo.
+    """
+    if profile.user_capped:
+        print(
+            f"\n[config] Non aggiornata: la misura si e' fermata al limite del comando "
+            f"({profile.user_bytes} byte o piu'), quindi non e' un valore esatto.\n"
+            f"         Se serve, scrivere lims.user_memory_bytes a mano in {percorso}."
+        )
+        return
+
+    misura = Misura(
+        user_bytes=profile.user_bytes,
+        tid_serializzato=bool(profile.tid and profile.tid.serialized),
+        chip=profile.tid.describe() if profile.tid else "",
+        epc=profile.epc,
+    )
+    try:
+        esito = scrivi_misura(percorso, misura, forza=forza)
+    except OSError as errore:
+        print(f"\n[config] Non aggiornata: {errore}")
+        return
+
+    if not esito.scritto:
+        print(f"\n[config] Non aggiornata: {esito.motivo}")
+        return
+
+    cambiato = esito.prima != esito.dopo
+    print(f"\n[config] {percorso}")
+    print(
+        f"         lims.user_memory_bytes: {esito.prima} -> {esito.dopo}"
+        if cambiato
+        else f"         lims.user_memory_bytes: {esito.dopo} (invariato)"
+    )
+    print(f"         {esito.motivo}")
+    if esito.tag_provati < 3:
+        print(
+            f"         Tag misurati finora: {esito.tag_provati}. Conviene provarne "
+            "tre o quattro dello stesso lotto: se danno risultati diversi il lotto "
+            "non e' omogeneo e vale il peggiore."
+        )
 
 
 if __name__ == "__main__":

@@ -3,3 +3,4 @@ pyyaml>=6.0
 matplotlib>=3.6
 numpy>=1.24
 cryptography>=42.0
+keyring>=25.0

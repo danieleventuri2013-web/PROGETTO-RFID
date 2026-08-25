@@ -232,6 +232,9 @@ class RFIDProcessClient:
     def configure_gen2(self, settings: Gen2Settings | Mapping[str, Any]) -> ServiceResponse:
         return self._call_service("rfid.configure_gen2", _params(settings))
 
+    def read_gen2_settings(self) -> ServiceResponse:
+        return self._call_service("rfid.read_gen2_settings", {})
+
     def tune_reader(self, settings: ReaderTuning | Mapping[str, Any]) -> ServiceResponse:
         return self._call_service("rfid.tune_reader", _params(settings))
 

@@ -257,28 +257,79 @@ def test_spedizione_completa() -> None:
         _, container_ids = _archivio_popolato(db)
         for offset, container_id in enumerate(container_ids):
             db.assign_epc(container_id, f"0100A5000F12060{offset}03AABBC{offset}")
+            db.mark_provisioned(container_id)
         shipment_id = db.create_shipment(
             Shipment(destinazione="Laboratorio Centrale", data=date(2026, 8, 16))
         )
         assert db.add_to_shipment(shipment_id, container_ids) == 3
         contenuto = db.shipment_contents(shipment_id)
         assert [item.label for item in contenuto] == ["1/3", "2/3", "3/3"]
-        assert all(item.state == ContainerState.SHIPPED for item in contenuto)
+        assert all(item.state == ContainerState.PACKED for item in contenuto)
 
-        db.set_shipment_state(shipment_id, ShipmentState.SENT)
+        db.set_shipment_state(shipment_id, ShipmentState.SEALED)
+        db.mark_manifest_exported(shipment_id, "a" * 64)
+        db.confirm_shipment_sent(shipment_id)
         stato = db.connection.execute(
             "SELECT state FROM shipments WHERE id=?", (shipment_id,)
         ).fetchone()["state"]
         assert stato == "sent"
 
 
-def test_aggiunta_ripetuta_alla_spedizione_e_idempotente() -> None:
+def test_un_contenitore_preparato_non_si_aggiunge_due_volte() -> None:
     with LimsDatabase() as db:
         _, container_ids = _archivio_popolato(db, totale=1)
+        db.assign_epc(container_ids[0], "0100A5000F1206010111AABB")
+        db.mark_provisioned(container_ids[0])
         shipment_id = db.create_shipment(Shipment(destinazione="Lab"))
         db.add_to_shipment(shipment_id, container_ids)
-        db.add_to_shipment(shipment_id, container_ids)
+        _expect(
+            LimsDatabaseError,
+            lambda: db.add_to_shipment(shipment_id, container_ids),
+            "un contenitore packed non torna nella coda",
+        )
         assert len(db.shipment_contents(shipment_id)) == 1
+
+
+def test_ricezione_persistente_e_motivazione_non_conformita() -> None:
+    with LimsDatabase() as db:
+        inbound_id, gia_nota = db.import_inbound_manifest(
+            origin_lab_id=7,
+            origin_shipment_id=42,
+            manifest_hash="b" * 64,
+            encrypted_blob=b"distinta-cifrata",
+            destination="Lab B",
+            source_created_at="2026-08-17T10:00:00+02:00",
+            operator="DV",
+        )
+        assert gia_nota is False
+        stesso_id, gia_nota = db.import_inbound_manifest(
+            origin_lab_id=7,
+            origin_shipment_id=42,
+            manifest_hash="b" * 64,
+            encrypted_blob=b"distinta-cifrata",
+            destination="Lab B",
+            source_created_at="2026-08-17T10:00:00+02:00",
+            operator="DV",
+        )
+        assert (stesso_id, gia_nota) == (inbound_id, True)
+
+        db.record_inbound_reconciliation(
+            inbound_id,
+            operator="DV",
+            expected=["EPC1", "EPC2"],
+            arrived=["EPC1"],
+            missing=["EPC2"],
+            unexpected=[],
+        )
+        _expect(
+            LimsDatabaseError,
+            lambda: db.confirm_inbound_receipt(inbound_id, operator="DV"),
+            "la non conformita richiede una motivazione",
+        )
+        db.confirm_inbound_receipt(
+            inbound_id, operator="DV", nonconformity_reason="collo danneggiato"
+        )
+        assert db.inbound_row(inbound_id)["state"] == "received"
 
 
 # --------------------------------------------------------------------------

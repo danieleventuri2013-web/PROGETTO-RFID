@@ -42,8 +42,8 @@ from .crypto import (
     PayloadAuthenticationError,
     UnknownKeyError,
     max_plaintext_bytes,
-    seal,
     open_sealed,
+    seal,
 )
 from .profiler import TID_AAD_BYTES, TID_AAD_WORDS
 from .responses import (

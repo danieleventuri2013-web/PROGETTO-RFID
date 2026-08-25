@@ -28,7 +28,6 @@ from rfid_silion.service import (
     LockRequest,
     LockTarget,
     RFIDService,
-    UnsafeWriteError,
 )
 
 

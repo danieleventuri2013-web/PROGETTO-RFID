@@ -45,10 +45,18 @@
      Nessun font scaricato: il laboratorio e' isolato dalla rete. Tre facce
      gia' presenti su Windows, scelte per ruolo.
      Bahnschrift e' il grottesco condensato derivato dal DIN: registro da
-     pannello strumenti, riservato ai numeri e alle etichette di sezione. */
-  --f-strumenti: "Bahnschrift", "DIN Condensed", "Segoe UI Semibold", sans-serif;
-  --f-testo: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
-  --f-mono: "Cascadia Mono", "Consolas", ui-monospace, monospace;
+     pannello strumenti, riservato ai numeri e alle etichette di sezione.
+
+     Le voci Android vengono dopo quelle Windows e non cambiano niente al
+     banco. Servono sulla tavoletta, dove nessuna faccia Microsoft esiste:
+     senza `sans-serif-condensed` (il nome con cui Chrome per Android espone
+     Roboto Condensed) tutto il registro da strumento decadrebbe al Roboto di
+     sistema, e le etichette maiuscole spaziate — pensate per una condensata —
+     diventerebbero piu' larghe dello spazio che hanno. */
+  --f-strumenti: "Bahnschrift", "DIN Condensed", "Roboto Condensed",
+    sans-serif-condensed, "Segoe UI Semibold", sans-serif;
+  --f-testo: "Segoe UI Variable Text", "Segoe UI", Roboto, system-ui, sans-serif;
+  --f-mono: "Cascadia Mono", "Consolas", "Roboto Mono", ui-monospace, monospace;
 
   --t-micro: 0.6875rem;
   --t-piccolo: 0.8125rem;

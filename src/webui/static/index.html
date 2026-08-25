@@ -2,10 +2,24 @@
 <html lang="it" data-tema="sistema">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- `interactive-widget=resizes-content`: quando la tastiera di Android si apre
+     deve restringere la pagina, non coprirla. Altrimenti si scrive alla cieca
+     sopra il campo. `viewport-fit=cover` serve alle tavolette con gli angoli
+     arrotondati. Lo zoom resta permesso: e' l'unico ingrandimento disponibile
+     a chi non vede bene, e toglierlo non guadagna niente. -->
+<meta name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#211a31" media="(prefers-color-scheme: dark)">
 <title>Tracciabilità campioni</title>
+<!-- Il vetrino del marchio, disegnato dal server (webui/icone.py): serve alla
+     linguetta del browser e alla schermata Home di Android. -->
+<link rel="icon" href="/icona-192.png" sizes="192x192" type="image/png">
 <link rel="stylesheet" href="tema.css">
 <link rel="stylesheet" href="app.css">
+<!-- Ultimo: tutto quello che contiene vale solo in modalita' tavoletta. -->
+<link rel="stylesheet" href="tocco.css">
 </head>
 <body>
 
@@ -96,6 +110,11 @@
 </nav>
 
 <main class="palco">
+
+  <aside class="workflow-bar" id="workflow-bar" aria-live="polite">
+    <span class="etichetta">Lavoro attivo</span>
+    <span id="workflow-stato">Nessun flusso da riprendere</span>
+  </aside>
 
   <!-- ================================================================== -->
   <!-- ACCETTAZIONE                                                        -->
@@ -289,6 +308,7 @@
         <div class="serie__testa">
           <span class="etichetta">Contenitori dell'accettazione</span>
           <div class="serie__comandi">
+            <button class="bottone bottone--sobrio" id="nuova-accettazione">Nuova accettazione</button>
             <button class="bottone bottone--sobrio" id="cambia-conteggio">Cambia il numero…</button>
             <button class="bottone bottone--sobrio" id="annulla-accettazione">Annulla l'accettazione</button>
             <button class="bottone bottone--sobrio" id="vai-al-sigillo">Vai al sigillo →</button>
@@ -319,6 +339,16 @@
         <button class="bottone" id="prepara">Prepara la spedizione</button>
         <span class="tenue" id="errore-spedizione" role="alert"></span>
       </div>
+
+      <fieldset class="coda" id="coda-spedizione">
+        <legend class="etichetta">Contenitori pronti da includere</legend>
+        <div class="coda__comandi">
+          <button type="button" class="bottone bottone--sobrio" id="seleziona-coda">Seleziona tutti</button>
+          <button type="button" class="bottone bottone--sobrio" id="aggiorna-coda">Aggiorna elenco</button>
+          <span class="tenue" id="coda-riepilogo">Nessun contenitore pronto</span>
+        </div>
+        <div class="coda__elenco" id="coda-elenco"></div>
+      </fieldset>
     </div>
 
     <div class="pannello pannello--nascosto" id="pannello-sigillo">
@@ -351,10 +381,27 @@
           <dl class="verdetto__dettagli" id="verdetto-dettagli"></dl>
 
           <div class="verdetto__azioni">
+            <span class="pastiglia" id="stato-spedizione">bozza</span>
             <button class="bottone bottone--radio" id="sigilla">Chiudo la scatola e certifico</button>
             <button class="bottone bottone--sobrio" id="interrompi" hidden>Interrompi</button>
             <button class="bottone" id="esporta" disabled>Esporta la distinta cifrata</button>
-            <button class="bottone bottone--sobrio" id="prepara-email" disabled>Prepara l'email al destinatario</button>
+            <button class="bottone" id="invia-pec" disabled>Archivia e invia via PEC</button>
+            <button class="bottone bottone--sobrio" id="aggiorna-pec" disabled>Aggiorna ricevute PEC</button>
+            <button class="bottone bottone--sobrio" id="prepara-email" disabled>Prepara email manuale</button>
+            <button class="bottone" id="conferma-invio" disabled>Conferma la partenza</button>
+            <button class="bottone bottone--sobrio" id="annulla-spedizione">Annulla la bozza</button>
+          </div>
+          <dl class="distinta" id="stato-pec" hidden></dl>
+          <div class="deroga" id="deroga-pec" hidden>
+            <p class="tenue">La PEC non risulta ancora consegnata. Solo un responsabile può autorizzare la partenza.</p>
+            <label class="campo">
+              <span class="etichetta">Motivo della deroga</span>
+              <textarea id="motivo-deroga" rows="2"></textarea>
+            </label>
+            <label class="campo">
+              <span class="etichetta">PIN del responsabile</span>
+              <input id="pin-deroga" type="password" autocomplete="off">
+            </label>
           </div>
         </aside>
       </div>
@@ -445,6 +492,11 @@
           <dl class="verdetto__dettagli" id="arrivo-dettagli"></dl>
           <div class="verdetto__azioni">
             <button class="bottone bottone--radio" id="leggi-volume" disabled>Leggi la scatola</button>
+            <label class="campo" id="campo-motivo-ricezione" hidden>
+              <span class="etichetta">Motivo della non conformità</span>
+              <textarea id="motivo-ricezione" rows="3" placeholder="Obbligatorio se mancano contenitori o ce ne sono di inattesi"></textarea>
+            </label>
+            <button class="bottone" id="conferma-ricezione" disabled>Conferma la ricezione</button>
           </div>
         </aside>
       </div>
@@ -506,7 +558,7 @@
         </p>
         <p>
           <b>Da dove partire.</b> 20 dBm in scrittura, 27–29 dBm in lettura, poi si
-          taratura con la campagna di misura qui sotto invece che a sentimento.
+          esegue la taratura con la campagna di misura qui sotto invece che a sentimento.
           Il limite ETSI vale sulla potenza irradiata (EIRP), quindi conta anche il
           guadagno dell'antenna: le SLP1027 sono da 8 dBi.
         </p>
@@ -1097,6 +1149,65 @@
         <button class="bottone bottone--radio" id="applica-collegamento">Collega con questi parametri</button>
         <button class="bottone bottone--primario" id="salva-collegamento">Salva come predefinito</button>
         <span class="tenue" id="esito-collegamento" role="status"></span>
+      </div>
+    </div>
+
+    <!-- Postazione ------------------------------------------------------- -->
+    <div class="pannello">
+      <header class="pannello__testa">
+        <h2>Postazione</h2>
+        <p class="tenue">
+          La stessa interfaccia si usa in due modi: al banco con mouse e tastiera,
+          e sulla tavoletta appoggiata accanto alle antenne, solo con le dita.
+          Cambiano le misure dei comandi e la disposizione delle colonne —
+          <strong>le funzioni sono le stesse</strong>, nessuna schermata sparisce.
+        </p>
+      </header>
+
+      <div class="trasporti">
+        <label class="trasporto">
+          <input type="radio" name="postazione" value="banco">
+          <span class="trasporto__corpo">
+            <b>Banco — mouse e tastiera</b>
+            <small>
+              Le misure normali. È il modo giusto per l'accettazione, che è
+              soprattutto digitazione, e per le impostazioni.
+            </small>
+          </span>
+        </label>
+
+        <label class="trasporto">
+          <input type="radio" name="postazione" value="tavoletta">
+          <span class="trasporto__corpo">
+            <b>Tavoletta — solo dita</b>
+            <small>
+              Bersagli da 52&nbsp;px, cursori delle potenze grandi come un
+              polpastrello e il comando che accende il trasmettitore che non
+              scorre mai via. Pensata per un 10" appoggiato accanto alle antenne.
+            </small>
+          </span>
+        </label>
+      </div>
+
+      <p class="tenue" id="postazione-nota"></p>
+
+      <h3 class="sezione">Aprire l'interfaccia sulla tavoletta</h3>
+      <div class="spiega">
+        <p>
+          La tavoletta non ha il lettore attaccato: lo comanda attraverso questo
+          computer, sulla rete locale. Perché ci arrivi, il programma deve essere
+          in ascolto anche fuori dal computer stesso — si imposta
+          <span class="hex">webui.host</span> in <span class="hex">config.yaml</span>
+          e <strong>conviene fissare anche</strong> <span class="hex">webui.token</span>,
+          altrimenti l'indirizzo cambia a ogni avvio e il collegamento salvato
+          sulla tavoletta smette di funzionare.
+        </p>
+      </div>
+      <dl class="distinta" id="indirizzi-tavoletta"></dl>
+
+      <div class="modulo__azioni">
+        <button class="bottone" id="copia-indirizzo" hidden>Copia l'indirizzo</button>
+        <span class="tenue" id="esito-postazione" role="status"></span>
       </div>
     </div>
 

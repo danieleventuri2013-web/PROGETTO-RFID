@@ -137,7 +137,8 @@ class ContainerState(str, Enum):
 
     PLANNED = "planned"          # registrato a sistema, tag non ancora scritto
     PROVISIONED = "provisioned"  # tag scritto e riletto con successo
-    SHIPPED = "shipped"          # inserito in una spedizione
+    PACKED = "packed"            # assegnato a una spedizione, non ancora partito
+    SHIPPED = "shipped"          # partenza confermata esplicitamente
     RECEIVED = "received"        # letto dal laboratorio destinatario
     VOIDED = "voided"            # annullato prima della spedizione: contenitore
                                  # rotto o tag guasto. Il campione passa a un
@@ -167,8 +168,10 @@ class TagState(str, Enum):
 class ShipmentState(str, Enum):
     OPEN = "open"
     SEALED = "sealed"
+    EXPORTED = "exported"
     SENT = "sent"
     RECEIVED = "received"
+    CANCELLED = "cancelled"
 
 
 @dataclass
@@ -212,6 +215,7 @@ class Case:
     data_prelievo: date | None = None
     reparto: str = ""
     medico: str = ""
+    external_ref: str = ""
     note: str = ""
     id: int | None = None
 
@@ -230,16 +234,18 @@ class Specimen:
     material_code: int = 0
     site_code: int = 0
     fixative_code: int = 0
+    flags: int = 0
     case_id: int | None = None
     id: int | None = None
 
     def __post_init__(self) -> None:
-        for name in ("material_code", "site_code", "fixative_code"):
+        for name in ("material_code", "site_code", "fixative_code", "flags"):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool):
                 raise TypeError(f"{name} deve essere un intero")
-            if not 0 <= value <= 0xFF:
-                raise ValueError(f"{name} fuori intervallo 0..255")
+            limite = 0xFFFF if name == "flags" else 0xFF
+            if not 0 <= value <= limite:
+                raise ValueError(f"{name} fuori intervallo 0..{limite}")
 
 
 @dataclass

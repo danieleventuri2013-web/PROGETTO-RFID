@@ -100,6 +100,8 @@ laboratorio:
   # Email del laboratorio e del referente: la seconda e' quella da cui parte la
   # distinta verso il destinatario.
   email: ''
+  # Casella PEC istituzionale della singola unita' locale.
+  pec: ''
   referente: ''
   email_referente: ''
 # Operatori abilitati. Nell'interfaccia si sceglie da un elenco, non si digita:
@@ -110,6 +112,9 @@ operatori: []
 #   cognome: Venturi
 #   nome: Daniele
 #   email: ''
+#   ruolo: operatore       # oppure responsabile, per le deroghe motivate
+#   pin_service: RFID-LIMS-SUPERVISORI
+#   pin_username: DV
 #   attivo: true
 # Laboratori destinatari. Riempiono il menu a tendina del sigillo, e la loro
 # email serve a preparare il messaggio con cui si spedisce la distinta.
@@ -117,6 +122,8 @@ destinatari: []
 # - nome: Anatomia patologica - Ospedale B
 #   codice: AP-B
 #   email: anatomia@ospedaleb.it
+#   pec: anatomia@pec.ospedaleb.it
+#   encryption_certificate: certificati/ospedale-b-encryption.pem
 #   referente: ''
 #   indirizzo: ''
 #   citta: ''
@@ -131,9 +138,27 @@ lims:
   # Portachiavi delle chiavi condivise con i laboratori destinatari.
   # NON versionare questo file e proteggere la cartella che lo contiene.
   keyring: logs/lims_keys.json
-  # Byte di USER memory dei tag in uso. Va impostato con il valore MISURATO da
-  # `python run.py tag-profile`, non con quello dedotto dal datasheet.
+  # Archivio delle copie esatte inviate: il file viene creato una sola volta.
+  manifest_archive: logs/archivio_distinte
+  # Vuoto = nessuna cancellazione automatica. Se valorizzato, l'eventuale
+  # procedura di conservazione dovra' rispettare questo numero di giorni.
+  manifest_retention_days:
+  # Byte di USER memory dei tag in uso. NON si deduce dal datasheet: i datasheet
+  # dichiarano «fino a» e i lotti variano. Lo scrive qui da solo
+  # `python run.py tag-profile` (voce 4 di AVVIA.bat) dopo averlo misurato.
   user_memory_bytes: 64
+  # Scritto da `python run.py tag-profile`: cosa e' stato misurato, su quanti
+  # tag e quando. Il codice non lo legge, e' la prova di dove viene il numero
+  # qui sopra. `minimo_byte` e' il tag peggiore incontrato: la soglia deve
+  # reggere anche quello, quindi scende da sola e non sale senza --forza.
+  tag_misurato:
+    chip: ''
+    tid_serializzato: false
+    minimo_byte: 0
+    ultimo_byte: 0
+    tag_provati: 0
+    ultimo_epc: ''
+    aggiornato: ''
   # Postazione di scrittura: antenna 3, distante dalle altre, un contenitore per
   # volta. Senza filtro Select il comando colpisce il primo tag che risponde;
   # con `lims.tagio` che ora usa il Select la distanza resta comunque la difesa
@@ -159,10 +184,44 @@ lims:
     copies: 1
     printer_host: ''
     printer_port: 9100
+
+# Invio automatico dalla PEC di questa unita'. La password non va qui: viene
+# letta dal portachiavi del sistema operativo con service+username.
+pec:
+  enabled: false
+  sender: ''
+  username: ''
+  credential_service: RFID-LIMS-PEC
+  smtp_host: ''
+  smtp_port: 465
+  smtp_mode: ssl          # ssl oppure starttls
+  imap_host: ''
+  imap_port: 993
+
+# Identita' crittografica della postazione e materiale per la ricezione. Le
+# chiavi private devono essere PKCS#8 cifrate; la password resta nel portachiavi.
+security:
+  station_certificate: ''
+  station_private_key: ''
+  recipient_certificate: ''
+  recipient_private_key: ''
+  trusted_ca: ''
+  revoked_serials: []
+  station_credential_service: RFID-LIMS-KEYS
+  station_credential_username: station-signing-key
+  recipient_credential_service: RFID-LIMS-KEYS
+  recipient_credential_username: recipient-decryption-key
 # Interfaccia web locale (`python run.py webui`).
 webui:
   # Solo l'interfaccia di loopback: l'hardware non deve essere raggiungibile
   # dalla rete del laboratorio.
+  #
+  # Per usare l'interfaccia da una tavoletta serve invece 0.0.0.0, cioe'
+  # «ascolta su tutte le schede di rete». E' una decisione, non una comodita':
+  # da quel momento chiunque sulla stessa rete e in possesso del token puo'
+  # comandare il lettore. Va fatto su una rete di laboratorio, non sul Wi-Fi
+  # degli ospiti, e insieme a un `token` fisso e lungo (vedi sotto).
+  # Vedi docs/POSTAZIONE_TAVOLETTA.md.
   host: 127.0.0.1
   port: 8770
   # Apre il browser da solo all'avvio, con il token di sessione nell'indirizzo.
@@ -173,6 +232,12 @@ webui:
   # salvare come collegamento sul desktop: comodo su una postazione dedicata.
   # NON usare parole comuni: chiunque sulla macchina che indovini il token puo'
   # usare il lettore.
+  #
+  # Con la tavoletta il token fisso non e' piu' una comodita' ma una
+  # condizione: il collegamento salvato sulla schermata Home contiene il
+  # token, e con un token nuovo a ogni avvio smette di funzionare ogni
+  # mattina. Una riga come questa va bene (generala a caso, non copiarla):
+  #   token: 'k7Qm-2xVb9La-Rt4Wz8Pn'
   token: ''
   # Tema iniziale: chiaro | scuro | sistema
   theme: sistema

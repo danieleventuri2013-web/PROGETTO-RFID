@@ -94,6 +94,7 @@ class RFIDRPCDispatcher:
         "rfid.write_epc",
         "rfid.lock",
         "rfid.configure_gen2",
+        "rfid.read_gen2_settings",
         "rfid.tune_reader",
         "rfid.antenna_diagnostics",
         "rfid.verify",
@@ -265,6 +266,9 @@ class RFIDRPCDispatcher:
                 {"session", "target", "target_dynamic", "q", "q_dynamic", "rf_mode"},
             )
             return self.service.configure_gen2(params)
+        if method == "rfid.read_gen2_settings":
+            self._reject_unknown(params, set())
+            return self.service.read_gen2_settings()
         if method == "rfid.tune_reader":
             self._reject_unknown(
                 params,

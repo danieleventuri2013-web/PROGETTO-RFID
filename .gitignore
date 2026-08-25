@@ -20,6 +20,10 @@ logs/
 *.db
 *.sqlite
 *.sqlite3
+*.key
+*.p12
+*.pfx
+*private*.pem
 
 # Note personali su contratto e collaborazione: contengono condizioni di lavoro
 # e valutazioni riservate, non hanno niente a che fare col codice.
@@ -37,3 +41,6 @@ htmlcov/
 build/
 dist/
 graphify-out/
+
+# Materiale dimostrativo generato localmente (screenshot, video e runtime isolato).
+demo-output/

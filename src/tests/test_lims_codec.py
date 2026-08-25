@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from lims.codec import (
     CF_PACKED_SIZE,
-    EpcInfo,
     EPC_SIZE,
     PAYLOAD_FIXED_SIZE,
     SpecimenFlags,

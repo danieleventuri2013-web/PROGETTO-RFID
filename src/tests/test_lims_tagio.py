@@ -12,6 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fake_backend import FakeTagBackend, SimulatedTag
+
 from lims.codec import SpecimenFlags, TagPayload, build_epc, parse_epc
 from lims.crypto import KEY_SIZE, Keyring
 from lims.db import LimsDatabase
@@ -339,7 +340,7 @@ def test_survey_isola_ogni_tag_col_filtro_select() -> None:
     assert len(rilievo.observations) == 3
 
     per_epc = {osservazione.epc: osservazione for osservazione in rilievo.observations}
-    for atteso, (epc, _tag) in zip((1, 2, 3), scritti):
+    for atteso, (epc, _tag) in zip((1, 2, 3), scritti, strict=True):
         osservazione = per_epc[epc]
         assert osservazione.status == "decodificato", osservazione.detail
         assert osservazione.payload is not None

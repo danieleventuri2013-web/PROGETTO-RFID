@@ -190,6 +190,28 @@ The everyday interface. Tkinter GUIs stay as bench tools.
 - **Under `prefers-reduced-motion` the RF arcs are painted statically** (`app.css`).
   They start at `opacity: 0` and only appear inside the animation, so killing
   animations would remove the only sign that the reader is transmitting.
+- **Two stations, one page.** `data-postazione="banco|tavoletta"` on `<html>`
+  selects the sizing; `static/tocco.css` is loaded last and every rule in it is
+  scoped under `:root[data-postazione="tavoletta"]`, so the PC cannot regress
+  from a tablet change. Resolution order is `?modo=` → localStorage →
+  `matchMedia("(pointer: coarse)")` — the URL wins because that's what the
+  Android home-screen shortcut carries. Layout overrides key on the *attribute*
+  plus width/orientation, never on `pointer:`, so tablet mode is previewable
+  (and testable) on a desktop; only the hover-neutralisation block keys on
+  `(hover: none)`. The scarce axis on a 10" tablet is **height** (≈960×600), which
+  is why `app.css`'s `max-width: 1100px` single-column rule is *undone* there.
+  Rationale and the bench guide: `docs/POSTAZIONE_TAVOLETTA.md`.
+- **The manifest is generated, not a static file** (`server.manifesto()`), because
+  `start_url` must carry the token; the route is token-checked like the API, and
+  `app.js` injects the `<link rel=manifest>` with the token it already has. The
+  icons (`webui/icone.py`) are drawn in pure Python — no Pillow, no binary blobs
+  in the repo — and are deliberately public: they are pixels, and Android fetches
+  them without the page's token.
+- **`webui.host: 0.0.0.0` is what lets a tablet in**, and it must go together with
+  a fixed `webui.token`: the saved shortcut embeds the token, so a per-boot token
+  breaks it every morning. `server.url` renders loopback when the host is a
+  wildcard (`http://0.0.0.0:8770` is not openable); `indirizzi()` returns the LAN
+  URLs, which only the server can know.
 
 ## Critical, non-obvious behaviors
 

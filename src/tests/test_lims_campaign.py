@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fake_backend import FakeTagBackend, SimulatedTag
+
 from lims.campaign import CampaignConfig, ReadCampaign, grid_passes
 from lims.codec import build_epc
 from lims.sealing import ReadPass

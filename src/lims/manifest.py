@@ -39,6 +39,7 @@ from .crypto import (
 __all__ = [
     "MANIFEST_MAGIC",
     "MANIFEST_SCHEMA_V1",
+    "MANIFEST_SCHEMA_V2",
     "Manifest",
     "ManifestEntry",
     "Reconciliation",
@@ -52,6 +53,7 @@ log = logging.getLogger("lims.manifest")
 
 MANIFEST_MAGIC = b"RFIDLIMS-MANIFEST"
 MANIFEST_SCHEMA_V1 = 1
+MANIFEST_SCHEMA_V2 = 2
 _NONCE_SIZE = 12
 _DOMAIN = b"RFID-LIMS-manifest-v1"
 
@@ -77,6 +79,7 @@ class ManifestEntry:
     site_code: int = 0
     data_prelievo: str | None = None
     descrizione: str = ""
+    flags: int = 0
 
     @property
     def label(self) -> str:
@@ -102,6 +105,9 @@ class Manifest:
     sealing: dict[str, Any] | None = None
     box_epc: str = ""
     notes: str = ""
+    manifest_uuid: str = ""
+    source_code: str = ""
+    destination_code: str = ""
 
     @property
     def epcs(self) -> tuple[str, ...]:
@@ -117,6 +123,9 @@ class Manifest:
             "operator": self.operator,
             "box_epc": self.box_epc,
             "notes": self.notes,
+            "manifest_uuid": self.manifest_uuid,
+            "source_code": self.source_code,
+            "destination_code": self.destination_code,
             "entries": [asdict(voce) for voce in self.entries],
             "sealing": self.sealing,
         }
@@ -124,7 +133,7 @@ class Manifest:
     @classmethod
     def from_dict(cls, value: Mapping[str, Any]) -> "Manifest":
         schema = int(value.get("schema", 0))
-        if schema != MANIFEST_SCHEMA_V1:
+        if schema not in (MANIFEST_SCHEMA_V1, MANIFEST_SCHEMA_V2):
             raise PayloadFormatError(f"versione distinta non supportata: {schema}")
         return cls(
             schema=schema,
@@ -135,6 +144,9 @@ class Manifest:
             operator=str(value.get("operator", "")),
             box_epc=str(value.get("box_epc", "")),
             notes=str(value.get("notes", "")),
+            manifest_uuid=str(value.get("manifest_uuid", "")),
+            source_code=str(value.get("source_code", "")),
+            destination_code=str(value.get("destination_code", "")),
             entries=[ManifestEntry.from_mapping(voce) for voce in value.get("entries", [])],
             sealing=value.get("sealing"),
         )
@@ -171,12 +183,13 @@ def build_manifest(
             container_total=record.total,
             codice_fiscale=record.codice_fiscale,
             display_name=record.display_name,
-            external_ref=riferimenti.get(record.accession_id, ""),
+            external_ref=riferimenti.get(record.accession_id, record.external_ref),
             material_code=record.material_code,
             fixative_code=record.fixative_code,
             site_code=record.site_code,
             data_prelievo=record.data_prelievo.isoformat() if record.data_prelievo else None,
             descrizione=record.descrizione,
+            flags=record.flags,
         )
         for record in contenuto
         if record.epc

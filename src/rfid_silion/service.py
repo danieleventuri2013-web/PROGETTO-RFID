@@ -29,7 +29,7 @@ log = logging.getLogger("rfid_silion.service")
 # `tune_reader`, `antenna_diagnostics`). Tutte aggiunte puramente additive: i
 # client che dichiarano una minor version precedente restano serviti, come
 # stabilisce la compatibilita' gestita in `rpc.py`.
-SERVICE_API_VERSION = "1.2"
+SERVICE_API_VERSION = "1.3"
 
 
 class ServiceState(str, Enum):
@@ -619,6 +619,8 @@ class RFIDBackend(Protocol):
 
     def configure_gen2(self, settings: Gen2Settings | Mapping[str, Any]) -> ServiceResponse: ...
 
+    def read_gen2_settings(self) -> ServiceResponse: ...
+
     def tune_reader(self, settings: ReaderTuning | Mapping[str, Any]) -> ServiceResponse: ...
 
     def antenna_diagnostics(
@@ -1119,6 +1121,31 @@ class RFIDService:
                 "sensitivity_dbm": P.RF_MODE_SENSITIVITY_DBM.get(settings.rf_mode),
             }
             return self._success(operation, data)
+        except Exception as exc:
+            return self._failure(operation, exc)
+
+    def read_gen2_settings(self) -> ServiceResponse:
+        """Legge l'assetto Gen2 completo per poterlo ripristinare dopo una prova."""
+        operation = "read_gen2_settings"
+        try:
+            with self._lock:
+                reader = self._require_reader()
+                sessione = reader.get_gen2_param(P.GEN2_PARAM_SESSION)
+                target = reader.get_gen2_param(P.GEN2_PARAM_TARGET)
+                q = reader.get_gen2_param(P.GEN2_PARAM_Q)
+                rf_mode = reader.get_gen2_param(P.GEN2_PARAM_RF_MODE)
+            if not sessione or len(target) < 2 or not q or not rf_mode:
+                raise RuntimeError("risposta Gen2 incompleta dal lettore")
+            q_dinamico = q[0] == P.GEN2_Q_DYNAMIC
+            impostazioni = {
+                "session": sessione[-1],
+                "target": target[-1],
+                "target_dynamic": target[0] == P.GEN2_TARGET_DYNAMIC,
+                "q": None if q_dinamico else q[-1],
+                "q_dynamic": q_dinamico,
+                "rf_mode": rf_mode[-1],
+            }
+            return self._success(operation, {"settings": impostazioni})
         except Exception as exc:
             return self._failure(operation, exc)
 

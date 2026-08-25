@@ -1,0 +1,610 @@
+/* ==========================================================================
+   Postazione «tavoletta» — la stessa interfaccia usata con le dita.
+
+   Tutto qui dentro e' sotto `:root[data-postazione="tavoletta"]`. Al banco non
+   si applica una riga: il PC resta esattamente com'e', e questo file non puo'
+   guastarlo. La modalita' si sceglie in Impostazioni, si porta nell'indirizzo
+   (`?modo=tavoletta`) e altrimenti si indovina dal tipo di puntatore.
+
+   La tavoletta non e' «il PC con i bottoni piu' grandi». Cambiano tre cose
+   fisiche, e da quelle discende tutto il resto:
+
+   1. LO SPAZIO SCARSO E' L'ALTEZZA. Un 10" in orizzontale da' circa 960x600
+      punti CSS: in larghezza ce n'e', in altezza no. Le colonne affiancate
+      restano affiancate anche sotto i 1100px — il salto a colonna unica di
+      `app.css` e' tarato sul portatile, dove sotto c'e' sempre altro schermo.
+      Qui buttarebbe il verbo fuori dalla prima schermata.
+   2. IL DITO NON HA LA PUNTA. 52px di lato come minimo, 64 per il verbo radio.
+      E' la misura di un polpastrello guantato, non una raccomandazione.
+   3. NON C'E' IL PASSAGGIO DEL MOUSE. Niente si scopre avvicinandosi: quello
+      che il banco affida al `:hover` qui deve essere gia' visibile, e la
+      risposta al tocco deve vedersi mentre il dito e' ancora appoggiato.
+
+   Da 1 e 2 nasce l'unico gesto progettato apposta: al banco di scrittura il
+   verbo radio non scorre mai (vedi «Il verbo non scorre»). L'operatore ha un
+   contenitore in mano e non puo' cercare un bottone.
+   ========================================================================== */
+
+/* ==========================================================================
+   Vocabolario: cosa cambia rispetto a tema.css
+   ========================================================================== */
+:root[data-postazione="tavoletta"] {
+  /* Il banco si guarda a 40 cm, la tavoletta appoggiata accanto alle antenne
+     a 60-70: un gradino di scala su tutto, non solo sui titoli. */
+  --t-micro: 0.75rem;
+  --t-piccolo: 0.9375rem;
+  --t-corpo: 1.0625rem;
+  --t-medio: 1.1875rem;
+  --t-grande: 1.5rem;
+  --t-titolo: 1.875rem;
+
+  /* Il conteggio del sigillo e' l'eroe della schermata, ma qui l'eroe puo'
+     mangiarsi la prima schermata: si lega all'altezza, che e' la misura
+     scarsa, invece che alla larghezza. */
+  --t-eroe: clamp(2.75rem, 9vh, 4.5rem);
+
+  --tocco: 52px;
+  --tocco-verbo: 64px;
+
+  /* Le voci della barra crescono con tutto il resto, e «ACCETTAZIONE» resta
+     la piu' lunga: la barra si allarga di conseguenza. Una scritta tagliata
+     in una barra di navigazione e' un difetto, non un vezzo — e su Android,
+     dove al posto di Bahnschrift c'e' Roboto Condensed, e' anche piu' larga. */
+  --rail: 120px;
+  --testa: 64px;
+}
+
+/* ==========================================================================
+   Comportamento al tocco
+
+   `manipulation` toglie l'attesa dei 300ms con cui il browser aspetta il
+   secondo tocco di un doppio tocco: senza, ogni comando sembra in ritardo.
+   Il riquadro azzurro di sistema va via perche' lo stato premuto lo diciamo
+   noi, in tavolozza, e due segnali diversi per la stessa cosa confondono.
+   ========================================================================== */
+:root[data-postazione="tavoletta"] button,
+:root[data-postazione="tavoletta"] a,
+:root[data-postazione="tavoletta"] label,
+:root[data-postazione="tavoletta"] summary,
+:root[data-postazione="tavoletta"] input,
+:root[data-postazione="tavoletta"] select,
+:root[data-postazione="tavoletta"] textarea,
+:root[data-postazione="tavoletta"] .serie__voce,
+:root[data-postazione="tavoletta"] .rail__voce {
+  touch-action: manipulation;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Il testo dei comandi non si seleziona: un tocco tenuto un attimo di piu' —
+   con i guanti succede — aprirebbe il menu di selezione del sistema sopra il
+   bottone. Gli EPC e i codici restano selezionabili: quelli si copiano. */
+:root[data-postazione="tavoletta"] .bottone,
+:root[data-postazione="tavoletta"] .rail__voce,
+:root[data-postazione="tavoletta"] .interruttore,
+:root[data-postazione="tavoletta"] .pastiglia,
+:root[data-postazione="tavoletta"] .etichetta,
+:root[data-postazione="tavoletta"] .prova summary {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Arrivare in fondo a un elenco non deve tirare giu' la pagina intera ne'
+   far ripartire il browser: durante un sigillo lungo un ricaricamento
+   accidentale perderebbe la schermata a meta' operazione. */
+:root[data-postazione="tavoletta"] body,
+:root[data-postazione="tavoletta"] .palco,
+:root[data-postazione="tavoletta"] .rail {
+  overscroll-behavior: contain;
+}
+
+/* ==========================================================================
+   Comandi
+   ========================================================================== */
+:root[data-postazione="tavoletta"] .bottone {
+  min-height: var(--tocco);
+  padding: 12px 20px;
+}
+
+/* L'eosina e' di chi accende il trasmettitore, e sulla tavoletta e' anche
+   l'unica superficie grande colorata: il dito la trova senza leggere.
+   La misura piu' alta dello schermo e' **solo** sua. Darla anche alle azioni
+   principali — «Applica», «Registra» — riempirebbe le impostazioni di bottoni
+   da 64px e il segnale non direbbe piu' niente: e' la stessa disciplina con
+   cui l'eosina non si usa per decorare. */
+:root[data-postazione="tavoletta"] .bottone--radio {
+  min-height: var(--tocco-verbo);
+  padding-inline: 28px;
+  font-size: var(--t-medio);
+}
+
+/* Un comando discreto resta discreto, ma deve comunque essere colpibile:
+   senza cornice il bersaglio non si vede, quindi lo si allarga e basta. */
+:root[data-postazione="tavoletta"] .bottone--sobrio {
+  padding-inline: 16px;
+}
+
+:root[data-postazione="tavoletta"] .campo > input,
+:root[data-postazione="tavoletta"] .campo > select,
+:root[data-postazione="tavoletta"] .campo > textarea {
+  min-height: var(--tocco);
+  padding: 12px 14px;
+}
+
+:root[data-postazione="tavoletta"] .campo > textarea {
+  min-height: calc(var(--tocco) * 2);
+}
+
+/* Il selettore dell'operatore e' il comando piu' usato dell'intestazione e al
+   banco e' alto 27px: con un dito e' un bersaglio impossibile. */
+:root[data-postazione="tavoletta"] .testa__zona--operatore select {
+  min-height: 46px;
+  max-width: 260px;
+  padding: 8px var(--s3);
+  font-size: var(--t-piccolo);
+}
+
+:root[data-postazione="tavoletta"] .interruttore {
+  min-height: var(--tocco);
+  padding: 10px 18px;
+  font-size: var(--t-corpo);
+}
+
+:root[data-postazione="tavoletta"] .interruttore input,
+:root[data-postazione="tavoletta"] .trasporto input[type="radio"],
+:root[data-postazione="tavoletta"] .tabella--modificabile input[type="checkbox"],
+:root[data-postazione="tavoletta"] .coda__voce input[type="checkbox"] {
+  width: 24px;
+  height: 24px;
+  flex: none;
+}
+
+/* `<details>`: la riga di apertura al banco e' alta 17px perche' e'
+   un'etichetta minuscola. Il bersaglio si allarga senza ingrandire la
+   scritta — resta una didascalia, non diventa un titolo. */
+:root[data-postazione="tavoletta"] .prova summary {
+  display: flex;
+  align-items: center;
+  min-height: var(--tocco);
+  padding: 0 var(--s2);
+  margin-inline: calc(-1 * var(--s2));
+  border-radius: var(--r2);
+}
+
+/* -- Il conteggio dei contenitori ----------------------------------------
+   E' il dato che si sbaglia piu' spesso e l'unico che dopo la scrittura non
+   si corregge: qui i due passi valgono un bersaglio pieno. */
+:root[data-postazione="tavoletta"] .conteggio__passo {
+  width: var(--tocco-verbo);
+  height: var(--tocco-verbo);
+  font-size: var(--t-titolo);
+}
+
+:root[data-postazione="tavoletta"] .conteggio__numero {
+  width: 116px;
+  min-height: var(--tocco-verbo);
+  font-size: 2.5rem;
+}
+
+/* -- I cursori delle potenze ----------------------------------------------
+   Al banco sono alti 16px: il cursore nativo e' fatto per la punta di una
+   freccia. Domani le potenze si tarano proprio da qui, con le antenne
+   collegate, quindi la pista diventa spessa e il pomello grande come un
+   polpastrello. `accent-color` smette di valere appena si toglie l'aspetto
+   di sistema: il colore va rimesso a mano, ed e' eosina perche' muovere una
+   potenza e' un gesto radio. */
+:root[data-postazione="tavoletta"] .cursore input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 48px;
+  margin: 0;
+  background: transparent;
+}
+
+:root[data-postazione="tavoletta"] .cursore input[type="range"]::-webkit-slider-runnable-track {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bordo-forte);
+}
+
+:root[data-postazione="tavoletta"] .cursore input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 34px;
+  height: 34px;
+  margin-top: -12px;
+  border: 3px solid var(--superficie);
+  border-radius: 50%;
+  background: var(--eosina);
+  box-shadow: var(--ombra-1);
+}
+
+:root[data-postazione="tavoletta"] .cursore input[type="range"]::-moz-range-track {
+  height: 10px;
+  border-radius: 999px;
+  background: var(--bordo-forte);
+}
+
+:root[data-postazione="tavoletta"] .cursore input[type="range"]::-moz-range-thumb {
+  width: 34px;
+  height: 34px;
+  border: 3px solid var(--superficie);
+  border-radius: 50%;
+  background: var(--eosina);
+}
+
+/* ==========================================================================
+   Struttura: intestazione, barra delle sezioni, palco
+   ========================================================================== */
+:root[data-postazione="tavoletta"] .rail__voce {
+  min-height: 70px;
+  gap: 7px;
+  font-size: 11px;
+}
+
+:root[data-postazione="tavoletta"] .rail__voce svg {
+  width: 26px;
+  height: 26px;
+}
+
+/* Il bordo attivo raddoppia: a mezzo metro un filetto da 3px sparisce. */
+:root[data-postazione="tavoletta"] .rail__voce[aria-current="page"] {
+  box-shadow: inset 5px 0 0 var(--eosina);
+}
+
+:root[data-postazione="tavoletta"] .palco {
+  padding: var(--s4);
+}
+
+:root[data-postazione="tavoletta"] .pannello {
+  padding: var(--s4);
+}
+
+/* Gli avvisi al banco stanno in basso a destra. Sulla tavoletta in basso c'e'
+   il verbo e a destra c'e' la colonna che si sta leggendo: restano solo il
+   centro e l'alto. E' anche dove Android mette i propri avvisi, quindi e'
+   il posto dove l'occhio li cerca gia'. */
+:root[data-postazione="tavoletta"] .avvisi {
+  top: calc(var(--testa) + var(--s2));
+  bottom: auto;
+  right: auto;
+  left: 50%;
+  transform: translateX(-50%);
+  align-items: center;
+}
+
+:root[data-postazione="tavoletta"] .avviso {
+  max-width: min(520px, 80vw);
+  font-size: var(--t-corpo);
+}
+
+/* I comandi della serie vanno a capo fra un bottone e l'altro, non dentro:
+   «Nuova / accettazione» spezzato in due righe fa sembrare rotta la pagina. */
+:root[data-postazione="tavoletta"] .serie__testa {
+  flex-wrap: wrap;
+}
+
+:root[data-postazione="tavoletta"] .serie__comandi {
+  flex-wrap: wrap;
+}
+
+:root[data-postazione="tavoletta"] .serie__comandi .bottone,
+:root[data-postazione="tavoletta"] .coda__comandi .bottone {
+  white-space: nowrap;
+}
+
+/* ==========================================================================
+   IL VERBO NON SCORRE — l'unico elemento pensato solo per la tavoletta.
+
+   Al banco di scrittura l'operatore tiene un contenitore in mano e guarda il
+   piatto, non lo schermo. Se il comando che accende il trasmettitore scorre
+   via con la colonna, va cercato: si posa il contenitore, si scorre, si
+   riprende. Tre gesti in piu' per ogni tag, moltiplicati per i contenitori di
+   ogni accettazione.
+
+   Percio' la pulsantiera del campione si incolla al fondo del suo cartellino
+   e ci resta. Non e' una barra nuova: e' la stessa che c'e' al banco, che qui
+   smette di scorrere. Nessun bottone duplicato — un secondo «Scrivi il tag»
+   nel DOM sarebbe un secondo modo di sbagliare.
+   ========================================================================== */
+:root[data-postazione="tavoletta"] .cartella__azioni {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: var(--s4) calc(-1 * var(--s4)) calc(-1 * var(--s4));
+  padding: var(--s3) var(--s4) var(--s4);
+  border-top: 1px solid var(--bordo);
+  border-radius: 0 0 var(--r3) var(--r3);
+  background: var(--superficie);
+}
+
+/* L'errore di scrittura viaggia col verbo: e' la risposta a quel gesto, e
+   letto tre schermate piu' su non spiegherebbe niente. */
+:root[data-postazione="tavoletta"] .cartella__errore:not(:empty) {
+  position: sticky;
+  bottom: 0;
+  z-index: 2;
+  margin: 0 calc(-1 * var(--s4)) calc(-1 * var(--s4));
+  padding: 0 var(--s4) var(--s3);
+  background: var(--superficie);
+}
+
+/* ==========================================================================
+   Le tre schermate da banco: scrittura, sigillo, ricezione
+   ========================================================================== */
+
+/* La scena e il volume dicono a colpo d'occhio a che punto e' il lettore, ma
+   sono una conferma: se si prendono tutta la prima schermata, la conferma
+   arriva prima della cosa da confermare. */
+:root[data-postazione="tavoletta"] .scena svg,
+:root[data-postazione="tavoletta"] .volume svg {
+  max-height: min(46vh, 340px);
+}
+
+/* In verticale scena e cartellino sono incolonnati e si contendono la stessa
+   schermata. Con la scena al suo massimo, il cartellino si apre proprio sotto
+   la pulsantiera incollata in fondo — e la prima cosa a finire nascosta e' il
+   nome del paziente, che e' la cosa da guardare prima di scrivere un tag.
+   La scena cede: e' la conferma, non l'identita'. */
+@media (orientation: portrait) {
+  :root[data-postazione="tavoletta"] .scena svg,
+  :root[data-postazione="tavoletta"] .volume svg {
+    max-height: min(32vh, 260px);
+  }
+}
+
+/* L'istruzione si legge da un metro, con le mani occupate. */
+:root[data-postazione="tavoletta"] .scena__stato {
+  gap: var(--s4);
+}
+
+:root[data-postazione="tavoletta"] .scena__passo {
+  font-size: var(--t-titolo);
+}
+
+:root[data-postazione="tavoletta"] .scena__istruzione {
+  font-size: var(--t-medio);
+}
+
+/* La pulsantiera del verdetto ha nove comandi: incolonnati sono 600px, cioe'
+   tutto lo schermo. Su due colonne il verbo radio tiene la riga intera — e'
+   l'unico che accende qualcosa — e i comandi d'archivio si appaiano. */
+:root[data-postazione="tavoletta"] .verdetto__azioni {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s2);
+  align-items: stretch;
+}
+
+:root[data-postazione="tavoletta"] .verdetto__azioni .bottone--radio,
+:root[data-postazione="tavoletta"] .verdetto__azioni .pastiglia,
+:root[data-postazione="tavoletta"] .verdetto__azioni .campo,
+:root[data-postazione="tavoletta"] .verdetto__azioni > .deroga {
+  grid-column: 1 / -1;
+}
+
+:root[data-postazione="tavoletta"] .verdetto__azioni .pastiglia {
+  justify-content: center;
+  min-height: 34px;
+}
+
+/* I contenitori dell'accettazione si toccano per rileggere un tag: sono
+   bersagli, non decorazione. */
+:root[data-postazione="tavoletta"] .serie__voce {
+  min-height: var(--tocco);
+  min-width: 76px;
+}
+
+:root[data-postazione="tavoletta"] .coda__voce {
+  min-height: var(--tocco);
+  gap: var(--s3);
+  align-items: center;
+}
+
+/* ==========================================================================
+   Orizzontale corto — il 10" appoggiato accanto alle antenne (circa 960x600)
+
+   Qui `app.css` incolonnerebbe scena e cartellino: giusto su un portatile
+   stretto, sbagliato qui. In larghezza c'e' spazio, in altezza no, e a colonna
+   unica la scena da sola riempie lo schermo — il verbo finisce sotto la piega.
+   ========================================================================== */
+@media (orientation: landscape) and (max-height: 900px) {
+  :root[data-postazione="tavoletta"] .postazione {
+    grid-template-columns: minmax(0, 1fr) minmax(340px, 0.95fr);
+    gap: var(--s4);
+  }
+
+  :root[data-postazione="tavoletta"] .sigillo {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
+    gap: var(--s4);
+  }
+
+  /* Con due colonne la scena ha meta' larghezza: puo' essere piu' alta senza
+     rubare la piega al cartellino, che sta di fianco e non sotto. */
+  :root[data-postazione="tavoletta"] .scena svg,
+  :root[data-postazione="tavoletta"] .volume svg {
+    max-height: min(52vh, 380px);
+  }
+
+  /* La riga «lavoro attivo» e' un promemoria, non un comando: in orizzontale
+     corto vale piu' la riga di schermo che occupa. */
+  :root[data-postazione="tavoletta"] .workflow-bar {
+    padding: 5px var(--s3);
+  }
+
+  :root[data-postazione="tavoletta"] .pannello__testa {
+    margin-bottom: var(--s4);
+  }
+}
+
+/* ==========================================================================
+   Verticale — la tavoletta in mano o in piedi sul supporto
+
+   Sotto i 720px `app.css` porta gia' le sezioni in basso e incolonna tutto:
+   la disposizione va bene com'e', mancano solo i bersagli.
+   ========================================================================== */
+@media (max-width: 720px) {
+  /* In basso le sette voci devono starci tutte: una barra di sezioni che
+     scorre nasconde meta' delle sezioni a chi non sa che scorre. Si dividono
+     la larghezza in parti uguali, e la scritta torna alla misura del banco
+     perche' a 10 punti «ACCETTAZIONE» sta in un settimo di 600 e a 11 no.
+     Il bersaglio resta pieno: quello dipende dall'altezza. */
+  :root[data-postazione="tavoletta"] .rail__voce {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 62px;
+    padding: var(--s2) 2px;
+    font-size: 10px;
+  }
+
+  /* Lo stato del lettore al banco sparisce per far posto: su una tavoletta da
+     10" lo spazio c'e', e «pronto / non collegato» e' la prima cosa da
+     controllare quando qualcosa non funziona. */
+  :root[data-postazione="tavoletta"] #stato-lettore-testo {
+    display: inline;
+  }
+
+  :root[data-postazione="tavoletta"] .testa__zona--operatore select {
+    width: min(52vw, 260px);
+    max-width: none;
+  }
+
+  /* Qui l'intestazione va su due righe: gli avvisi partono piu' in basso,
+     altrimenti coprono proprio il selettore dell'operatore. */
+  :root[data-postazione="tavoletta"] .avvisi {
+    top: calc(var(--testa) * 2 + var(--s2));
+  }
+}
+
+/* ==========================================================================
+   Schermate dense: impostazioni, archivio, registro
+
+   Non sono schermate da banco — si compilano al PC — ma devono restare
+   utilizzabili, perche' domani sulla tavoletta potrebbe non esserci un PC
+   accanto.
+   ========================================================================== */
+
+/* Una tabella di sei celle scrivibili non si restringe: sotto una certa
+   larghezza le celle tagliano il testo invece di mandarlo a capo, e un nome
+   di laboratorio diventa illeggibile. Meglio scorrerla di lato con un dito
+   che leggerne un terzo. */
+:root[data-postazione="tavoletta"] .tabella--modificabile {
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+
+:root[data-postazione="tavoletta"] .tabella--modificabile input[type="text"],
+:root[data-postazione="tavoletta"] .tabella--modificabile input[type="email"] {
+  min-width: 160px;
+  min-height: 44px;
+  padding: 8px var(--s2);
+}
+
+:root[data-postazione="tavoletta"] .tabella--modificabile td {
+  padding: var(--s2);
+}
+
+:root[data-postazione="tavoletta"] .spunta {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+:root[data-postazione="tavoletta"] .riga__togli {
+  min-width: 44px;
+  min-height: 44px;
+  font-size: var(--t-grande);
+}
+
+/* Le tabelle della prova sono larghe quanto le serve: dentro un pannello piu'
+   stretto vanno scorse di lato, non tagliate. */
+:root[data-postazione="tavoletta"] .prova {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+:root[data-postazione="tavoletta"] .tabella td,
+:root[data-postazione="tavoletta"] .tabella th {
+  padding: 10px var(--s2);
+}
+
+/* I testi lunghi delle schermate tecniche restano leggibili ma non devono
+   spingere i comandi fuori schermo. */
+:root[data-postazione="tavoletta"] .spiega {
+  font-size: var(--t-piccolo);
+}
+
+/* ==========================================================================
+   Finestre di conferma
+
+   Il tocco sbaglia bersaglio piu' spesso del mouse, e qui si conferma una
+   scrittura che non si disfa: i due comandi non si toccano.
+   ========================================================================== */
+:root[data-postazione="tavoletta"] .dialogo {
+  max-width: min(560px, 92vw);
+}
+
+:root[data-postazione="tavoletta"] .dialogo--largo {
+  max-width: min(720px, 94vw);
+  width: 94vw;
+}
+
+:root[data-postazione="tavoletta"] .dialogo menu {
+  gap: var(--s5);
+}
+
+:root[data-postazione="tavoletta"] .dialogo menu .bottone {
+  min-height: var(--tocco-verbo);
+  padding-inline: 24px;
+}
+
+/* ==========================================================================
+   Senza passaggio del mouse
+
+   Questo blocco non e' legato alla modalita' ma al dispositivo: vale ovunque
+   non ci sia un puntatore che passa sopra. Un touchscreen applica comunque il
+   `:hover` al tocco e lo lascia acceso finche' non si tocca altrove — cosi'
+   l'ultimo bottone premuto resta evidenziato e sembra selezionato. Al suo
+   posto lo stato premuto, che dura quanto il dito.
+   ========================================================================== */
+@media (hover: none) {
+  .bottone:hover:not(:disabled) {
+    background: var(--superficie);
+    border-color: var(--bordo-forte);
+  }
+
+  .bottone--primario:hover:not(:disabled),
+  .bottone--radio:hover:not(:disabled) {
+    filter: none;
+  }
+
+  .bottone--sobrio:hover:not(:disabled) {
+    background: transparent;
+    border-color: transparent;
+  }
+
+  .rail__voce:hover {
+    background: transparent;
+    color: var(--ematossilina-tenue);
+  }
+
+  /* Piu' specifica della riga qui sopra, altrimenti la sezione aperta
+     perderebbe l'evidenziazione appena la si tocca. */
+  .rail__voce[aria-current="page"]:hover {
+    background: var(--superficie);
+    color: var(--ematossilina);
+  }
+
+  .riga__togli:hover {
+    border-color: transparent;
+    color: var(--ematossilina-debole);
+  }
+
+  /* Lo stato premuto e' l'unica risposta che resta: si vede mentre il dito e'
+     ancora appoggiato, e quindi dice «ho ricevuto» prima che arrivi la radio. */
+  .bottone:active:not(:disabled) {
+    filter: brightness(0.93);
+  }
+
+  .rail__voce:active {
+    background: var(--superficie);
+  }
+}

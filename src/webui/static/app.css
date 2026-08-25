@@ -246,6 +246,20 @@ body {
   grid-area: palco;
   overflow-y: auto;
   padding: var(--s5);
+  min-width: 0;
+}
+
+.workflow-bar {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  max-width: 1180px;
+  margin: 0 auto var(--s3);
+  padding: var(--s2) var(--s4);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r2);
+  background: var(--superficie-alt);
+  color: var(--ematossilina-tenue);
 }
 
 .schermata {
@@ -880,6 +894,53 @@ body {
   flex: 1 1 320px;
 }
 
+.coda {
+  margin: var(--s5) 0 0;
+  padding: var(--s4);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r2);
+}
+
+.coda__comandi {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin-bottom: var(--s3);
+}
+
+.coda__elenco {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: var(--s3);
+}
+
+.coda__gruppo {
+  padding: var(--s3);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r2);
+  background: var(--superficie-alt);
+}
+
+.coda__gruppo h3 {
+  margin: 0 0 var(--s2);
+  font-size: var(--t-medio);
+}
+
+.coda__voce {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  padding: var(--s1) 0;
+}
+
+.coda__voce .hex {
+  margin-left: auto;
+  max-width: 11ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 #errore-spedizione:not(:empty) {
   color: var(--allarme);
 }
@@ -1127,6 +1188,15 @@ body {
   accent-color: var(--conferma);
 }
 
+/* La casella «in servizio» / «attivo» e' avvolta dalla sua etichetta: il
+   bersaglio e' la cella, la casella resta della misura e del posto di sempre
+   — allineata a sinistra come la sua intestazione. */
+.spunta {
+  display: flex;
+  align-items: center;
+  cursor: pointer;
+}
+
 .tabella--modificabile td {
   vertical-align: middle;
 }
@@ -1186,6 +1256,21 @@ body {
 
 .distinta dd {
   margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.deroga {
+  display: grid;
+  gap: var(--s3);
+  margin-top: var(--s4);
+  padding: var(--s4);
+  border: 1px solid var(--allarme);
+  border-radius: var(--r2);
+  background: var(--allarme-velo);
+}
+
+.deroga[hidden] {
+  display: none;
 }
 
 /* L'avvertenza sanitaria: grande, prima di tutto, e in allarme — non in
@@ -1906,14 +1991,72 @@ body {
       "testa"
       "palco"
       "rail";
-    grid-template-rows: var(--testa) 1fr auto;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    width: 100%;
+    max-width: 100vw;
+  }
+
+  .testa {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .testa__zona {
+    padding: var(--s2) var(--s3);
+    min-width: 0;
+  }
+
+  .testa__zona--laboratorio {
+    grid-column: 1 / -1;
+    border-right: 0;
+    border-bottom: 1px solid var(--bordo);
+  }
+
+  .testa__zona--operatore {
+    border-right: 0;
+  }
+
+  .testa__zona--operatore .etichetta {
+    display: none;
+  }
+
+  .testa__zona--operatore select {
+    width: min(44vw, 180px);
+  }
+
+  .testa__zona--lettore {
+    gap: var(--s1);
+    padding-left: 0;
+  }
+
+  #stato-lettore {
+    min-width: 28px;
+    padding-inline: var(--s2);
+  }
+
+  #stato-lettore-testo {
+    display: none;
   }
 
   .rail {
     flex-direction: row;
-    justify-content: space-around;
+    justify-content: flex-start;
     border-right: 0;
     border-top: 1px solid var(--bordo);
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: var(--s1) var(--s2);
+    max-width: 100vw;
+    scrollbar-width: none;
+  }
+
+  .rail::-webkit-scrollbar {
+    display: none;
+  }
+
+  .rail__voce {
+    flex: 0 0 70px;
+    padding: var(--s2) 2px;
   }
 
   .rail__voce[aria-current="page"] {
@@ -1921,6 +2064,45 @@ body {
   }
 
   .palco {
-    padding: var(--s4);
+    padding: var(--s3);
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+
+  .pannello {
+    padding: var(--s3);
+  }
+
+  .workflow-bar,
+  .serie__testa,
+  .serie__comandi,
+  .preparazione,
+  .verdetto__azioni {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .workflow-bar {
+    gap: var(--s1);
+  }
+
+  .preparazione .campo {
+    flex-basis: auto;
+  }
+
+  .preparazione > .bottone,
+  .serie__comandi .bottone,
+  .verdetto__azioni .bottone {
+    width: 100%;
+  }
+
+  .modulo__griglia,
+  .coda__elenco {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .prova {
+    max-width: 100%;
+    overflow-x: auto;
   }
 }

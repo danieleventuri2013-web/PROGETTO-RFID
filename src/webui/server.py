@@ -36,13 +36,18 @@ from typing import Any, Callable, Mapping
 
 from rfid_silion.rpc import RFIDRPCDispatcher
 
+from . import icone
 from .workflow import Workflow, WorkflowError
 
-__all__ = ["WebUIServer", "EventBus", "STATIC_DIR"]
+__all__ = ["WebUIServer", "EventBus", "STATIC_DIR", "indirizzi_locali"]
 
 log = logging.getLogger("webui.server")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+#: Host che significano «solo questo computer» e «tutte le schede di rete».
+_SOLO_QUI = frozenset({"127.0.0.1", "localhost", "::1"})
+_OVUNQUE = frozenset({"0.0.0.0", "", "::"})
 
 #: Oltre questa soglia una richiesta viene rifiutata senza leggerla: il corpo
 #: piu' grande e' una distinta, che sta in poche decine di kilobyte.
@@ -60,7 +65,9 @@ _MIME = {
     ".css": "text/css; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".svg": "image/svg+xml",
+    ".png": "image/png",
     ".json": "application/json; charset=utf-8",
+    ".webmanifest": "application/manifest+json; charset=utf-8",
     ".ico": "image/x-icon",
     ".woff2": "font/woff2",
 }
@@ -125,6 +132,38 @@ class _Busy(RuntimeError):
     """Un'altra operazione radio e' gia' in corso."""
 
 
+def indirizzi_locali() -> list[str]:
+    """Gli indirizzi IPv4 con cui questa macchina si fa trovare sulla rete.
+
+    Serve quando il server ascolta su tutte le schede: `0.0.0.0` non e' un
+    indirizzo da scrivere sulla tavoletta, e su un portatile ce ne sono spesso
+    tre o quattro (Wi-Fi, cavo, macchine virtuali) fra cui uno solo e' quello
+    giusto. Il primo della lista e' quello con cui il sistema uscirebbe verso
+    la rete, che e' la scelta giusta in quasi tutti i casi.
+    """
+    trovati: list[str] = []
+    try:
+        # Nessun pacchetto parte davvero: su UDP `connect` sceglie soltanto la
+        # scheda. 192.0.2.0/24 e' la rete riservata agli esempi, quindi non c'e'
+        # rischio di disturbare qualcuno anche se qualcosa partisse.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sonda:
+            sonda.connect(("192.0.2.1", 9))
+            trovati.append(sonda.getsockname()[0])
+    except OSError:
+        pass
+    try:
+        trovati.extend(socket.gethostbyname_ex(socket.gethostname())[2])
+    except OSError:
+        pass
+
+    unici: list[str] = []
+    for indirizzo in trovati:
+        if indirizzo.startswith("127.") or indirizzo in unici:
+            continue
+        unici.append(indirizzo)
+    return unici
+
+
 class PortaOccupataError(RuntimeError):
     """La porta e' gia' usata da un'altra istanza dell'interfaccia."""
 
@@ -172,6 +211,10 @@ class WebUIServer:
         self.host = host
         self.port = port
         self.token = token or secrets.token_urlsafe(24)
+        # Un token fissato in configurazione rende l'indirizzo stabile fra un
+        # avvio e l'altro: e' la condizione perche' un collegamento salvato
+        # sulla tavoletta continui a funzionare domani.
+        self.token_fisso = bool(token)
         self.static_dir = Path(static_dir or STATIC_DIR)
         self.events = EventBus()
         self.workflow = workflow or Workflow(self.config, backend, config_path=config_path)
@@ -215,7 +258,77 @@ class WebUIServer:
     # -- indirizzi -----------------------------------------------------------
     @property
     def url(self) -> str:
-        return f"http://{self.host}:{self.port}/?t={self.token}"
+        """L'indirizzo da aprire **su questo computer**.
+
+        Con `host: 0.0.0.0` il server ascolta su tutte le schede di rete, ma
+        `http://0.0.0.0:...` non e' un indirizzo che un browser sappia aprire:
+        li' si stampa il loopback, che funziona sempre. Gli indirizzi per gli
+        altri apparecchi stanno in `indirizzi()`.
+        """
+        host = "127.0.0.1" if self.host in _OVUNQUE else self.host
+        return f"http://{host}:{self.port}/?t={self.token}"
+
+    def indirizzi(self) -> dict[str, Any]:
+        """Da dove e' raggiungibile questa postazione.
+
+        Serve alla schermata Impostazioni: l'indirizzo per la tavoletta lo
+        conosce solo il server, perche' il browser vede l'indirizzo con cui e'
+        arrivato — sul PC il loopback, che dalla tavoletta non porta da nessuna
+        parte.
+        """
+        rete: list[str] = []
+        if self.host not in _SOLO_QUI:
+            candidati = indirizzi_locali() if self.host in _OVUNQUE else [self.host]
+            rete = [
+                f"http://{indirizzo}:{self.port}/?modo=tavoletta&t={self.token}"
+                for indirizzo in candidati
+            ]
+        return {
+            "locale": self.url,
+            "rete": rete,
+            "host": self.host,
+            "token_fisso": self.token_fisso,
+        }
+
+    def manifesto(self) -> dict[str, Any]:
+        """Manifesto dell'applicazione web, per la schermata Home di Android.
+
+        `start_url` porta il token: e' cio' che rende il collegamento salvato
+        una postazione funzionante invece di una pagina che si apre e dice di
+        no. Per la stessa ragione il manifesto non e' un file statico — chi lo
+        scarica ha in mano il comando del lettore — e la rotta chiede il token
+        come le altre.
+
+        `display: standalone` toglie la barra degli indirizzi: sul banco non
+        serve, e una barra in meno sono 60px di altezza in piu' proprio dove
+        l'altezza e' la misura scarsa.
+        """
+        return {
+            "name": "Tracciabilità campioni",
+            "short_name": "Campioni",
+            "description": "Accettazione, sigillo e ricezione dei campioni istologici.",
+            "lang": "it",
+            "dir": "ltr",
+            "start_url": f"/?modo=tavoletta&t={self.token}",
+            "scope": "/",
+            "display": "standalone",
+            "orientation": "any",
+            "background_color": "#f3f1f7",
+            "theme_color": "#3b2a63",
+            "icons": [
+                {
+                    "src": f"/icona-{lato}.png",
+                    "sizes": f"{lato}x{lato}",
+                    "type": "image/png",
+                    # «any maskable»: Android ritaglia l'icona nella forma di
+                    # sistema (cerchio, goccia, quadrato stondato). Il vetrino
+                    # sta dentro la zona sicura, quindi lo stesso file va bene
+                    # ritagliato e intero.
+                    "purpose": "any maskable",
+                }
+                for lato in icone.LATI
+            ],
+        }
 
     # -- tabella delle operazioni -------------------------------------------
     def _build_operations(self) -> dict[str, tuple[Callable[..., Any], bool]]:
@@ -229,6 +342,8 @@ class WebUIServer:
         f = self.workflow
         return {
             "descrivi": (lambda _d: f.descrivi(), False),
+            "indirizzi": (lambda _d: self.indirizzi(), False),
+            "riprendi_workflow": (lambda _d: f.riprendi_workflow(), False),
             "operatore": (lambda d: f.imposta_operatore(d.get("nome", "")), False),
             "stato": (lambda _d: f.stato(), False),
             "connetti": (lambda _d: self._connetti(), True),
@@ -243,6 +358,7 @@ class WebUIServer:
                 lambda d: f.annulla_accettazione(d.get("motivo", "")),
                 False,
             ),
+            "nuova_accettazione": (lambda _d: f.nuova_accettazione(), False),
             "annulla_contenitore": (
                 lambda d: f.annulla_contenitore(
                     d.get("container_id"),
@@ -251,14 +367,32 @@ class WebUIServer:
                 ),
                 False,
             ),
+            "coda_spedizione": (lambda _d: f.coda_spedizione(), False),
             "prepara_spedizione": (
-                lambda d: f.prepara_spedizione(d.get("destinazione", "")),
+                lambda d: f.prepara_spedizione(
+                    d.get("destinazione", ""), d.get("container_ids", [])
+                ),
                 False,
             ),
             "stato_spedizione": (lambda _d: f.stato_spedizione(), False),
+            "annulla_spedizione": (lambda _d: f.annulla_spedizione(), False),
             "sigilla": (lambda _d: self._sigilla(), True),
+            "invia_distinta_pec": (lambda _d: f.invia_distinta_pec(), False),
+            "aggiorna_ricevute_pec": (lambda _d: f.aggiorna_ricevute_pec(), False),
+            "conferma_invio": (
+                lambda d: f.conferma_invio(
+                    motivo_deroga=d.get("motivo_deroga", ""),
+                    pin=d.get("pin", ""),
+                ),
+                False,
+            ),
             "importa_distinta": (lambda d: self._importa_distinta(d), False),
+            "stato_ricezione": (lambda _d: f.stato_ricezione(), False),
             "leggi_volume": (lambda _d: self._leggi_volume(), True),
+            "conferma_ricezione": (
+                lambda d: f.conferma_ricezione(d.get("motivo_non_conformita", "")),
+                False,
+            ),
             "etichetta": (lambda d: f.etichetta(d.get("container_id")), False),
             "stampa_etichetta": (lambda d: f.stampa_etichetta(d.get("container_id")), False),
             # -- strumenti e calibrazione --------------------------------
@@ -595,6 +729,24 @@ def _make_handler(server: WebUIServer) -> type[BaseHTTPRequestHandler]:
 
             if percorso.startswith("/api/") or percorso == "/rpc":
                 self._json(HTTPStatus.METHOD_NOT_ALLOWED, {"errore": "usare POST"})
+                return
+
+            # Il manifesto contiene il token dentro `start_url`: chi lo legge
+            # comanda il lettore, quindi vale la stessa regola delle API. La
+            # pagina se lo chiede da sola col token che ha gia' (`app.js`).
+            if percorso == "/manifest.webmanifest":
+                if not self._token_valido(query):
+                    self._json(HTTPStatus.UNAUTHORIZED, {"errore": "token mancante o errato"})
+                    return
+                corpo = json.dumps(server.manifesto(), ensure_ascii=False).encode("utf-8")
+                self._rispondi(HTTPStatus.OK, corpo, "application/manifest+json; charset=utf-8")
+                return
+
+            # Le icone invece sono pubbliche: sono pixel, non dicono niente, e
+            # Android le scarica per conto suo mentre installa il collegamento.
+            lato = icone.lato_dal_percorso(percorso)
+            if lato is not None:
+                self._rispondi(HTTPStatus.OK, icone.icona(lato), "image/png")
                 return
 
             self._servi_statico(percorso)

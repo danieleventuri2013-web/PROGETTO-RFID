@@ -26,10 +26,12 @@ Solo `sqlite3` dalla libreria standard: nessuna dipendenza aggiuntiva.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 from .model import (
     Case,
@@ -54,7 +56,7 @@ __all__ = [
     "NotFoundError",
 ]
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 5
 
 
 class LimsDatabaseError(Exception):
@@ -289,6 +291,169 @@ def _migrazione_v3(conn: sqlite3.Connection) -> None:
     conn.execute("CREATE INDEX IF NOT EXISTS idx_shipments_sent ON shipments(sent_at)")
 
 
+def _migrazione_v4(conn: sqlite3.Connection) -> None:
+    """Rende persistenti i workflow e separa preparazione, export e partenza."""
+    colonne_reperti = {riga[1] for riga in conn.execute("PRAGMA table_info(specimens)")}
+    if "flags" not in colonne_reperti:
+        conn.execute("ALTER TABLE specimens ADD COLUMN flags INTEGER NOT NULL DEFAULT 0")
+
+    colonne_spedizioni = {
+        riga[1] for riga in conn.execute("PRAGMA table_info(shipments)")
+    }
+    for nome, tipo in (
+        ("exported_at", "TEXT"),
+        ("manifest_hash", "TEXT NOT NULL DEFAULT ''"),
+        ("sealing_json", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if nome not in colonne_spedizioni:
+            conn.execute(f"ALTER TABLE shipments ADD COLUMN {nome} {tipo}")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS workflow_context (
+            id                  INTEGER PRIMARY KEY CHECK (id = 1),
+            active_specimen_id  INTEGER REFERENCES specimens(id) ON DELETE SET NULL,
+            active_shipment_id  INTEGER REFERENCES shipments(id) ON DELETE SET NULL,
+            active_inbound_id   INTEGER,
+            count_confirmed     INTEGER NOT NULL DEFAULT 0,
+            updated_at          TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS inbound_shipments (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            origin_lab_id       INTEGER NOT NULL,
+            origin_shipment_id  INTEGER NOT NULL,
+            manifest_hash       TEXT NOT NULL UNIQUE,
+            encrypted_blob      BLOB NOT NULL,
+            destination         TEXT NOT NULL DEFAULT '',
+            source_created_at   TEXT NOT NULL DEFAULT '',
+            imported_at         TEXT NOT NULL,
+            imported_by         TEXT NOT NULL DEFAULT '',
+            state               TEXT NOT NULL DEFAULT 'open',
+            confirmed_at        TEXT,
+            confirmed_by        TEXT NOT NULL DEFAULT '',
+            nonconformity_reason TEXT NOT NULL DEFAULT '',
+            UNIQUE (origin_lab_id, origin_shipment_id)
+        );
+
+        CREATE TABLE IF NOT EXISTS inbound_reconciliations (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            inbound_id      INTEGER NOT NULL REFERENCES inbound_shipments(id) ON DELETE CASCADE,
+            ts              TEXT NOT NULL,
+            operator        TEXT NOT NULL DEFAULT '',
+            ok              INTEGER NOT NULL,
+            expected_json   TEXT NOT NULL,
+            arrived_json    TEXT NOT NULL,
+            missing_json    TEXT NOT NULL,
+            unexpected_json TEXT NOT NULL,
+            detail          TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_inbound_state ON inbound_shipments(state);
+        CREATE INDEX IF NOT EXISTS idx_reconciliations_inbound
+            ON inbound_reconciliations(inbound_id, ts);
+        """
+    )
+    conn.execute(
+        "INSERT OR IGNORE INTO workflow_context (id, updated_at) VALUES (1, ?)",
+        (_now(),),
+    )
+
+
+def _migrazione_v5(conn: sqlite3.Connection) -> None:
+    """Archivia la distinta immutabile e le prove di consegna PEC."""
+    colonne_casi = {riga[1] for riga in conn.execute("PRAGMA table_info(cases)")}
+    if "external_ref" not in colonne_casi:
+        conn.execute("ALTER TABLE cases ADD COLUMN external_ref TEXT NOT NULL DEFAULT ''")
+        conn.execute(
+            """
+            UPDATE cases
+               SET external_ref=SUBSTR(note, 15)
+             WHERE note LIKE 'rif. esterno: %' AND external_ref=''
+            """
+        )
+
+    colonne_spedizioni = {
+        riga[1] for riga in conn.execute("PRAGMA table_info(shipments)")
+    }
+    for nome, tipo in (
+        ("departure_override_at", "TEXT"),
+        ("departure_override_by", "TEXT NOT NULL DEFAULT ''"),
+        ("departure_override_reason", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if nome not in colonne_spedizioni:
+            conn.execute(f"ALTER TABLE shipments ADD COLUMN {nome} {tipo}")
+
+    colonne_ingresso = {
+        riga[1] for riga in conn.execute("PRAGMA table_info(inbound_shipments)")
+    }
+    for nome, tipo in (
+        ("manifest_uuid", "TEXT NOT NULL DEFAULT ''"),
+        ("verification_ok", "INTEGER"),
+        ("signer_code", "TEXT NOT NULL DEFAULT ''"),
+        ("signer_fingerprint", "TEXT NOT NULL DEFAULT ''"),
+        ("recipient_fingerprint", "TEXT NOT NULL DEFAULT ''"),
+        ("verification_detail", "TEXT NOT NULL DEFAULT ''"),
+    ):
+        if nome not in colonne_ingresso:
+            conn.execute(f"ALTER TABLE inbound_shipments ADD COLUMN {nome} {tipo}")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS outbound_manifests (
+            id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+            shipment_id             INTEGER NOT NULL UNIQUE
+                                      REFERENCES shipments(id) ON DELETE RESTRICT,
+            manifest_uuid           TEXT NOT NULL UNIQUE,
+            encrypted_blob          BLOB NOT NULL,
+            manifest_hash           TEXT NOT NULL UNIQUE,
+            filename                TEXT NOT NULL,
+            item_count              INTEGER NOT NULL,
+            source_code             TEXT NOT NULL DEFAULT '',
+            destination_code        TEXT NOT NULL DEFAULT '',
+            signer_fingerprint      TEXT NOT NULL DEFAULT '',
+            recipient_fingerprint   TEXT NOT NULL DEFAULT '',
+            archive_path            TEXT NOT NULL DEFAULT '',
+            state                   TEXT NOT NULL DEFAULT 'archived',
+            created_at              TEXT NOT NULL,
+            created_by              TEXT NOT NULL DEFAULT '',
+            message_id              TEXT NOT NULL DEFAULT '',
+            sent_eml                BLOB,
+            smtp_accepted_at        TEXT,
+            pec_accepted_at         TEXT,
+            delivered_at            TEXT,
+            attempts                INTEGER NOT NULL DEFAULT 0,
+            last_error              TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_outbound_state
+            ON outbound_manifests(state);
+        CREATE INDEX IF NOT EXISTS idx_outbound_message
+            ON outbound_manifests(message_id);
+
+        CREATE TABLE IF NOT EXISTS pec_receipts (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            outbound_id     INTEGER NOT NULL
+                              REFERENCES outbound_manifests(id) ON DELETE CASCADE,
+            receipt_type    TEXT NOT NULL,
+            message_id      TEXT NOT NULL DEFAULT '',
+            received_at     TEXT NOT NULL,
+            raw_eml         BLOB NOT NULL,
+            daticert_xml    BLOB,
+            receipt_hash    TEXT NOT NULL,
+            UNIQUE (outbound_id, receipt_type, receipt_hash)
+        );
+        CREATE INDEX IF NOT EXISTS idx_pec_receipts_outbound
+            ON pec_receipts(outbound_id, received_at);
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_inbound_manifest_uuid
+            ON inbound_shipments(manifest_uuid) WHERE manifest_uuid <> '';
+        """
+    )
+    colonne_uscita = {
+        riga[1] for riga in conn.execute("PRAGMA table_info(outbound_manifests)")
+    }
+    if "sent_eml" not in colonne_uscita:
+        conn.execute("ALTER TABLE outbound_manifests ADD COLUMN sent_eml BLOB")
+
+
 #: Una migrazione e' uno script SQL oppure una funzione che riceve la
 #: connessione. La seconda forma serve quando il passo non e' ripetibile scritto
 #: in SQL puro.
@@ -296,6 +461,8 @@ _MIGRATIONS: dict[int, "str | Callable[[sqlite3.Connection], None]"] = {
     1: _SCHEMA,
     2: _MIGRATION_V2,
     3: _migrazione_v3,
+    4: _migrazione_v4,
+    5: _migrazione_v5,
 }
 
 
@@ -351,6 +518,8 @@ class ContainerRecord:
     fixative_code: int
     descrizione: str
     data_prelievo: dt.date | None
+    flags: int = 0
+    external_ref: str = ""
 
     @property
     def display_name(self) -> str:
@@ -510,13 +679,14 @@ class LimsDatabase:
         try:
             cursor = self._conn.execute(
                 "INSERT INTO cases (accession_id, patient_id, data_prelievo, reparto, medico, "
-                "note, created_at) VALUES (?,?,?,?,?,?,?)",
+                "external_ref, note, created_at) VALUES (?,?,?,?,?,?,?,?)",
                 (
                     case.accession_id,
                     case.patient_id,
                     _as_iso(case.data_prelievo),
                     case.reparto,
                     case.medico,
+                    case.external_ref,
                     case.note,
                     _now(),
                 ),
@@ -541,6 +711,7 @@ class LimsDatabase:
             data_prelievo=_as_date(row["data_prelievo"]),
             reparto=row["reparto"],
             medico=row["medico"],
+            external_ref=row["external_ref"],
             note=row["note"],
         )
 
@@ -550,13 +721,14 @@ class LimsDatabase:
             raise ValueError("case_id obbligatorio per registrare un reperto")
         cursor = self._conn.execute(
             "INSERT INTO specimens (case_id, descrizione, material_code, site_code, "
-            "fixative_code, created_at) VALUES (?,?,?,?,?,?)",
+            "fixative_code, flags, created_at) VALUES (?,?,?,?,?,?,?)",
             (
                 specimen.case_id,
                 specimen.descrizione,
                 specimen.material_code,
                 specimen.site_code,
                 specimen.fixative_code,
+                specimen.flags,
                 _now(),
             ),
         )
@@ -632,8 +804,8 @@ class LimsDatabase:
 
     _RECORD_QUERY = """
         SELECT c.id AS container_id, c.epc, c.tid, c.idx, c.total, c.state, c.revision,
-               s.descrizione, s.material_code, s.site_code, s.fixative_code,
-               k.accession_id, k.data_prelievo,
+               s.descrizione, s.material_code, s.site_code, s.fixative_code, s.flags,
+               k.accession_id, k.data_prelievo, k.external_ref,
                p.codice_fiscale, p.cognome, p.nome
         FROM containers c
         JOIN specimens s ON s.id = c.specimen_id
@@ -679,6 +851,8 @@ class LimsDatabase:
             material_code=row["material_code"],
             site_code=row["site_code"],
             fixative_code=row["fixative_code"],
+            flags=row["flags"],
+            external_ref=row["external_ref"],
             descrizione=row["descrizione"],
             data_prelievo=_as_date(row["data_prelievo"]),
         )
@@ -1030,6 +1204,50 @@ class LimsDatabase:
         ).fetchone()
         return self._row_to_record(row) if row else None
 
+    # -- contesto operativo persistente -----------------------------------
+    def workflow_context(self) -> dict[str, Any]:
+        """Ritorna il lavoro attivo, cosi' un riavvio non azzera la postazione."""
+        riga = self._conn.execute(
+            "SELECT * FROM workflow_context WHERE id=1"
+        ).fetchone()
+        return dict(riga) if riga else {
+            "active_specimen_id": None,
+            "active_shipment_id": None,
+            "active_inbound_id": None,
+            "count_confirmed": 0,
+        }
+
+    def save_workflow_context(
+        self,
+        *,
+        specimen_id: int | None,
+        shipment_id: int | None,
+        inbound_id: int | None,
+        count_confirmed: bool,
+    ) -> None:
+        self._conn.execute(
+            """
+            INSERT INTO workflow_context
+                (id, active_specimen_id, active_shipment_id, active_inbound_id,
+                 count_confirmed, updated_at)
+            VALUES (1,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+                active_specimen_id=excluded.active_specimen_id,
+                active_shipment_id=excluded.active_shipment_id,
+                active_inbound_id=excluded.active_inbound_id,
+                count_confirmed=excluded.count_confirmed,
+                updated_at=excluded.updated_at
+            """,
+            (
+                specimen_id,
+                shipment_id,
+                inbound_id,
+                1 if count_confirmed else 0,
+                _now(),
+            ),
+        )
+        self._conn.commit()
+
     # -- spedizioni --------------------------------------------------------
     def create_shipment(self, shipment: Shipment) -> int:
         cursor = self._conn.execute(
@@ -1045,19 +1263,82 @@ class LimsDatabase:
         self._conn.commit()
         return int(cursor.lastrowid)
 
+    def create_shipment_with_containers(
+        self, shipment: Shipment, container_ids: Iterable[int]
+    ) -> int:
+        """Crea bozza e composizione come un'unica transazione."""
+        ids = tuple(container_ids)
+        try:
+            with self._conn:
+                cursore = self._conn.execute(
+                    "INSERT INTO shipments (destinazione, data, state, note, created_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (
+                        shipment.destinazione,
+                        _as_iso(shipment.data),
+                        shipment.state.value,
+                        shipment.note,
+                        _now(),
+                    ),
+                )
+                shipment_id = int(cursore.lastrowid)
+                self.add_to_shipment(shipment_id, ids)
+        except Exception:
+            self._conn.rollback()
+            raise
+        return shipment_id
+
     def add_to_shipment(self, shipment_id: int, container_ids: Iterable[int]) -> int:
-        righe = [(shipment_id, container_id, _now()) for container_id in container_ids]
-        self._conn.executemany(
-            "INSERT OR IGNORE INTO shipment_items (shipment_id, container_id, added_at) "
-            "VALUES (?,?,?)",
-            righe,
-        )
-        self._conn.executemany(
-            "UPDATE containers SET state=? WHERE id=?",
-            [(ContainerState.SHIPPED.value, container_id) for _, container_id, _ in righe],
-        )
-        self._conn.commit()
-        return len(righe)
+        ids = tuple(dict.fromkeys(int(value) for value in container_ids))
+        if not ids:
+            raise LimsDatabaseError("selezionare almeno un contenitore")
+        stato_spedizione = self.shipment_row(shipment_id)["state"]
+        if stato_spedizione != ShipmentState.OPEN.value:
+            raise LimsDatabaseError(
+                "la composizione di una spedizione non aperta e' immutabile"
+            )
+        segnaposti = ",".join("?" for _ in ids)
+        with self._conn:
+            righe = self._conn.execute(
+                f"SELECT id, state FROM containers WHERE id IN ({segnaposti})", ids
+            ).fetchall()
+            if len(righe) != len(ids):
+                raise NotFoundError("uno o piu' contenitori selezionati non esistono")
+            non_pronti = [r["id"] for r in righe if r["state"] != ContainerState.PROVISIONED.value]
+            if non_pronti:
+                raise LimsDatabaseError(
+                    "i contenitori selezionati non sono tutti pronti: "
+                    + ", ".join(map(str, non_pronti))
+                )
+            gia_assegnati = self._conn.execute(
+                f"""
+                SELECT i.container_id
+                  FROM shipment_items i
+                  JOIN shipments s ON s.id=i.shipment_id
+                 WHERE i.container_id IN ({segnaposti}) AND s.state <> ?
+                """,
+                (*ids, ShipmentState.CANCELLED.value),
+            ).fetchall()
+            if gia_assegnati:
+                raise LimsDatabaseError("un contenitore e' gia' in un'altra spedizione")
+            adesso = _now()
+            self._conn.executemany(
+                "INSERT INTO shipment_items (shipment_id, container_id, added_at) VALUES (?,?,?)",
+                [(shipment_id, container_id, adesso) for container_id in ids],
+            )
+            self._conn.executemany(
+                "UPDATE containers SET state=? WHERE id=?",
+                [(ContainerState.PACKED.value, container_id) for container_id in ids],
+            )
+        return len(ids)
+
+    def ready_containers(self) -> list[ContainerRecord]:
+        righe = self._conn.execute(
+            self._RECORD_QUERY
+            + " WHERE c.state=? ORDER BY k.accession_id, s.id, c.idx",
+            (ContainerState.PROVISIONED.value,),
+        ).fetchall()
+        return [self._row_to_record(riga) for riga in righe]
 
     def shipment_contents(self, shipment_id: int) -> list[ContainerRecord]:
         rows = self._conn.execute(
@@ -1077,6 +1358,7 @@ class LimsDatabase:
         valore = ShipmentState(state).value
         colonna = {
             ShipmentState.SEALED.value: "sealed_at",
+            ShipmentState.EXPORTED.value: "exported_at",
             ShipmentState.SENT.value: "sent_at",
         }.get(valore)
         if colonna:
@@ -1088,13 +1370,447 @@ class LimsDatabase:
             self._conn.execute("UPDATE shipments SET state=? WHERE id=?", (valore, shipment_id))
         self._conn.commit()
 
+    def shipment_row(self, shipment_id: int) -> dict[str, Any]:
+        riga = self._conn.execute(
+            "SELECT * FROM shipments WHERE id=?", (int(shipment_id),)
+        ).fetchone()
+        if riga is None:
+            raise NotFoundError(f"spedizione {shipment_id} inesistente")
+        return dict(riga)
+
+    def mark_manifest_exported(self, shipment_id: int, manifest_hash: str) -> None:
+        stato = self.shipment_row(shipment_id)["state"]
+        if stato not in (ShipmentState.SEALED.value, ShipmentState.EXPORTED.value):
+            raise LimsDatabaseError("la distinta si esporta solo dopo un sigillo valido")
+        self._conn.execute(
+            "UPDATE shipments SET state=?, exported_at=?, manifest_hash=? WHERE id=?",
+            (ShipmentState.EXPORTED.value, _now(), manifest_hash, shipment_id),
+        )
+        self._conn.commit()
+
+    def confirm_shipment_sent(self, shipment_id: int) -> None:
+        """Conferma la partenza e solo qui chiude contenitori e tag."""
+        stato = self.shipment_row(shipment_id)["state"]
+        if stato != ShipmentState.EXPORTED.value:
+            raise LimsDatabaseError(
+                "prima di confermare la partenza occorre esportare la distinta"
+            )
+        with self._conn:
+            self._conn.execute(
+                "UPDATE shipments SET state=?, sent_at=? WHERE id=?",
+                (ShipmentState.SENT.value, _now(), shipment_id),
+            )
+            self._conn.execute(
+                """
+                UPDATE containers SET state=?
+                 WHERE id IN (SELECT container_id FROM shipment_items WHERE shipment_id=?)
+                """,
+                (ContainerState.SHIPPED.value, shipment_id),
+            )
+            self._conn.execute(
+                """
+                UPDATE tags SET state=?
+                 WHERE tid IN (
+                    SELECT c.tid FROM containers c
+                    JOIN shipment_items i ON i.container_id=c.id
+                    WHERE i.shipment_id=? AND c.tid IS NOT NULL AND c.tid <> ''
+                 )
+                """,
+                (TagState.SHIPPED.value, shipment_id),
+            )
+
+    def cancel_shipment(self, shipment_id: int) -> None:
+        stato = self.shipment_row(shipment_id)["state"]
+        if stato in (ShipmentState.SENT.value, ShipmentState.RECEIVED.value):
+            raise LimsDatabaseError("una spedizione gia' partita non puo' essere annullata")
+        with self._conn:
+            self._conn.execute(
+                """
+                UPDATE containers SET state=?
+                 WHERE state=? AND id IN (
+                    SELECT container_id FROM shipment_items WHERE shipment_id=?
+                 )
+                """,
+                (ContainerState.PROVISIONED.value, ContainerState.PACKED.value, shipment_id),
+            )
+            self._conn.execute(
+                "UPDATE shipments SET state=? WHERE id=?",
+                (ShipmentState.CANCELLED.value, shipment_id),
+            )
+            self._conn.execute(
+                "UPDATE outbound_manifests SET state='superseded' WHERE shipment_id=?",
+                (int(shipment_id),),
+            )
+
     def record_shipment_sealing(
-        self, shipment_id: int, *, ok: bool, detail: str = "", operator: str = ""
+        self,
+        shipment_id: int,
+        *,
+        ok: bool,
+        detail: str = "",
+        operator: str = "",
+        record: Mapping[str, Any] | None = None,
     ) -> None:
         """Attacca alla spedizione l'esito del sigillo e chi l'ha supervisionata."""
         self._conn.execute(
-            "UPDATE shipments SET sealing_ok=?, sealing_detail=?, operator=? WHERE id=?",
-            (1 if ok else 0, str(detail), str(operator), shipment_id),
+            "UPDATE shipments SET sealing_ok=?, sealing_detail=?, operator=?, "
+            "sealing_json=? WHERE id=?",
+            (
+                1 if ok else 0,
+                str(detail),
+                str(operator),
+                json.dumps(dict(record or {}), ensure_ascii=False, sort_keys=True),
+                shipment_id,
+            ),
+        )
+        self._conn.commit()
+
+    # -- distinta immutabile e consegna PEC -------------------------------
+    def outbound_manifest(self, shipment_id: int) -> dict[str, Any] | None:
+        riga = self._conn.execute(
+            "SELECT * FROM outbound_manifests WHERE shipment_id=?", (int(shipment_id),)
+        ).fetchone()
+        return dict(riga) if riga else None
+
+    def archive_outbound_manifest(
+        self,
+        shipment_id: int,
+        *,
+        manifest_uuid: str,
+        encrypted_blob: bytes,
+        manifest_hash: str,
+        filename: str,
+        item_count: int,
+        source_code: str,
+        destination_code: str,
+        signer_fingerprint: str = "",
+        recipient_fingerprint: str = "",
+        archive_path: str = "",
+        operator: str = "",
+    ) -> dict[str, Any]:
+        """Archivia una sola rappresentazione byte-per-byte della distinta."""
+        esistente = self.outbound_manifest(shipment_id)
+        if esistente:
+            if esistente["manifest_hash"] != str(manifest_hash).lower():
+                raise LimsDatabaseError(
+                    "la spedizione possiede gia' una distinta immutabile diversa"
+                )
+            return esistente
+        stato = self.shipment_row(shipment_id)
+        if stato["state"] not in (ShipmentState.SEALED.value, ShipmentState.EXPORTED.value):
+            raise LimsDatabaseError("la distinta si archivia solo dopo un sigillo valido")
+        if stato.get("sealing_ok") != 1:
+            raise LimsDatabaseError("il sigillo della spedizione non e' valido")
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO outbound_manifests
+                        (shipment_id, manifest_uuid, encrypted_blob, manifest_hash,
+                         filename, item_count, source_code, destination_code,
+                         signer_fingerprint, recipient_fingerprint, archive_path,
+                         created_at, created_by)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        int(shipment_id),
+                        str(manifest_uuid),
+                        sqlite3.Binary(bytes(encrypted_blob)),
+                        str(manifest_hash).lower(),
+                        str(filename),
+                        int(item_count),
+                        str(source_code),
+                        str(destination_code),
+                        str(signer_fingerprint).upper(),
+                        str(recipient_fingerprint).upper(),
+                        str(archive_path),
+                        _now(),
+                        str(operator),
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise LimsDatabaseError(f"distinta gia' archiviata: {exc}") from exc
+        return self.outbound_manifest(shipment_id) or {}
+
+    def update_outbound_archive_path(self, shipment_id: int, archive_path: str) -> None:
+        self._conn.execute(
+            "UPDATE outbound_manifests SET archive_path=? WHERE shipment_id=?",
+            (str(archive_path), int(shipment_id)),
+        )
+        self._conn.commit()
+
+    def mark_outbound_smtp_accepted(
+        self, shipment_id: int, message_id: str, raw_message: bytes = b""
+    ) -> None:
+        self._conn.execute(
+            """
+            UPDATE outbound_manifests
+               SET state='smtp_accepted', message_id=?, sent_eml=?, smtp_accepted_at=?,
+                   attempts=attempts+1, last_error=''
+             WHERE shipment_id=?
+            """,
+            (
+                str(message_id),
+                sqlite3.Binary(bytes(raw_message)),
+                _now(),
+                int(shipment_id),
+            ),
+        )
+        self._conn.commit()
+
+    def mark_outbound_error(self, shipment_id: int, detail: str, *, uncertain: bool) -> None:
+        self._conn.execute(
+            """
+            UPDATE outbound_manifests
+               SET state=?, attempts=attempts+1, last_error=?
+             WHERE shipment_id=?
+            """,
+            ("delivery_unknown" if uncertain else "failed", str(detail), int(shipment_id)),
+        )
+        self._conn.commit()
+
+    def find_outbound_by_message_id(self, message_id: str) -> dict[str, Any] | None:
+        normalizzato = str(message_id).strip().strip("<>")
+        righe = self._conn.execute(
+            "SELECT * FROM outbound_manifests WHERE message_id<>''"
+        ).fetchall()
+        for riga in righe:
+            if str(riga["message_id"]).strip().strip("<>") == normalizzato:
+                return dict(riga)
+        return None
+
+    def record_pec_receipt(
+        self,
+        outbound_id: int,
+        *,
+        receipt_type: str,
+        message_id: str,
+        raw_eml: bytes,
+        daticert_xml: bytes = b"",
+    ) -> bool:
+        """Conserva la ricevuta integrale; `False` indica un duplicato innocuo."""
+        tipo = str(receipt_type).strip().lower()
+        impronta = hashlib.sha256(bytes(raw_eml)).hexdigest()
+        try:
+            with self._conn:
+                self._conn.execute(
+                    """
+                    INSERT INTO pec_receipts
+                        (outbound_id, receipt_type, message_id, received_at,
+                         raw_eml, daticert_xml, receipt_hash)
+                    VALUES (?,?,?,?,?,?,?)
+                    """,
+                    (
+                        int(outbound_id),
+                        tipo,
+                        str(message_id),
+                        _now(),
+                        sqlite3.Binary(bytes(raw_eml)),
+                        sqlite3.Binary(bytes(daticert_xml)) if daticert_xml else None,
+                        impronta,
+                    ),
+                )
+                stato = None
+                colonna = None
+                if tipo == "accettazione":
+                    stato, colonna = "pec_accepted", "pec_accepted_at"
+                elif tipo == "avvenuta-consegna":
+                    stato, colonna = "delivered", "delivered_at"
+                elif tipo in {
+                    "non-accettazione",
+                    "errore-consegna",
+                    "preavviso-errore-consegna",
+                    "rilevazione-virus",
+                }:
+                    stato = "failed"
+                corrente = self._conn.execute(
+                    "SELECT state FROM outbound_manifests WHERE id=?",
+                    (int(outbound_id),),
+                ).fetchone()
+                gia_consegnata = bool(corrente and corrente["state"] == "delivered")
+                if colonna and (stato == "delivered" or not gia_consegnata):
+                    self._conn.execute(
+                        f"UPDATE outbound_manifests SET state=?, {colonna}=? WHERE id=?",
+                        (stato, _now(), int(outbound_id)),
+                    )
+                elif stato and not gia_consegnata:
+                    self._conn.execute(
+                        "UPDATE outbound_manifests SET state=?, last_error=? WHERE id=?",
+                        (stato, f"ricevuta PEC: {tipo}", int(outbound_id)),
+                    )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def pec_receipts(self, shipment_id: int) -> list[dict[str, Any]]:
+        righe = self._conn.execute(
+            """
+            SELECT r.* FROM pec_receipts r
+            JOIN outbound_manifests o ON o.id=r.outbound_id
+            WHERE o.shipment_id=? ORDER BY r.id
+            """,
+            (int(shipment_id),),
+        ).fetchall()
+        return [dict(riga) for riga in righe]
+
+    def record_departure_override(
+        self, shipment_id: int, *, operator: str, reason: str
+    ) -> None:
+        motivo = str(reason).strip()
+        if not motivo:
+            raise LimsDatabaseError("la deroga richiede una motivazione")
+        self._conn.execute(
+            """
+            UPDATE shipments
+               SET departure_override_at=?, departure_override_by=?,
+                   departure_override_reason=?
+             WHERE id=?
+            """,
+            (_now(), str(operator), motivo, int(shipment_id)),
+        )
+        self._conn.commit()
+
+    # -- ricezioni --------------------------------------------------------
+    def import_inbound_manifest(
+        self,
+        *,
+        origin_lab_id: int,
+        origin_shipment_id: int,
+        manifest_hash: str,
+        encrypted_blob: bytes,
+        destination: str,
+        source_created_at: str,
+        operator: str,
+        manifest_uuid: str = "",
+        verification_ok: bool | None = None,
+        signer_code: str = "",
+        signer_fingerprint: str = "",
+        recipient_fingerprint: str = "",
+        verification_detail: str = "",
+    ) -> tuple[int, bool]:
+        """Registra una distinta una sola volta; ritorna ``(id, gia_nota)``."""
+        esistente = self._conn.execute(
+            "SELECT id, manifest_hash FROM inbound_shipments "
+            "WHERE origin_lab_id=? AND origin_shipment_id=?",
+            (int(origin_lab_id), int(origin_shipment_id)),
+        ).fetchone()
+        if esistente:
+            if esistente["manifest_hash"] != manifest_hash:
+                raise LimsDatabaseError(
+                    "esiste gia' una distinta diversa con lo stesso mittente e numero"
+                )
+            return int(esistente["id"]), True
+        try:
+            cursore = self._conn.execute(
+                """
+                INSERT INTO inbound_shipments
+                    (origin_lab_id, origin_shipment_id, manifest_hash, encrypted_blob,
+                     destination, source_created_at, imported_at, imported_by,
+                     manifest_uuid, verification_ok, signer_code, signer_fingerprint,
+                     recipient_fingerprint, verification_detail)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    int(origin_lab_id),
+                    int(origin_shipment_id),
+                    manifest_hash,
+                    sqlite3.Binary(encrypted_blob),
+                    destination,
+                    source_created_at,
+                    _now(),
+                    operator,
+                    str(manifest_uuid),
+                    None if verification_ok is None else (1 if verification_ok else 0),
+                    str(signer_code),
+                    str(signer_fingerprint).upper(),
+                    str(recipient_fingerprint).upper(),
+                    str(verification_detail),
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            raise LimsDatabaseError("distinta gia' importata") from exc
+        self._conn.commit()
+        return int(cursore.lastrowid), False
+
+    def inbound_row(self, inbound_id: int) -> dict[str, Any]:
+        riga = self._conn.execute(
+            "SELECT * FROM inbound_shipments WHERE id=?", (int(inbound_id),)
+        ).fetchone()
+        if riga is None:
+            raise NotFoundError(f"ricezione {inbound_id} inesistente")
+        return dict(riga)
+
+    def record_inbound_reconciliation(
+        self,
+        inbound_id: int,
+        *,
+        operator: str,
+        expected: Iterable[str],
+        arrived: Iterable[str],
+        missing: Iterable[str],
+        unexpected: Iterable[str],
+        detail: str = "",
+    ) -> int:
+        attesi = sorted(set(expected))
+        arrivati = sorted(set(arrived))
+        mancanti = sorted(set(missing))
+        inattesi = sorted(set(unexpected))
+        cursore = self._conn.execute(
+            """
+            INSERT INTO inbound_reconciliations
+                (inbound_id, ts, operator, ok, expected_json, arrived_json,
+                 missing_json, unexpected_json, detail)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                int(inbound_id),
+                _now(),
+                operator,
+                0 if mancanti or inattesi else 1,
+                json.dumps(attesi),
+                json.dumps(arrivati),
+                json.dumps(mancanti),
+                json.dumps(inattesi),
+                detail,
+            ),
+        )
+        self._conn.commit()
+        return int(cursore.lastrowid)
+
+    def latest_inbound_reconciliation(self, inbound_id: int) -> dict[str, Any] | None:
+        riga = self._conn.execute(
+            """
+            SELECT * FROM inbound_reconciliations
+             WHERE inbound_id=? ORDER BY id DESC LIMIT 1
+            """,
+            (int(inbound_id),),
+        ).fetchone()
+        if riga is None:
+            return None
+        esito = dict(riga)
+        for nome in ("expected", "arrived", "missing", "unexpected"):
+            esito[nome] = json.loads(esito.pop(f"{nome}_json"))
+        esito["ok"] = bool(esito["ok"])
+        return esito
+
+    def confirm_inbound_receipt(
+        self, inbound_id: int, *, operator: str, nonconformity_reason: str = ""
+    ) -> None:
+        ultima = self.latest_inbound_reconciliation(inbound_id)
+        if ultima is None:
+            raise LimsDatabaseError("eseguire prima la lettura e il confronto")
+        motivo = str(nonconformity_reason).strip()
+        if not ultima["ok"] and not motivo:
+            raise LimsDatabaseError(
+                "per chiudere una ricezione non conforme e' obbligatoria una motivazione"
+            )
+        self._conn.execute(
+            """
+            UPDATE inbound_shipments
+               SET state=?, confirmed_at=?, confirmed_by=?, nonconformity_reason=?
+             WHERE id=?
+            """,
+            ("received", _now(), operator, motivo, int(inbound_id)),
         )
         self._conn.commit()
 
@@ -1157,12 +1873,17 @@ class LimsDatabase:
                        sh.sealing_ok, sh.sealing_detail, sh.state AS shipment_state
                   FROM containers ct
                   JOIN specimens s        ON s.id = ct.specimen_id
-                  LEFT JOIN shipment_items si ON si.container_id = ct.id
+                  LEFT JOIN shipment_items si
+                    ON si.container_id = ct.id
+                   AND EXISTS (
+                       SELECT 1 FROM shipments sx
+                        WHERE sx.id = si.shipment_id AND sx.state <> ?
+                   )
                   LEFT JOIN shipments sh  ON sh.id = si.shipment_id
                  WHERE s.case_id = ?
                  ORDER BY ct.idx
                 """,
-                (caso["id"],),
+                (ShipmentState.CANCELLED.value, caso["id"]),
             ).fetchall()
             accettazioni.append(
                 {

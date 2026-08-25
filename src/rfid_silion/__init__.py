@@ -17,10 +17,10 @@ from .diagnostics import (
 from .errors import NoTagError, SilionError, check_status, status_to_exception
 from .protocol import (
     HEADER,
-    build_lock_bits,
     SilionFrameError,
     SilionTimeoutError,
     SilionTransportError,
+    build_lock_bits,
     build_packet,
     crc16,
     parse_response,
@@ -32,8 +32,8 @@ from .service import (
     AntennaDiagnosticsRequest,
     AntennaPower,
     EpcGenerationRequest,
-    Gen2Settings,
     EventRequest,
+    Gen2Settings,
     InventoryRequest,
     LockMode,
     LockRequest,

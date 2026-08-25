@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fake_backend import FakeTagBackend, SimulatedTag
+
 from lims.codec import SpecimenFlags, TagPayload
 from lims.crypto import KEY_SIZE, Keyring
 from lims.db import LimsDatabase

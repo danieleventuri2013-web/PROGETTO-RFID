@@ -16,6 +16,8 @@ const stato = {
   accettazione: null,
   spedizione: null,
   distinta: null,
+  coda: null,
+  ultimaRicezione: null,
   collegato: false,
   occupato: false,
   sorveglianza: null,
@@ -33,6 +35,31 @@ const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 /** «Manca 1 contenitore» invece di «Mancano 1 contenitori»: un messaggio che
  *  sgrammatica fa dubitare anche del numero che sta accanto. */
 const plurale = (n, uno, molti) => (n === 1 ? uno : molti);
+
+function aggiornaWorkflowBar() {
+  const parti = [];
+  if (stato.accettazione?.accession_id) {
+    parti.push(
+      "Accettazione " + stato.accettazione.accession_id + ": " +
+      stato.accettazione.scritti + "/" + stato.accettazione.totale + " tag"
+    );
+  }
+  if (stato.spedizione?.shipment_id) {
+    parti.push(
+      "Spedizione " + stato.spedizione.shipment_id + ": " +
+      (stato.spedizione.stato || "bozza")
+    );
+  }
+  if (stato.distinta?.inbound_id) {
+    parti.push(
+      "Ricezione " + stato.distinta.inbound_id + ": " +
+      (stato.distinta.stato || "aperta")
+    );
+  }
+  $("#workflow-stato").textContent = parti.length
+    ? parti.join(" · ")
+    : "Nessun flusso da riprendere";
+}
 
 /* ==========================================================================
    Rete
@@ -108,6 +135,56 @@ function alternaTema() {
   const scuroDiSistema = matchMedia("(prefers-color-scheme: dark)").matches;
   const stiamoAlScuro = attuale === "scuro" || (attuale === "sistema" && scuroDiSistema);
   applicaTema(stiamoAlScuro ? "chiaro" : "scuro");
+}
+
+/* ==========================================================================
+   Postazione — banco (mouse) o tavoletta (dita)
+
+   Una sola interfaccia, due misure. La scelta sta in un attributo sulla
+   radice, e `tocco.css` non applica una riga finche' non vale "tavoletta":
+   il banco non puo' cambiare per colpa di questo file.
+
+   L'ordine con cui si decide non e' arbitrario:
+   1. `?modo=` nell'indirizzo, perche' e' quello che finisce nel collegamento
+      salvato sulla schermata Home della tavoletta — l'apparecchio si porta
+      dietro la sua modalita' e non dipende da cosa ha scelto qualcun altro;
+   2. la scelta salvata su questo apparecchio;
+   3. il tipo di puntatore. `pointer: coarse` vuol dire «il puntatore piu'
+      preciso di questo apparecchio e' un dito».
+   ========================================================================== */
+const MODI = ["banco", "tavoletta"];
+
+function postazioneRichiesta() {
+  const daIndirizzo = new URLSearchParams(location.search).get("modo");
+  if (MODI.includes(daIndirizzo)) return daIndirizzo;
+  const salvata = localStorage.getItem("postazione");
+  if (MODI.includes(salvata)) return salvata;
+  return matchMedia("(pointer: coarse)").matches ? "tavoletta" : "banco";
+}
+
+function applicaPostazione(scelta, { ricorda = true } = {}) {
+  const modo = MODI.includes(scelta) ? scelta : "banco";
+  document.documentElement.dataset.postazione = modo;
+  if (ricorda) localStorage.setItem("postazione", modo);
+  const radio = $$('input[name="postazione"]').find((r) => r.value === modo);
+  if (radio) radio.checked = true;
+  return modo;
+}
+
+function tavoletta() {
+  return document.documentElement.dataset.postazione === "tavoletta";
+}
+
+/* Il manifesto dice ad Android come installare la pagina sulla schermata Home.
+   Non e' un file statico perche' contiene il token: servirlo a chiunque passi
+   sulla rete regalerebbe il comando del lettore. Il collegamento si costruisce
+   qui, con il token che questa pagina ha gia'. */
+function collegaManifesto() {
+  if (!TOKEN) return;
+  const link = document.createElement("link");
+  link.rel = "manifest";
+  link.href = `/manifest.webmanifest?t=${encodeURIComponent(TOKEN)}`;
+  document.head.append(link);
 }
 
 /* ==========================================================================
@@ -218,6 +295,7 @@ async function registra(evento) {
     $("#pannello-anagrafica").classList.add("pannello--nascosto");
     $("#pannello-postazione").classList.remove("pannello--nascosto");
     dipingiAccettazione();
+    aggiornaWorkflowBar();
     avviaSorveglianza();
     $("#scrivi").focus();
   } catch (errore) {
@@ -274,8 +352,29 @@ function dipingiCartella() {
 }
 
 function dipingiAccettazione() {
+  const attiva = Boolean(stato.accettazione?.accession_id);
+  $("#pannello-anagrafica").classList.toggle("pannello--nascosto", attiva);
+  $("#pannello-postazione").classList.toggle("pannello--nascosto", !attiva);
+  if (!attiva) return;
   dipingiSerie();
   dipingiCartella();
+  $("#nuova-accettazione").disabled = Boolean(stato.accettazione.prossimo);
+}
+
+async function nuovaAccettazione() {
+  try {
+    await chiama("nuova_accettazione");
+    fermaSorveglianza();
+    stato.accettazione = null;
+    $("#modulo-accettazione").reset();
+    $("#contenitori").value = 1;
+    dipingiAccettazione();
+    aggiornaWorkflowBar();
+    await caricaCoda();
+    $("#cf").focus();
+  } catch (errore) {
+    avvisa(errore.message, "errore", 9000);
+  }
 }
 
 /** Cosa e' finito nel chip: EPC, TID, byte e antenna che ha scritto. */
@@ -383,7 +482,12 @@ async function guarda() {
     // avanzare da soli significherebbe dare per fatto un gesto dell'operatore.
     const ancoraLui = stato.ultimoEpc && esito.epcs.includes(stato.ultimoEpc);
     if (ancoraLui) {
-      Scena.stato("rimuovi");
+      Scena.stato(
+        "rimuovi",
+        stato.accettazione.prossimo
+          ? "Togli il contenitore e appoggia il prossimo"
+          : "Togli l'ultimo contenitore: accettazione completata"
+      );
       $("#scrivi").disabled = true;
       return;
     }
@@ -467,6 +571,8 @@ async function scrivi() {
       $("#salta").hidden = false;
     }
     dipingiSerie();
+    aggiornaWorkflowBar();
+    if (!stato.accettazione.prossimo) caricaCoda();
     avviaSorveglianza();
   } catch (errore) {
     Scena.stato("errore", errore.message);
@@ -586,6 +692,8 @@ async function annullaAccettazione() {
     $("#passi-scrittura").innerHTML = "";
     $("#modulo-accettazione").reset();
     $("#cf").focus();
+    aggiornaWorkflowBar();
+    await caricaCoda();
 
     const rimasti = esitoAnnullo.gia_scritti.length;
     avvisa(
@@ -687,20 +795,241 @@ async function stampaEtichetta(evento) {
 /* ==========================================================================
    Sigillo e spedizione
    ========================================================================== */
+async function caricaCoda() {
+  try {
+    stato.coda = await chiama("coda_spedizione");
+    dipingiCoda();
+  } catch (errore) {
+    $("#errore-spedizione").textContent = errore.message;
+  }
+}
+
+function dipingiCoda() {
+  const elenco = $("#coda-elenco");
+  elenco.innerHTML = "";
+  const gruppi = stato.coda?.gruppi || [];
+  for (const gruppo of gruppi) {
+    const sezione = document.createElement("section");
+    sezione.className = "coda__gruppo";
+    const titolo = document.createElement("h3");
+    titolo.textContent =
+      "Accettazione " + gruppo.accession_id + " · " + gruppo.paziente;
+    sezione.append(titolo);
+    for (const voce of gruppo.contenitori) {
+      const riga = document.createElement("label");
+      riga.className = "coda__voce";
+      const casella = document.createElement("input");
+      casella.type = "checkbox";
+      casella.name = "contenitore-spedizione";
+      casella.value = voce.container_id;
+      casella.addEventListener("change", aggiornaRiepilogoCoda);
+      const etichetta = document.createElement("b");
+      etichetta.textContent = voce.etichetta;
+      const epc = document.createElement("span");
+      epc.className = "hex tenue";
+      epc.title = voce.epc;
+      epc.textContent = voce.epc;
+      riga.append(casella, etichetta, epc);
+      sezione.append(riga);
+    }
+    elenco.append(sezione);
+  }
+  aggiornaRiepilogoCoda();
+}
+
+function aggiornaRiepilogoCoda() {
+  const disponibili = $$('input[name="contenitore-spedizione"]');
+  const selezionati = disponibili.filter((voce) => voce.checked).length;
+  $("#coda-riepilogo").textContent = disponibili.length
+    ? selezionati + " di " + disponibili.length + " selezionati"
+    : "Nessun contenitore pronto";
+  $("#prepara").disabled = selezionati === 0;
+}
+
+function selezionaTuttaCoda() {
+  const caselle = $$('input[name="contenitore-spedizione"]');
+  const tutte = caselle.length > 0 && caselle.every((voce) => voce.checked);
+  caselle.forEach((voce) => { voce.checked = !tutte; });
+  aggiornaRiepilogoCoda();
+}
+
 async function preparaSpedizione() {
   $("#errore-spedizione").textContent = "";
   try {
+    const containerIds = $$('input[name="contenitore-spedizione"]:checked').map(
+      (voce) => Number(voce.value)
+    );
     stato.spedizione = await chiama("prepara_spedizione", {
       destinazione: $("#destinazione").value.trim(),
+      container_ids: containerIds,
     });
+    dipingiSpedizione();
+    aggiornaWorkflowBar();
     $("#pannello-sigillo").classList.remove("pannello--nascosto");
     disponiPuntiIn("#volume-punti", stato.spedizione.attesi);
     aggiornaVerdetto(0, stato.spedizione.attesi, "attesa");
     $("#verdetto-esito").textContent =
-      `${stato.spedizione.attesi} contenitori pronti a partire. Chiudi la scatola e certifica.`;
+      `${stato.spedizione.attesi} ${plurale(
+        stato.spedizione.attesi,
+        "contenitore pronto",
+        "contenitori pronti"
+      )} a partire. Chiudi la scatola e certifica.`;
     $("#sigilla").focus();
   } catch (errore) {
     $("#errore-spedizione").textContent = errore.message;
+  }
+}
+
+function dipingiSpedizione() {
+  const spedizione = stato.spedizione;
+  const attiva = Boolean(spedizione?.shipment_id);
+  const pecAbilitata = Boolean(stato.descrizione?.pec?.abilitata);
+  $("#pannello-sigillo").classList.toggle("pannello--nascosto", !attiva);
+  $("#coda-spedizione").hidden =
+    attiva && !["sent", "cancelled"].includes(spedizione.stato);
+  if (!attiva) return;
+
+  disponiPuntiIn("#volume-punti", spedizione.attesi);
+  const nomi = {
+    open: "bozza preparata",
+    sealed: "contenuto certificato",
+    exported: "distinta esportata",
+    sent: "partenza confermata",
+    cancelled: "annullata",
+  };
+  $("#stato-spedizione").textContent = nomi[spedizione.stato] || spedizione.stato;
+  $("#sigilla").disabled = ["exported", "sent", "cancelled"].includes(spedizione.stato);
+  $("#esporta").disabled = !["sealed", "exported"].includes(spedizione.stato);
+  $("#prepara-email").disabled = !["exported", "sent"].includes(spedizione.stato);
+  $("#conferma-invio").disabled = spedizione.stato !== "exported";
+  $("#annulla-spedizione").disabled = ["sent", "cancelled"].includes(spedizione.stato);
+
+  const consegna = spedizione.consegna_pec;
+  $("#invia-pec").hidden = !pecAbilitata;
+  $("#aggiorna-pec").hidden = !pecAbilitata;
+  $("#prepara-email").hidden = pecAbilitata;
+  $("#invia-pec").disabled =
+    !["sealed", "exported"].includes(spedizione.stato) ||
+    ["smtp_accepted", "pec_accepted", "delivered", "delivery_unknown"].includes(
+      consegna?.stato
+    );
+  $("#aggiorna-pec").disabled = !consegna?.message_id || consegna?.stato === "delivered";
+
+  const statoPec = $("#stato-pec");
+  statoPec.hidden = !pecAbilitata || !consegna;
+  statoPec.innerHTML = "";
+  if (pecAbilitata && consegna) {
+    const nomiPec = {
+      archived: "archiviata localmente",
+      failed: "invio rifiutato",
+      delivery_unknown: "esito dell'invio incerto",
+      smtp_accepted: "affidata al gestore PEC",
+      pec_accepted: "ricevuta di accettazione acquisita",
+      delivered: "consegna PEC certificata",
+      superseded: "sostituita da una nuova spedizione",
+    };
+    for (const [chiave, valore] of [
+      ["PEC", nomiPec[consegna.stato] || consegna.stato],
+      ["identificativo", consegna.manifest_uuid],
+      ["SHA-256", consegna.sha256],
+      ["consegnata", consegna.consegnata ? dataOra(consegna.consegnata) : "—"],
+      ["ultimo errore", consegna.errore || "—"],
+    ]) {
+      const dt = document.createElement("dt");
+      const dd = document.createElement("dd");
+      dt.textContent = chiave;
+      dd.textContent = valore;
+      statoPec.append(dt, dd);
+    }
+  }
+  $("#deroga-pec").hidden =
+    !pecAbilitata || spedizione.stato !== "exported" || consegna?.stato === "delivered";
+
+  if (spedizione.sigillo?.ripristinato) {
+    aggiornaVerdetto(
+      spedizione.sigillo.ok ? spedizione.attesi : 0,
+      spedizione.attesi,
+      spedizione.sigillo.ok ? "completo" : "incompleto"
+    );
+    $("#verdetto-esito").textContent = spedizione.sigillo.dettaglio;
+  } else if (spedizione.sigillo?.expected) {
+    dipingiSigillo(spedizione);
+  } else {
+    aggiornaVerdetto(0, spedizione.attesi, "attesa");
+    $("#verdetto-esito").textContent =
+      `${spedizione.attesi} ${plurale(
+        spedizione.attesi,
+        "contenitore pronto",
+        "contenitori pronti"
+      )} a partire. Chiudi la scatola e certifica.`;
+  }
+}
+
+async function annullaSpedizione() {
+  const ok = await domanda(
+    "Annullare la bozza di spedizione?",
+    "I contenitori torneranno nella coda dei pronti e potranno essere selezionati di nuovo.",
+    "Annulla la bozza"
+  );
+  if (!ok) return;
+  try {
+    await chiama("annulla_spedizione");
+    stato.spedizione = null;
+    dipingiSpedizione();
+    await caricaCoda();
+    aggiornaWorkflowBar();
+  } catch (errore) {
+    avvisa(errore.message, "errore", 9000);
+  }
+}
+
+async function confermaInvio() {
+  const ok = await domanda(
+    "Confermare la partenza?",
+    "Usa questa conferma solo quando la scatola è stata consegnata al trasportatore. Da questo momento contenitori e tag risultano spediti.",
+    "Conferma la partenza"
+  );
+  if (!ok) return;
+  try {
+    stato.spedizione = await chiama("conferma_invio", {
+      motivo_deroga: $("#motivo-deroga").value.trim(),
+      pin: $("#pin-deroga").value,
+    });
+    $("#pin-deroga").value = "";
+    dipingiSpedizione();
+    aggiornaWorkflowBar();
+    avvisa("Partenza registrata nel registro di custodia", "ok", 9000);
+  } catch (errore) {
+    avvisa(errore.message, "errore", 9000);
+  }
+}
+
+async function inviaDistintaPec() {
+  try {
+    stato.spedizione = await chiama("invia_distinta_pec");
+    dipingiSpedizione();
+    aggiornaWorkflowBar();
+    avvisa("Distinta archiviata e affidata al gestore PEC", "ok", 10000);
+  } catch (errore) {
+    stato.spedizione = await chiama("stato_spedizione").catch(() => stato.spedizione);
+    dipingiSpedizione();
+    avvisa(errore.message, "errore", 12000);
+  }
+}
+
+async function aggiornaRicevutePec() {
+  try {
+    stato.spedizione = await chiama("aggiorna_ricevute_pec");
+    dipingiSpedizione();
+    avvisa(
+      stato.spedizione.consegna_pec?.stato === "delivered"
+        ? "Ricevuta di avvenuta consegna acquisita"
+        : "Ricevute PEC aggiornate",
+      "ok",
+      9000
+    );
+  } catch (errore) {
+    avvisa(errore.message, "errore", 10000);
   }
 }
 
@@ -755,7 +1084,8 @@ async function sigilla() {
   try {
     const esito = await chiama("sigilla");
     stato.spedizione = esito;
-    dipingiSigillo(esito);
+    dipingiSpedizione();
+    aggiornaWorkflowBar();
   } catch (errore) {
     $("#verdetto-esito").textContent = errore.message;
     $("#verdetto").dataset.esito = "incompleto";
@@ -862,8 +1192,14 @@ function dipingiSigillo(esito) {
 async function esportaDistinta() {
   try {
     await scarica("/api/distinta", "distinta.rfidman");
-    $("#prepara-email").disabled = false;
-    avvisa("Distinta cifrata scaricata: inviala al laboratorio destinatario", "ok", 9000);
+    stato.spedizione = await chiama("stato_spedizione");
+    dipingiSpedizione();
+    aggiornaWorkflowBar();
+    avvisa(
+      "Distinta cifrata scaricata. Dopo la consegna al trasportatore conferma la partenza.",
+      "ok",
+      10000
+    );
   } catch (errore) {
     avvisa(errore.message, "errore", 9000);
   }
@@ -922,6 +1258,7 @@ async function apriDistinta(evento) {
 
   try {
     stato.distinta = await chiama("importa_distinta", { contenuto_base64: btoa(binario) });
+    aggiornaWorkflowBar();
   } catch (errore) {
     // I tre errori restano tre: servono tre azioni diverse — chiedere la
     // chiave, sospettare una manomissione, accorgersi del file sbagliato.
@@ -940,6 +1277,13 @@ async function apriDistinta(evento) {
     ["creata", dataOra(distinta.creata)],
     ["operatore", distinta.operatore || "—"],
     ["contenitori", distinta.attesi],
+    ["SHA-256", distinta.verifica_documento?.sha256 || "—"],
+    [
+      "firma mittente",
+      distinta.verifica_documento?.ok === true
+        ? `verificata (${distinta.verifica_documento.mittente})`
+        : distinta.verifica_documento?.dettaglio || "distinta legacy",
+    ],
     ["sigillo alla partenza", sigillo.ok ? `completo, ${sigillo.trovati}/${sigillo.attesi}` : "non certificato"],
     ["tag coperchio", distinta.box_epc || "nessuno"],
   ]) {
@@ -1010,6 +1354,9 @@ function dipingiRicezione(esito) {
   }
 
   const completo = conciliazione.ok;
+  stato.ultimaRicezione = conciliazione;
+  $("#campo-motivo-ricezione").hidden = completo;
+  $("#conferma-ricezione").disabled = false;
   $("#arrivo-conteggio").textContent = `${conciliazione.arrivati} / ${conciliazione.attesi}`;
   $("#verdetto-arrivo").dataset.esito = completo ? "completo" : "incompleto";
   $("#volume-arrivo").dataset.stato = completo ? "completo" : "incompleto";
@@ -1078,6 +1425,64 @@ function dipingiRicezione(esito) {
 
   if (completo) avvisa("Ricezione conforme alla distinta", "ok", 8000);
   else avvisa("La scatola non corrisponde alla distinta", "errore", 12000);
+}
+
+async function confermaRicezione() {
+  try {
+    const risposta = await chiama("conferma_ricezione", {
+      motivo_non_conformita: $("#motivo-ricezione").value.trim(),
+    });
+    stato.distinta = risposta;
+    $("#conferma-ricezione").disabled = true;
+    $("#leggi-volume").disabled = true;
+    aggiornaWorkflowBar();
+    avvisa("Ricezione registrata nella catena di custodia", "ok", 9000);
+  } catch (errore) {
+    avvisa(errore.message, "errore", 10000);
+    if (/motivazione/i.test(errore.message)) $("#motivo-ricezione").focus();
+  }
+}
+
+function ripristinaRicezione(distinta) {
+  if (!distinta?.inbound_id) return;
+  stato.distinta = distinta;
+  const elenco = $("#distinta");
+  elenco.hidden = false;
+  elenco.innerHTML = "";
+  for (const [chiave, valore] of [
+    ["spedizione origine", distinta.inbound_id],
+    ["destinazione", distinta.destinazione],
+    ["creata", dataOra(distinta.creata)],
+    ["contenitori", distinta.attesi],
+    ["SHA-256", distinta.verifica_documento?.sha256 || "—"],
+    [
+      "firma mittente",
+      distinta.verifica_documento?.ok === true
+        ? `verificata (${distinta.verifica_documento.mittente})`
+        : distinta.verifica_documento?.dettaglio || "distinta legacy",
+    ],
+    ["stato", distinta.stato],
+  ]) {
+    const dt = document.createElement("dt");
+    dt.textContent = chiave;
+    const dd = document.createElement("dd");
+    dd.textContent = valore ?? "—";
+    elenco.append(dt, dd);
+  }
+  $("#pannello-ricezione").classList.remove("pannello--nascosto");
+  disponiPuntiIn("#arrivo-punti", distinta.attesi);
+  $("#leggi-volume").disabled = distinta.stato === "received";
+  const conciliazione = distinta.riconciliazione;
+  if (conciliazione) {
+    const arrivati = conciliazione.arrived?.length || 0;
+    const attesi = conciliazione.expected?.length || distinta.attesi;
+    $("#arrivo-conteggio").textContent = arrivati + " / " + attesi;
+    $("#ricezione-esito").textContent = conciliazione.ok
+      ? "Ultimo confronto conforme, salvato nell'archivio."
+      : "Ultimo confronto non conforme, salvato nell'archivio.";
+    $("#campo-motivo-ricezione").hidden = conciliazione.ok;
+    $("#conferma-ricezione").disabled = distinta.stato === "received";
+  }
 }
 
 function dipingiElencoArrivo(contenitoreSel, elencoSel, voci) {
@@ -1698,6 +2103,12 @@ function dipingiTestata() {
       : voce.etichetta;
     scelta.append(opzione);
   }
+  if (!(stato.descrizione?.operatori || []).length) {
+    const manuale = document.createElement("option");
+    manuale.value = "__manuale__";
+    manuale.textContent = "— inserisci nome…";
+    scelta.append(manuale);
+  }
   scelta.value = [...scelta.options].some((o) => o.value === precedente) ? precedente : "";
   scelta.dataset.vuoto = scelta.value ? "" : "1";
 }
@@ -1741,6 +2152,14 @@ const COLONNE = {
   ],
 };
 
+// Questi campi sono configurati dall'amministratore nel file YAML. Restano
+// attaccati alla riga anche se la tabella compatta non li mostra: applicare una
+// modifica anagrafica non deve cancellare PEC, certificati o ruolo responsabile.
+const CAMPI_NASCOSTI = {
+  operatori: ["ruolo", "pin_service", "pin_username"],
+  destinatari: ["pec", "indirizzo", "encryption_certificate"],
+};
+
 function dipingiTabella(genere, righe) {
   const corpo = $(`#tabella-${genere}`).querySelector("tbody");
   corpo.innerHTML = "";
@@ -1773,12 +2192,26 @@ function costruisciRiga(genere, valori = {}) {
     td.append(campo);
     tr.append(td);
   }
+  for (const nome of CAMPI_NASCOSTI[genere] || []) {
+    const campo = document.createElement("input");
+    campo.type = "hidden";
+    campo.dataset.campo = nome;
+    campo.value = valori[nome] || "";
+    tr.firstElementChild.append(campo);
+  }
   const tdAttivo = document.createElement("td");
+  // La casella resta della sua misura anche sulla tavoletta: ingrandirla la
+  // farebbe somigliare a un bottone. Ad allargarsi e' il bersaglio — la
+  // etichetta che la avvolge prende il tocco su tutta la cella, non solo sul
+  // quadratino.
+  const spunta = document.createElement("label");
+  spunta.className = "spunta";
   const attivo = document.createElement("input");
   attivo.type = "checkbox";
   attivo.dataset.campo = "attivo";
   attivo.checked = valori.attivo !== false;
-  tdAttivo.append(attivo);
+  spunta.append(attivo);
+  tdAttivo.append(spunta);
   tr.append(tdAttivo);
 
   const tdTogli = document.createElement("td");
@@ -1924,7 +2357,65 @@ async function caricaImpostazioni() {
   }
 
   caricaAnagrafiche();
+  await caricaPostazione();
   await aggiornaPorte();
+}
+
+/* Da dove si comanda, e da dove ci si può collegare. */
+async function caricaPostazione() {
+  applicaPostazione(document.documentElement.dataset.postazione, { ricorda: false });
+
+  const daIndirizzo = new URLSearchParams(location.search).get("modo");
+  $("#postazione-nota").textContent = MODI.includes(daIndirizzo)
+    ? `Questa finestra è stata aperta con «modo=${daIndirizzo}» nell'indirizzo: la scelta vale qui e non tocca gli altri apparecchi.`
+    : localStorage.getItem("postazione")
+      ? "Scelta salvata su questo apparecchio. Resta anche dopo un riavvio del programma."
+      : `Nessuna scelta salvata: riconosciuta dal tipo di puntatore (${
+          matchMedia("(pointer: coarse)").matches ? "dita" : "mouse"
+        }).`;
+
+  const elenco = $("#indirizzi-tavoletta");
+  elenco.replaceChildren();
+  let dati;
+  try {
+    dati = await chiama("indirizzi");
+  } catch (errore) {
+    $("#esito-postazione").textContent = errore.message;
+    return;
+  }
+
+  const righe = [["Da questo computer", dati.locale]];
+  for (const indirizzo of dati.rete) righe.push(["Dalla tavoletta", indirizzo]);
+  for (const [chiave, valore] of righe) {
+    const dt = document.createElement("dt");
+    dt.textContent = chiave;
+    const dd = document.createElement("dd");
+    dd.className = "hex";
+    dd.textContent = valore;
+    elenco.append(dt, dd);
+  }
+
+  const nota = document.createElement("dt");
+  nota.textContent = "Come sta";
+  const spiega = document.createElement("dd");
+  spiega.textContent = dati.rete.length
+    ? dati.token_fisso
+      ? "Il collegamento salvato sulla tavoletta continua a funzionare dopo un riavvio."
+      : "Il token cambia a ogni avvio: il collegamento salvato sulla tavoletta smetterà di funzionare al prossimo riavvio. Fissa «webui.token» in config.yaml."
+    : "Il programma ascolta solo su questo computer: dalla tavoletta non è raggiungibile. Imposta «webui.host: 0.0.0.0» in config.yaml e riavvia.";
+  elenco.append(nota, spiega);
+
+  const copia = $("#copia-indirizzo");
+  const indirizzo = dati.rete[0] || dati.locale;
+  copia.hidden = !navigator.clipboard;
+  copia.onclick = async () => {
+    try {
+      await navigator.clipboard.writeText(indirizzo);
+      $("#esito-postazione").textContent = "Indirizzo copiato.";
+    } catch {
+      $("#esito-postazione").textContent = "Il browser non ha concesso la copia: seleziona l'indirizzo a mano.";
+    }
+  };
 }
 
 function mostraCampiTrasporto() {
@@ -2177,6 +2668,10 @@ function ascoltaEventi() {
    ========================================================================== */
 async function avvia() {
   applicaTema(localStorage.getItem("tema") || "sistema");
+  // Prima di ogni altra cosa: decide le misure di tutta l'interfaccia, e
+  // cambiarle dopo che la pagina si e' disegnata si vedrebbe.
+  applicaPostazione(postazioneRichiesta(), { ricorda: false });
+  collegaManifesto();
   Scena.collega($("#scena"));
 
   // Indirizzo senza token: inutile provare, si dice subito.
@@ -2194,6 +2689,7 @@ async function avvia() {
   $("#dialogo-etichetta").addEventListener("close", stampaEtichetta);
   $("#cambia-conteggio").addEventListener("click", cambiaConteggio);
   $("#annulla-accettazione").addEventListener("click", annullaAccettazione);
+  $("#nuova-accettazione").addEventListener("click", nuovaAccettazione);
   $("#cerca").addEventListener("click", cercaPaziente);
   $("#cerca-paziente").addEventListener("keydown", (evento) => {
     if (evento.key === "Enter") {
@@ -2203,8 +2699,15 @@ async function avvia() {
   });
   $("#vai-al-sigillo").addEventListener("click", () => mostra("sigillo"));
   $("#prepara").addEventListener("click", preparaSpedizione);
+  $("#aggiorna-coda").addEventListener("click", caricaCoda);
+  $("#seleziona-coda").addEventListener("click", selezionaTuttaCoda);
+  $("#annulla-spedizione").addEventListener("click", annullaSpedizione);
+  $("#conferma-invio").addEventListener("click", confermaInvio);
+  $("#invia-pec").addEventListener("click", inviaDistintaPec);
+  $("#aggiorna-pec").addEventListener("click", aggiornaRicevutePec);
   $("#file-distinta").addEventListener("change", apriDistinta);
   $("#leggi-volume").addEventListener("click", leggiVolume);
+  $("#conferma-ricezione").addEventListener("click", confermaRicezione);
   $("#applica-potenze").addEventListener("click", applicaPotenze);
   $("#applica-gen2").addEventListener("click", applicaGen2);
   $("#misura-antenna").addEventListener("click", misuraAntenna);
@@ -2224,6 +2727,13 @@ async function avvia() {
   $$('input[name="trasporto"]').forEach((radio) =>
     radio.addEventListener("change", mostraCampiTrasporto)
   );
+  $$('input[name="postazione"]').forEach((radio) =>
+    radio.addEventListener("change", () => {
+      applicaPostazione(radio.value);
+      $("#esito-postazione").textContent =
+        radio.value === "tavoletta" ? "Misure da tavoletta." : "Misure da banco.";
+    })
+  );
   $$(".ricetta [data-posizione]").forEach((bottone) =>
     bottone.addEventListener("click", () => rilevaControllo(bottone.dataset.posizione))
   );
@@ -2237,6 +2747,18 @@ async function avvia() {
     })
   );
   $("#operatore").addEventListener("change", async (evento) => {
+    if (evento.target.value === "__manuale__") {
+      const nome = prompt("Nome o sigla dell'operatore in servizio:");
+      if (!nome?.trim()) {
+        evento.target.value = "";
+        return;
+      }
+      const opzione = document.createElement("option");
+      opzione.value = nome.trim();
+      opzione.textContent = nome.trim();
+      evento.target.append(opzione);
+      evento.target.value = nome.trim();
+    }
     evento.target.dataset.vuoto = evento.target.value ? "" : "1";
     try {
       await chiama("operatore", { nome: evento.target.value });
@@ -2265,7 +2787,10 @@ async function avvia() {
   }
 
   $$(".rail__voce").forEach((voce) =>
-    voce.addEventListener("click", () => mostra(voce.dataset.schermata))
+    voce.addEventListener("click", () => {
+      mostra(voce.dataset.schermata);
+      if (voce.dataset.schermata === "sigillo") caricaCoda();
+    })
   );
 
   $$(".conteggio__passo").forEach((bottone) =>
@@ -2320,13 +2845,26 @@ async function avvia() {
     if (stato.descrizione.tema && stato.descrizione.tema !== "sistema" && !localStorage.getItem("tema")) {
       applicaTema(stato.descrizione.tema === "chiaro" ? "chiaro" : "scuro");
     }
+    const ripresa = await chiama("riprendi_workflow");
+    stato.accettazione = ripresa.accettazione;
+    stato.spedizione = ripresa.spedizione;
+    stato.distinta = ripresa.ricezione;
+    dipingiAccettazione();
+    dipingiSpedizione();
+    ripristinaRicezione(stato.distinta);
+    await caricaCoda();
+    aggiornaWorkflowBar();
   } catch (errore) {
     avvisa(`Impossibile leggere la configurazione: ${errore.message}`, "errore", 15000);
   }
 
   Scena.stato("fermo");
   ascoltaEventi();
-  $("#cf").focus();
+  // Il fuoco sul codice fiscale fa partire il lettore di codici a barre senza
+  // toccare niente. Sulla tavoletta farebbe salire la tastiera di sistema, che
+  // copre meta' schermo per un campo che nessuno ha ancora chiesto di
+  // compilare: li' si aspetta il tocco.
+  if (!stato.accettazione?.accession_id && !tavoletta()) $("#cf").focus();
 }
 
 document.addEventListener("DOMContentLoaded", avvia);

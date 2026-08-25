@@ -31,6 +31,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from fake_backend import FakeTagBackend, SimulatedTag
+
 from webui.server import WebUIServer
 
 CF_PAZIENTE = "MRTMTT25D09F205Z"
@@ -71,7 +72,7 @@ def _config(tmp: Path) -> dict:
             "database": str(tmp / "lims.db"),
             "keyring": str(tmp / "keys.json"),
             "user_memory_bytes": 64,
-            "write_antennas": [1, 2],
+            "write_antennas": [3],
             "read_antennas": [1, 2],
             "seal_min_antennas": 1,
             "seal_powers_cdbm": [2000, 2900],
@@ -84,8 +85,9 @@ class _Postazione:
     """Server avviato su una porta libera, con backend simulato."""
 
     def __init__(self, tmp: Path, tags: list[SimulatedTag] | None = None):
-        self.backend = FakeTagBackend(tags if tags is not None else [], antennas=(1, 2))
+        self.backend = FakeTagBackend(tags if tags is not None else [], antennas=(1, 2, 3))
         self.server = WebUIServer(_config(tmp), self.backend, host="127.0.0.1", port=0)
+        self.server.workflow.imposta_operatore("TEST")
         self.server.start_background()
 
     @property
@@ -188,6 +190,20 @@ def _scrivi_tutti(posto: _Postazione, tags: list[SimulatedTag]) -> list[dict]:
     finally:
         posto.backend.tags[:] = tutti
     return esiti
+
+
+def _prepara(posto: _Postazione, destinazione: str):
+    stato, coda = posto.post("/api/coda_spedizione")
+    assert stato == 200, coda
+    ids = [
+        voce["container_id"]
+        for gruppo in coda["gruppi"]
+        for voce in gruppo["contenitori"]
+    ]
+    return posto.post(
+        "/api/prepara_spedizione",
+        {"destinazione": destinazione, "container_ids": ids},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -305,6 +321,97 @@ def test_operazione_sconosciuta_e_404():
         stato, dati = posto.post("/api/vola")
         assert stato == 404
         assert "sconosciuta" in dati["errore"]
+
+
+# ---------------------------------------------------------------------------
+# Postazione tavoletta
+# ---------------------------------------------------------------------------
+def test_il_manifesto_non_si_scarica_senza_token():
+    """Dentro il manifesto c'e' il token, in `start_url`.
+
+    E' quello che rende funzionante il collegamento salvato sulla schermata
+    Home della tavoletta — e per la stessa ragione chi scarica il manifesto ha
+    in mano il comando del lettore. Percio' non e' un file statico come gli
+    altri: la rotta chiede il token esattamente come le API.
+    """
+    with _Postazione(_tmp("manifesto")) as posto:
+        stato, _ = posto.get("/manifest.webmanifest", token=None)
+        assert stato == 401, "il manifesto non deve uscire senza token"
+
+        stato, corpo = posto.get("/manifest.webmanifest")
+        assert stato == 200
+        manifesto = json.loads(corpo)
+        assert posto.server.token in manifesto["start_url"]
+        assert "modo=tavoletta" in manifesto["start_url"], (
+            "il collegamento salvato deve aprirsi gia' in modalita' tavoletta"
+        )
+        assert manifesto["display"] == "standalone"
+        assert manifesto["icons"], "senza icone Android non installa niente"
+
+
+def test_le_icone_sono_png_veri():
+    """Disegnate in Python, quindi vanno provate: un PNG rotto non si vede.
+
+    Android le scarica per conto suo, senza il token e senza la pagina: se
+    fossero protette il collegamento si installerebbe senza icona.
+    """
+    with _Postazione(_tmp("icone")) as posto:
+        for lato in (192, 512):
+            stato, corpo = posto.get(f"/icona-{lato}.png", token=None)
+            assert stato == 200, f"icona {lato} non servita"
+            assert corpo[:8] == b"\x89PNG\r\n\x1a\n", "non e' un PNG"
+            # L'IHDR e' il primo pezzo e porta le misure: 8 byte di firma,
+            # 4 di lunghezza, 4 di tipo, poi larghezza e altezza.
+            larghezza = int.from_bytes(corpo[16:20], "big")
+            altezza = int.from_bytes(corpo[20:24], "big")
+            assert (larghezza, altezza) == (lato, lato), (
+                f"il PNG dichiara {larghezza}x{altezza} invece di {lato}x{lato}"
+            )
+
+        stato, _ = posto.get("/icona-999.png", token=None)
+        assert stato == 404
+
+
+def test_l_indirizzo_per_la_tavoletta_esiste_solo_ascoltando_fuori():
+    """Sul loopback la tavoletta non arriva, e dirlo e' meta' del lavoro.
+
+    L'indirizzo giusto lo conosce solo il server: il browser vede quello con
+    cui e' arrivato, che sul PC e' 127.0.0.1 — da un altro apparecchio non
+    porta da nessuna parte.
+    """
+    with _Postazione(_tmp("indirizzi")) as posto:
+        stato, dati = posto.post("/api/indirizzi")
+        assert stato == 200
+        assert dati["rete"] == [], "in loopback non c'e' nessun indirizzo di rete"
+        assert dati["locale"].startswith("http://127.0.0.1:")
+        assert dati["token_fisso"] is False
+
+
+def test_ascoltando_su_tutte_le_schede_l_indirizzo_non_e_0_0_0_0():
+    """`http://0.0.0.0:8770` non e' un indirizzo che un browser sappia aprire.
+
+    Stamparlo manderebbe l'operatore a sbattere: al suo posto il loopback per
+    questa macchina, e gli IP veri per la tavoletta.
+    """
+    tmp = _tmp("ovunque")
+    server = WebUIServer(
+        _config(tmp),
+        FakeTagBackend([], antennas=(1, 2, 3)),
+        host="0.0.0.0",
+        port=8770,
+        token="fisso-per-la-tavoletta",
+    )
+    try:
+        assert server.url.startswith("http://127.0.0.1:8770/")
+        indirizzi = server.indirizzi()
+        assert indirizzi["token_fisso"] is True
+        for indirizzo in indirizzi["rete"]:
+            assert not indirizzo.startswith("http://0.0.0.0")
+            assert not indirizzo.startswith("http://127.")
+            assert "modo=tavoletta" in indirizzo
+            assert "fisso-per-la-tavoletta" in indirizzo
+    finally:
+        server.shutdown()
 
 
 # ---------------------------------------------------------------------------
@@ -529,7 +636,7 @@ def test_percorso_completo_da_accettazione_a_ricezione():
         assert esiti[-1]["scritti"] == 3
         assert all(esito["scrittura"]["ok"] for esito in esiti)
 
-        stato, spedizione = posto.post("/api/prepara_spedizione", {"destinazione": "Lab B"})
+        stato, spedizione = _prepara(posto, "Lab B")
         assert stato == 200
         assert spedizione["attesi"] == 3
 
@@ -542,6 +649,8 @@ def test_percorso_completo_da_accettazione_a_ricezione():
         stato, blob = posto.scarica("/api/distinta")
         assert stato == 200
         assert blob.startswith(b"RFIDLIMS-MANIFEST")
+        stato, invio = posto.post("/api/conferma_invio")
+        assert stato == 200 and invio["stato"] == "sent"
 
         # Lato destinatario: stessa chiave, stessa cartella.
         with _Postazione(cartella, tags) as arrivo:
@@ -557,6 +666,8 @@ def test_percorso_completo_da_accettazione_a_ricezione():
             assert stato == 200
             assert lettura["riconciliazione"]["ok"] is True
             assert lettura["riconciliazione"]["arrivati"] == 3
+            stato, ricevuta = arrivo.post("/api/conferma_ricezione")
+            assert stato == 200 and ricevuta["stato"] == "received"
 
             # A scatola ancora chiusa si sa cosa c'e' dentro, contenitore per
             # contenitore: e' il motivo per cui i dati viaggiano nel tag invece
@@ -566,10 +677,73 @@ def test_percorso_completo_da_accettazione_a_ricezione():
             assert all(voce["stato"] == "decodificato" for voce in osservazioni)
             assert [voce["contenitore"] for voce in osservazioni] == ["1/3", "2/3", "3/3"]
             assert all(
-                voce["campione"]["paziente"].startswith("DELLA VALLE") for voce in osservazioni
+                voce["campione"]["paziente"].startswith("DELLA VALLE")
+                for voce in osservazioni
             )
             # E l'avvertenza sanitaria arriva prima che qualcuno apra il coperchio.
-            assert all("INFECTIOUS" in voce["campione"]["avvertenze"] for voce in osservazioni)
+            assert all(
+                "INFECTIOUS" in voce["campione"]["avvertenze"]
+                for voce in osservazioni
+            )
+
+
+def test_un_riavvio_riprende_l_accettazione_incompleta():
+    cartella = _tmp("ripresa")
+    tags = [_tag_vergine(1), _tag_vergine(2)]
+    with _Postazione(cartella, tags) as posto:
+        _accetta(posto, totale=2)
+        _scrivi_tutti(posto, tags[:1])
+
+    with _Postazione(cartella, tags) as ripartita:
+        stato, flussi = ripartita.post("/api/riprendi_workflow")
+        assert stato == 200
+        accettazione = flussi["accettazione"]
+        assert accettazione["accession_id"] == 1
+        assert accettazione["scritti"] == 1
+        assert accettazione["totale"] == 2
+        assert accettazione["prossimo"]["campione"]["avvertenze"] == ["INFECTIOUS"]
+
+
+def test_un_riavvio_conserva_la_prova_integrale_del_sigillo():
+    cartella = _tmp("ripresa_sigillo")
+    tag = _tag_vergine(1)
+    with _Postazione(cartella, [tag]) as posto:
+        _accetta(posto, totale=1)
+        _scrivi_tutti(posto, [tag])
+        _prepara(posto, "Lab B")
+        stato, esito = posto.post("/api/sigilla")
+        assert stato == 200 and esito["sigillo"]["ok"] is True
+        passate = esito["sigillo"]["passes"]
+
+    with _Postazione(cartella, [tag]) as ripartita:
+        stato, flussi = ripartita.post("/api/riprendi_workflow")
+        assert stato == 200
+        sigillo = flussi["spedizione"]["sigillo"]
+        assert sigillo["ok"] is True
+        assert sigillo["expected"] == [tag.epc_hex]
+        assert sigillo["passes"] == passate
+
+        stato, blob = ripartita.scarica("/api/distinta")
+        assert stato == 200
+        assert blob.startswith(b"RFIDLIMS-MANIFEST")
+
+
+def test_il_sigillo_ripristina_potenze_e_gen2():
+    cartella = _tmp("ripristino_radio")
+    tag = _tag_vergine(1)
+    with _Postazione(cartella, [tag]) as posto:
+        _accetta(posto, totale=1)
+        _scrivi_tutti(posto, [tag])
+        _prepara(posto, "Lab B")
+        posto.backend.gen2.update(
+            {"session": 3, "target": 1, "target_dynamic": False, "rf_mode": 0x71}
+        )
+        precedente = dict(posto.backend.gen2)
+
+        stato, esito = posto.post("/api/sigilla")
+        assert stato == 200 and esito["sigillo"]["ok"] is True
+        assert posto.backend.gen2 == precedente
+        assert posto.backend.read_power_cdbm == 2900
 
 
 def test_variazione_del_numero_di_contenitori_in_corso_dopera():
@@ -591,7 +765,7 @@ def test_mai_un_sigillo_valido_se_manca_un_contenitore():
     with _Postazione(cartella, tags) as posto:
         _accetta(posto, totale=3)
         _scrivi_tutti(posto, tags)
-        posto.post("/api/prepara_spedizione", {"destinazione": "Lab B"})
+        _prepara(posto, "Lab B")
 
         # Un contenitore esce dal campo: il sigillo deve accorgersene e dire
         # quale, con nome e paziente.
@@ -615,6 +789,7 @@ def test_un_tag_gia_scritto_non_si_riscrive():
         _scrivi_tutti(posto, [tag])
 
         # Seconda accettazione, stesso tag ancora sul piatto.
+        posto.post("/api/nuova_accettazione")
         _accetta(posto, totale=1)
         posto.post("/api/conferma_conteggio")
         stato, esito = posto.post("/api/scrivi")
@@ -629,7 +804,7 @@ def test_una_distinta_manomessa_non_si_apre():
     with _Postazione(cartella, tags) as posto:
         _accetta(posto, totale=2)
         _scrivi_tutti(posto, tags)
-        posto.post("/api/prepara_spedizione", {"destinazione": "Lab B"})
+        _prepara(posto, "Lab B")
         posto.post("/api/sigilla")
         _, blob = posto.scarica("/api/distinta")
 
@@ -766,9 +941,10 @@ def test_lo_storico_dice_cosa_dove_quando_e_chi():
         posto.post("/api/operatore", {"nome": "DV"})
         _accetta(posto, totale=3)
         _scrivi_tutti(posto, tags)
-        posto.post("/api/prepara_spedizione", {"destinazione": "Ospedale B"})
+        _prepara(posto, "Ospedale B")
         posto.post("/api/sigilla")
         posto.scarica("/api/distinta")
+        posto.post("/api/conferma_invio")
 
         # Ricerca: cognome, codice fiscale e numero di accettazione portano
         # tutti allo stesso paziente.
@@ -806,7 +982,7 @@ def test_lo_storico_non_dichiara_completo_cio_che_non_lo_e():
         posto.post("/api/operatore", {"nome": "DV"})
         _accetta(posto, totale=3)
         _scrivi_tutti(posto, tags)
-        posto.post("/api/prepara_spedizione", {"destinazione": "Ospedale B"})
+        _prepara(posto, "Ospedale B")
         posto.backend.tags.pop()  # un contenitore non c'e' piu'
         stato, sigillo = posto.post("/api/sigilla")
         assert sigillo["sigillo"]["ok"] is False
@@ -859,9 +1035,7 @@ def test_annullare_l_accettazione_non_cancella_i_tag_gia_scritti():
         assert dopo["contenitori"] == []
 
         # Il contenitore scritto e' ancora spedibile: non e' sparito.
-        stato, spedizione = posto.post(
-            "/api/prepara_spedizione", {"destinazione": "Ospedale B"}
-        )
+        stato, spedizione = _prepara(posto, "Ospedale B")
         assert stato == 200
         assert spedizione["attesi"] == 1
 
@@ -912,6 +1086,22 @@ def test_un_operatore_fuori_elenco_viene_rifiutato():
         assert stato == 200
 
 
+def test_senza_operatore_non_si_apre_la_catena_di_custodia():
+    with _Postazione(_tmp("operatore_obbligatorio")) as posto:
+        posto.post("/api/operatore", {"nome": ""})
+        stato, errore = posto.post(
+            "/api/registra",
+            {
+                "codice_fiscale": CF_PAZIENTE,
+                "cognome": "Della Valle",
+                "nome": "Gianfranco",
+                "contenitori": 1,
+            },
+        )
+        assert stato == 400
+        assert "operatore" in errore["errore"]
+
+
 def test_due_operatori_indistinguibili_vengono_rifiutati():
     """Due voci uguali nel menu sono una trappola: se ne sceglie una a caso."""
     with _Postazione(_tmp("omonimi")) as posto:
@@ -949,9 +1139,7 @@ def test_la_spedizione_pretende_un_destinatario_configurato():
         assert stato == 400
         assert "sconosciuto" in errore["errore"]
 
-        stato, spedizione = posto.post(
-            "/api/prepara_spedizione", {"destinazione": "Ospedale B"}
-        )
+        stato, spedizione = _prepara(posto, "Ospedale B")
         assert stato == 200
         assert spedizione["destinazione"] == "Ospedale B"
 
@@ -971,7 +1159,9 @@ def test_la_bozza_email_dichiara_che_l_allegato_va_messo_a_mano():
         )
         _accetta(posto, totale=1)
         _scrivi_tutti(posto, [tag])
-        posto.post("/api/prepara_spedizione", {"destinazione": "Ospedale B"})
+        _prepara(posto, "Ospedale B")
+        posto.post("/api/sigilla")
+        posto.scarica("/api/distinta")
 
         stato, bozza = posto.post("/api/bozza_email")
         assert stato == 200

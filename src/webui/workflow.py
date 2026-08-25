@@ -20,9 +20,13 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import hashlib
+import hmac
+import json
 import logging
 import re
 import threading
+import uuid
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -37,7 +41,14 @@ from lims.crypto import (
 )
 from lims.db import LimsDatabase
 from lims.labels import LabelTemplate, NetworkLabelPrinter, content_from_record, render_zpl
-from lims.manifest import build_manifest, open_manifest, reconcile, seal_manifest
+from lims.manifest import (
+    MANIFEST_MAGIC,
+    MANIFEST_SCHEMA_V2,
+    build_manifest,
+    open_manifest,
+    reconcile,
+    seal_manifest,
+)
 from lims.model import (
     Case,
     ContainerState,
@@ -49,9 +60,17 @@ from lims.model import (
     TagState,
     validate_codice_fiscale,
 )
+from lims.pec import PecConfig, PecError, PecTransport, resolve_secret
 from lims.sealing import ClosureProof, SealingPolicy, SealingSession, default_passes
+from lims.secure_manifest import (
+    certificate_fingerprint,
+    load_certificate,
+    load_private_key,
+    open_secure_manifest,
+    seal_secure_manifest,
+)
 from lims.tagio import TagIO
-from rfid_silion.service import AntennaPower, ReaderSettings
+from rfid_silion.service import AntennaPower, Gen2Settings, ReaderSettings
 
 __all__ = ["Workflow", "WorkflowError"]
 
@@ -165,6 +184,8 @@ class Workflow:
         self.distinta: Any = None
         # Campagna di misura: gli EPC dichiarati dentro e fuori dal contenitore
         self.campagna_epcs: dict[str, list[str]] = {"dentro": [], "fuori": []}
+        self.inbound_id: int | None = None
+        self._ripristina_contesto()
 
     # -- infrastruttura -----------------------------------------------------
     def _carica_portachiavi(self) -> Keyring:
@@ -182,6 +203,93 @@ class Workflow:
             percorso,
         )
         return portachiavi
+
+    def _percorso(self, valore: str | Path) -> Path:
+        """Risolve i file sensibili rispetto al file di configurazione."""
+        percorso = Path(valore)
+        if percorso.is_absolute() or self.config_path is None:
+            return percorso
+        return (self.config_path.parent / percorso).resolve()
+
+    def _password_segreta(
+        self,
+        sezione: Mapping[str, Any],
+        tipo: str,
+        utente_predefinito: str,
+    ) -> str | None:
+        servizio = str(
+            sezione.get(f"{tipo}_credential_service")
+            or sezione.get("credential_service", "")
+        ).strip()
+        utente = str(
+            sezione.get(f"{tipo}_credential_username")
+            or sezione.get("credential_username", utente_predefinito)
+        ).strip()
+        if not servizio:
+            return None
+        try:
+            return resolve_secret(servizio, utente)
+        except PecError as exc:
+            raise WorkflowError(str(exc)) from exc
+
+    def _materiale_mittente(self, destinatario: Mapping[str, Any]) -> dict[str, Any]:
+        sicurezza = self.config.get("security", {}) or {}
+        richiesti = {
+            "station_certificate": sicurezza.get("station_certificate"),
+            "station_private_key": sicurezza.get("station_private_key"),
+            "recipient_certificate": destinatario.get("encryption_certificate"),
+        }
+        mancanti = [nome for nome, valore in richiesti.items() if not valore]
+        if mancanti:
+            raise WorkflowError(
+                "configurazione della distinta sicura incompleta: " + ", ".join(mancanti)
+            )
+        certificato_postazione = load_certificate(
+            self._percorso(str(richiesti["station_certificate"]))
+        )
+        certificato_destinatario = load_certificate(
+            self._percorso(str(richiesti["recipient_certificate"]))
+        )
+        chiave = load_private_key(
+            self._percorso(str(richiesti["station_private_key"])),
+            self._password_segreta(sicurezza, "station", "station-signing-key"),
+        )
+        return {
+            "station_certificate": certificato_postazione,
+            "station_private_key": chiave,
+            "recipient_certificate": certificato_destinatario,
+        }
+
+    def _materiale_destinatario(self) -> dict[str, Any]:
+        sicurezza = self.config.get("security", {}) or {}
+        richiesti = (
+            "recipient_certificate",
+            "recipient_private_key",
+            "trusted_ca",
+        )
+        mancanti = [nome for nome in richiesti if not sicurezza.get(nome)]
+        if mancanti:
+            raise WorkflowError(
+                "configurazione di ricezione sicura incompleta: " + ", ".join(mancanti)
+            )
+        certificato = load_certificate(
+            self._percorso(str(sicurezza["recipient_certificate"]))
+        )
+        chiave = load_private_key(
+            self._percorso(str(sicurezza["recipient_private_key"])),
+            self._password_segreta(
+                sicurezza, "recipient", "recipient-decryption-key"
+            ),
+        )
+        ca_raw = sicurezza.get("trusted_ca")
+        ca_values = ca_raw if isinstance(ca_raw, list) else [ca_raw]
+        autorita = [load_certificate(self._percorso(str(v))) for v in ca_values if v]
+        return {
+            "certificate": certificato,
+            "private_key": chiave,
+            "trusted_cas": autorita,
+            "revoked_serials": tuple(int(v) for v in sicurezza.get("revoked_serials", [])),
+        }
 
     def _tagio(self, *, scrittura: bool) -> TagIO:
         chiave = "write_antennas" if scrittura else "read_antennas"
@@ -214,8 +322,139 @@ class Workflow:
             ),
         )
 
+    def _snapshot_gen2(self) -> Gen2Settings:
+        lettura = getattr(self.backend, "read_gen2_settings", None)
+        if lettura is None:
+            raise WorkflowError("il backend non consente di salvare l'assetto Gen2")
+        risposta = lettura()
+        if not risposta.ok:
+            raise WorkflowError(
+                (risposta.error or {}).get(
+                    "message", "impossibile leggere l'assetto Gen2 corrente"
+                )
+            )
+        return Gen2Settings.from_mapping((risposta.data or {}).get("settings", {}))
+
+    def _restore_radio(self, gen2: Gen2Settings) -> None:
+        configurazione = self.backend.configure(self._reader_settings())
+        if not configurazione.ok:
+            raise WorkflowError("ripristino delle potenze operative non riuscito")
+        risposta = self.backend.configure_gen2(gen2)
+        if not risposta.ok:
+            raise WorkflowError("ripristino dei parametri Gen2 non riuscito")
+
     def chiudi(self) -> None:
         self.db.close()
+
+    def _require_operator(self, azione: str) -> None:
+        if not self.operatore.strip():
+            raise WorkflowError(
+                f"selezionare l'operatore in servizio prima di {azione}"
+            )
+
+    def _salva_contesto(self) -> None:
+        self.db.save_workflow_context(
+            specimen_id=self.specimen_id,
+            shipment_id=self.shipment_id,
+            inbound_id=self.inbound_id,
+            count_confirmed=self.conteggio_confermato,
+        )
+
+    def _ripristina_contesto(self) -> None:
+        """Ricostruisce i tre flussi attivi dall'archivio dopo un riavvio."""
+        contesto = self.db.workflow_context()
+        self.specimen_id = contesto.get("active_specimen_id")
+        self.shipment_id = contesto.get("active_shipment_id")
+        self.inbound_id = contesto.get("active_inbound_id")
+        self.conteggio_confermato = bool(contesto.get("count_confirmed"))
+
+        if self.specimen_id is not None:
+            riga = self.db.connection.execute(
+                """
+                SELECT s.*, k.accession_id, k.data_prelievo, k.external_ref, k.note,
+                       p.codice_fiscale, p.cognome, p.nome
+                  FROM specimens s
+                  JOIN cases k ON k.id=s.case_id
+                  JOIN patients p ON p.id=k.patient_id
+                 WHERE s.id=?
+                """,
+                (self.specimen_id,),
+            ).fetchone()
+            if riga is None:
+                self.specimen_id = None
+                self.conteggio_confermato = False
+            else:
+                self.accession_id = int(riga["accession_id"])
+                nota = str(riga["note"] or "")
+                self.external_ref = str(riga["external_ref"] or "") or (
+                    nota.removeprefix("rif. esterno: ") if nota else ""
+                )
+                base = TagPayload(
+                    codice_fiscale=riga["codice_fiscale"],
+                    accession_id=self.accession_id,
+                    container_index=1,
+                    container_total=1,
+                    display_name=f"{riga['cognome']} {riga['nome']}",
+                    data_prelievo=(
+                        dt.date.fromisoformat(riga["data_prelievo"])
+                        if riga["data_prelievo"] else _oggi()
+                    ),
+                    material_code=int(riga["material_code"]),
+                    fixative_code=int(riga["fixative_code"]),
+                    site_code=int(riga["site_code"]),
+                    flags=SpecimenFlags(int(riga["flags"])),
+                )
+                self.pending = [
+                    {
+                        "container_id": record.container_id,
+                        "index": record.index,
+                        "total": record.total,
+                        "epc": record.epc,
+                        "tid": record.tid,
+                        "stato": "scritto" if record.epc else "da_scrivere",
+                        "payload": replace(
+                            base,
+                            container_index=record.index,
+                            container_total=record.total,
+                        ),
+                    }
+                    for record in self.db.active_containers_for_accession(self.accession_id)
+                ]
+
+        if self.inbound_id is not None:
+            try:
+                blob = self.db.inbound_row(self.inbound_id)["encrypted_blob"]
+                if (
+                    bytes(blob).startswith(MANIFEST_MAGIC)
+                    and len(blob) > len(MANIFEST_MAGIC)
+                    and blob[len(MANIFEST_MAGIC)] == MANIFEST_SCHEMA_V2
+                ):
+                    materiale = self._materiale_destinatario()
+                    self.distinta = open_secure_manifest(
+                        bytes(blob),
+                        recipient_private_key=materiale["private_key"],
+                        recipient_certificate=materiale["certificate"],
+                        trusted_cas=materiale["trusted_cas"],
+                        revoked_serials=materiale["revoked_serials"],
+                        expected_destination_code=str(
+                            self.laboratorio().get("codice", "")
+                        ),
+                    ).manifest
+                else:
+                    self.distinta = open_manifest(bytes(blob), self.keyring)
+            except Exception:  # noqa: BLE001
+                log.exception("Impossibile ripristinare la ricezione %s", self.inbound_id)
+                self.inbound_id = None
+
+        self._salva_contesto()
+
+    def riprendi_workflow(self) -> dict[str, Any]:
+        """Snapshot unico usato dal frontend al caricamento della pagina."""
+        return {
+            "accettazione": self.stato_accettazione(),
+            "spedizione": self.stato_spedizione(),
+            "ricezione": self.stato_ricezione(),
+        }
 
     # -- descrizione della postazione ---------------------------------------
     def descrivi(self) -> dict[str, Any]:
@@ -233,6 +472,10 @@ class Workflow:
             "destinatari": _voci_attive(self.config.get("destinatari")),
             "operatore": self.operatore,
             "tema": webui.get("theme", "sistema"),
+            "pec": {
+                "abilitata": bool((self.config.get("pec", {}) or {}).get("enabled", False)),
+                "mittente": str((self.config.get("pec", {}) or {}).get("sender", "")),
+            },
             "watch_interval_ms": int(webui.get("watch_interval_ms", 900)),
             "antenne": {
                 "scrittura": list(self.lims_cfg.get("write_antennas") or []),
@@ -331,6 +574,12 @@ class Workflow:
     # -- accettazione --------------------------------------------------------
     def registra_accettazione(self, dati: Mapping[str, Any]) -> dict[str, Any]:
         """Registra paziente, accettazione e reperto; pianifica i contenitori."""
+        self._require_operator("registrare un'accettazione")
+        if self.specimen_id is not None:
+            raise WorkflowError(
+                "c'e' gia' un'accettazione attiva: completarla, annullarla oppure "
+                "premere Nuova accettazione"
+            )
         try:
             paziente = Patient(
                 codice_fiscale=validate_codice_fiscale(str(dati.get("codice_fiscale", ""))),
@@ -363,7 +612,7 @@ class Workflow:
         with self._scrittura:
             try:
                 patient_id, accession_id, specimen_id, container_ids = self._inserisci(
-                    paziente, dati, materiale, fissativo, sede, totale, riferimento
+                    paziente, dati, materiale, fissativo, sede, int(flags), totale, riferimento
                 )
             except Exception as exc:  # noqa: BLE001
                 raise WorkflowError(str(exc)) from exc
@@ -395,6 +644,7 @@ class Workflow:
             }
             for indice, container_id in enumerate(container_ids, start=1)
         ]
+        self._salva_contesto()
         del patient_id
         return self.stato_accettazione()
 
@@ -405,6 +655,7 @@ class Workflow:
         materiale: int,
         fissativo: int,
         sede: int,
+        flags: int,
         totale: int,
         riferimento: str,
     ) -> tuple[int, int, int, list[int]]:
@@ -417,7 +668,7 @@ class Workflow:
                 data_prelievo=_oggi(),
                 reparto=str(dati.get("reparto", "")).strip(),
                 medico=str(dati.get("medico", "")).strip(),
-                note=f"rif. esterno: {riferimento}" if riferimento else "",
+                external_ref=riferimento,
             )
         )
         specimen_id = self.db.add_specimen(
@@ -427,6 +678,7 @@ class Workflow:
                 material_code=materiale,
                 fixative_code=fissativo,
                 site_code=sede,
+                flags=int(flags),
             )
         )
         return patient_id, accession_id, specimen_id, self.db.plan_containers(
@@ -523,7 +775,11 @@ class Workflow:
         numero diventa irreversibile, ed e' li' che l'operatore ha i campioni
         davanti invece della tastiera.
         """
+        self._require_operator("confermare il conteggio")
+        if self.specimen_id is None:
+            raise WorkflowError("registrare prima un'accettazione")
         self.conteggio_confermato = True
+        self._salva_contesto()
         return {"conteggio_confermato": True}
 
     def sorveglia_piatto(self) -> dict[str, Any]:
@@ -534,8 +790,8 @@ class Workflow:
         lettura serve comunque: la guardia di scrittura pretende un inventory
         con un tag solo.
         """
-        from rfid_silion.service import InventoryRequest
         from lims.responses import inventory_epcs
+        from rfid_silion.service import InventoryRequest
 
         antenne = tuple(self.lims_cfg.get("write_antennas") or (1,))
         risposta = self.backend.inventory(
@@ -563,6 +819,7 @@ class Workflow:
         authorized_rewrite: bool = False,
     ) -> dict[str, Any]:
         """Scrive il prossimo contenitore in attesa."""
+        self._require_operator("scrivere un tag")
         if not self.conteggio_confermato:
             raise WorkflowError(
                 "prima di scrivere serve la conferma del numero di campioni"
@@ -585,6 +842,8 @@ class Workflow:
         else:
             voce["stato"] = "errore"
 
+        self._salva_contesto()
+
         risposta = self.stato_accettazione()
         risposta["scrittura"] = esito.to_dict()
         risposta["campione"] = voce["payload"].describe()
@@ -599,6 +858,7 @@ class Workflow:
         un'etichetta addosso. Fingere di poterli cancellare qui sarebbe il modo
         piu' rapido per perdere un campione.
         """
+        self._require_operator("annullare un'accettazione")
         if self.specimen_id is None:
             raise WorkflowError("non c'e' nessuna accettazione in corso")
 
@@ -621,6 +881,7 @@ class Workflow:
         self.pending = []
         self.conteggio_confermato = False
         self.external_ref = ""
+        self._salva_contesto()
 
         return {
             "accettazione": accettazione,
@@ -631,8 +892,25 @@ class Workflow:
             ],
         }
 
+    def nuova_accettazione(self) -> dict[str, Any]:
+        """Libera il modulo solo quando non restano tag da scrivere."""
+        if self.specimen_id is not None and any(not voce["epc"] for voce in self.pending):
+            raise WorkflowError(
+                "l'accettazione attiva ha ancora contenitori da scrivere: "
+                "completarla o annullarla"
+            )
+        precedente = self.accession_id
+        self.specimen_id = None
+        self.accession_id = None
+        self.external_ref = ""
+        self.pending = []
+        self.conteggio_confermato = False
+        self._salva_contesto()
+        return {"ok": True, "accettazione_precedente": precedente}
+
     def annulla_contenitore(self, container_id: int, motivo: str, *, tag_guasto: bool = False):
         """Annulla un contenitore rotto o con tag guasto, e ne crea il sostituto."""
+        self._require_operator("annullare un contenitore")
         # Il TID va letto prima: l'annullamento chiude l'assegnazione del tag.
         with self._scrittura:
             tid = ""
@@ -650,12 +928,43 @@ class Workflow:
                 # ricordare.
                 self.db.set_tag_state(tid, TagState.QUARANTINE)
             self._ricarica_pending()
+            self._salva_contesto()
         risposta = self.stato_accettazione()
         risposta["sostituto"] = sostituto
         return risposta
 
     # -- sigillo e spedizione -----------------------------------------------
-    def prepara_spedizione(self, destinazione: str) -> dict[str, Any]:
+    def coda_spedizione(self) -> dict[str, Any]:
+        """Contenitori pronti, raggruppati per accettazione per la selezione."""
+        contenitori = self.db.ready_containers()
+        gruppi: dict[int, dict[str, Any]] = {}
+        for record in contenitori:
+            gruppo = gruppi.setdefault(
+                record.accession_id,
+                {
+                    "accession_id": record.accession_id,
+                    "paziente": record.display_name,
+                    "codice_fiscale": record.codice_fiscale,
+                    "contenitori": [],
+                },
+            )
+            gruppo["contenitori"].append(
+                {
+                    "container_id": record.container_id,
+                    "epc": record.epc,
+                    "etichetta": record.label,
+                    "materiale": record.material_code,
+                }
+            )
+        return {
+            "gruppi": list(gruppi.values()),
+            "totale": len(contenitori),
+        }
+
+    def prepara_spedizione(
+        self, destinazione: str, container_ids: list[int] | tuple[int, ...]
+    ) -> dict[str, Any]:
+        self._require_operator("preparare una spedizione")
         nome = str(destinazione).strip()
         configurati = _voci_attive(self.config.get("destinatari"))
         if configurati and nome and not self.destinatario(nome):
@@ -666,35 +975,59 @@ class Workflow:
         if not nome:
             raise WorkflowError("scegliere il laboratorio destinatario")
 
-        with self._scrittura:
-            pronti = self.db.connection.execute(
-                "SELECT id FROM containers WHERE state=? ORDER BY id",
-                (ContainerState.PROVISIONED.value,),
-            ).fetchall()
-            if not pronti:
-                raise WorkflowError("non ci sono contenitori scritti in attesa di spedizione")
-            try:
-                shipment_id = self.db.create_shipment(
-                    Shipment(destinazione=nome, data=_oggi())
+        selezionati = tuple(dict.fromkeys(int(value) for value in container_ids))
+        if not selezionati:
+            raise WorkflowError("selezionare almeno un contenitore da spedire")
+        if self.shipment_id is not None:
+            stato_attivo = self.db.shipment_row(self.shipment_id)["state"]
+            if stato_attivo not in (
+                ShipmentState.SENT.value,
+                ShipmentState.CANCELLED.value,
+            ):
+                raise WorkflowError(
+                    "c'e' gia' una spedizione attiva: completarla o annullarla"
                 )
-                self.db.add_to_shipment(shipment_id, [riga["id"] for riga in pronti])
+
+        with self._scrittura:
+            try:
+                shipment_id = self.db.create_shipment_with_containers(
+                    Shipment(destinazione=nome, data=_oggi()), selezionati
+                )
             except Exception as exc:  # noqa: BLE001
                 raise WorkflowError(str(exc)) from exc
 
         self.shipment_id = shipment_id
         self.sealing_record = None
+        self._salva_contesto()
         return self.stato_spedizione()
 
     def stato_spedizione(self) -> dict[str, Any]:
         if self.shipment_id is None:
             return {"shipment_id": None, "contenitori": [], "sigillo": None}
         contenuto = self.db.shipment_contents(self.shipment_id)
-        riga = self.db.connection.execute(
-            "SELECT destinazione FROM shipments WHERE id=?", (self.shipment_id,)
-        ).fetchone()
-        nome_destinatario = riga["destinazione"] if riga else ""
+        riga = self.db.shipment_row(self.shipment_id)
+        nome_destinatario = riga["destinazione"]
+        consegna = self.db.outbound_manifest(self.shipment_id)
+        sigillo = self.sealing_record.to_dict() if self.sealing_record else None
+        if sigillo is None and riga.get("sealing_json"):
+            try:
+                salvato = json.loads(riga["sealing_json"])
+                if isinstance(salvato, dict) and salvato:
+                    sigillo = salvato
+            except (TypeError, ValueError):
+                log.warning(
+                    "prova di sigillatura non leggibile per la spedizione %s",
+                    self.shipment_id,
+                )
+        if sigillo is None and riga.get("sealing_ok") is not None:
+            sigillo = {
+                "ok": bool(riga["sealing_ok"]),
+                "dettaglio": riga.get("sealing_detail", ""),
+                "ripristinato": True,
+            }
         return {
             "shipment_id": self.shipment_id,
+            "stato": riga["state"],
             "destinazione": nome_destinatario,
             "destinatario": self.destinatario(nome_destinatario),
             "contenitori": [
@@ -710,8 +1043,46 @@ class Workflow:
                 for record in contenuto
             ],
             "attesi": len([r for r in contenuto if r.epc]),
-            "sigillo": self.sealing_record.to_dict() if self.sealing_record else None,
+            "sigillo": sigillo,
+            "esportata": riga.get("exported_at"),
+            "inviata": riga.get("sent_at"),
+            "consegna_pec": None
+            if not consegna
+            else {
+                "manifest_uuid": consegna["manifest_uuid"],
+                "sha256": consegna["manifest_hash"],
+                "filename": consegna["filename"],
+                "stato": consegna["state"],
+                "message_id": consegna["message_id"],
+                "smtp_accettata": consegna["smtp_accepted_at"],
+                "pec_accettata": consegna["pec_accepted_at"],
+                "consegnata": consegna["delivered_at"],
+                "tentativi": consegna["attempts"],
+                "errore": consegna["last_error"],
+                "firmata": bool(consegna["signer_fingerprint"]),
+            },
+            "deroga_partenza": None
+            if not riga.get("departure_override_at")
+            else {
+                "quando": riga["departure_override_at"],
+                "chi": riga["departure_override_by"],
+                "motivo": riga["departure_override_reason"],
+            },
         }
+
+    def annulla_spedizione(self) -> dict[str, Any]:
+        self._require_operator("annullare una spedizione")
+        if self.shipment_id is None:
+            raise WorkflowError("non c'e' una spedizione attiva")
+        try:
+            self.db.cancel_shipment(self.shipment_id)
+        except Exception as exc:  # noqa: BLE001
+            raise WorkflowError(str(exc)) from exc
+        annullata = self.shipment_id
+        self.shipment_id = None
+        self.sealing_record = None
+        self._salva_contesto()
+        return {"ok": True, "spedizione_annullata": annullata}
 
     def sigilla(
         self,
@@ -720,6 +1091,7 @@ class Workflow:
         stop_event: Any = None,
     ) -> dict[str, Any]:
         """Certifica il contenuto della scatola chiusa."""
+        self._require_operator("sigillare una spedizione")
         if self.shipment_id is None:
             raise WorkflowError("preparare prima la spedizione")
         contenuto = self.db.shipment_contents(self.shipment_id)
@@ -729,6 +1101,7 @@ class Workflow:
 
         antenne = tuple(self.lims_cfg.get("read_antennas") or (1, 2))
         potenze = tuple(self.lims_cfg.get("seal_powers_cdbm") or (2000, 2500, 2900))
+        gen2_precedente = self._snapshot_gen2()
         sessione = SealingSession(
             self.backend,
             attesi,
@@ -741,11 +1114,16 @@ class Workflow:
             operator=self.operatore,
             db=self.db,
         )
-        record = sessione.run(
-            closure_proof=ClosureProof.OPERATOR,
-            on_progress=on_progress,
-            stop_event=stop_event,
-        )
+        try:
+            record = sessione.run(
+                closure_proof=ClosureProof.OPERATOR,
+                on_progress=on_progress,
+                stop_event=stop_event,
+            )
+        finally:
+            # Le passate del sigillo cambiano potenze e parametri radio. La
+            # postazione deve tornare esattamente alla configurazione operativa.
+            self._restore_radio(gen2_precedente)
         self.sealing_record = record
         trovati, previsti = record.counts
         # L'esito resta attaccato alla spedizione, non solo al registro eventi:
@@ -761,6 +1139,7 @@ class Workflow:
                 f"chiusura: {_PROVE_CHIUSURA.get(record.closure_proof.value, 'non dichiarata')}"
             ),
             operator=self.operatore,
+            record=record.to_dict(),
         )
         if record.ok:
             self.db.set_shipment_state(self.shipment_id, ShipmentState.SEALED)
@@ -780,22 +1159,263 @@ class Workflow:
         ]
         return risposta
 
-    def esporta_distinta(self) -> tuple[bytes, str]:
-        """Distinta cifrata pronta da scaricare: `(contenuto, nome file)`."""
+    def _verifica_completezza_distinta(
+        self, contenuto: list[Any], sigillo: Mapping[str, Any]
+    ) -> None:
+        epc = [str(record.epc).strip().upper() for record in contenuto]
+        tid = [str(record.tid).strip().upper() for record in contenuto]
+        if not contenuto or any(not valore for valore in epc):
+            raise WorkflowError("ogni contenitore della spedizione deve avere un EPC")
+        if any(not valore for valore in tid):
+            raise WorkflowError("ogni contenitore della spedizione deve avere un TID")
+        if len(set(epc)) != len(epc) or len(set(tid)) != len(tid):
+            raise WorkflowError("EPC e TID della spedizione devono essere univoci")
+        attesi = {str(v).strip().upper() for v in sigillo.get("expected", [])}
+        trovati = {str(v).strip().upper() for v in sigillo.get("found", [])}
+        if not sigillo.get("ok") or set(epc) != attesi or attesi != trovati:
+            raise WorkflowError(
+                "la distinta non coincide esattamente con il contenuto certificato"
+            )
+        if sigillo.get("missing") or sigillo.get("unexpected"):
+            raise WorkflowError("il sigillo contiene campioni mancanti o inattesi")
+
+    @staticmethod
+    def _nome_sicuro(valore: str, fallback: str) -> str:
+        pulito = re.sub(r"[^A-Za-z0-9_.-]+", "-", str(valore).strip()).strip("-.")
+        return pulito or fallback
+
+    def _garantisci_distinta_archiviata(self, *, require_v2: bool = False) -> dict[str, Any]:
         if self.shipment_id is None:
             raise WorkflowError("preparare prima la spedizione")
+        esistente = self.db.outbound_manifest(self.shipment_id)
+        if esistente:
+            if require_v2 and not esistente.get("signer_fingerprint"):
+                raise WorkflowError(
+                    "la distinta archiviata e' nel formato legacy: annullare la spedizione "
+                    "e crearne una nuova per l'invio PEC sicuro"
+                )
+            return esistente
+
+        stato = self.stato_spedizione()
+        sigillo = stato.get("sigillo")
+        if not isinstance(sigillo, Mapping):
+            raise WorkflowError("eseguire prima un sigillo valido")
+        contenuto = self.db.shipment_contents(self.shipment_id)
+        self._verifica_completezza_distinta(contenuto, sigillo)
+        destinatario = stato.get("destinatario") or {}
+        laboratorio = self.laboratorio()
+        source_code = self._nome_sicuro(
+            str(laboratorio.get("codice", "")), f"LAB-{self.lims_cfg.get('lab_id', 0)}"
+        )
+        destination_code = self._nome_sicuro(
+            str(destinatario.get("codice", "")), stato.get("destinazione", "DEST")
+        )
+        identificativo = str(uuid.uuid4())
+        box_epc = str(sigillo.get("box_epc", ""))
         distinta = build_manifest(
             self.db,
             self.shipment_id,
             lab_id=int(self.lims_cfg.get("lab_id", 0)),
             operator=self.operatore,
-            sealing=self.sealing_record,
-            box_epc=getattr(self.sealing_record, "box_epc", ""),
+            sealing=sigillo,
+            box_epc=box_epc,
         )
-        blob = seal_manifest(distinta, self.keyring)
-        self.db.set_shipment_state(self.shipment_id, ShipmentState.SENT)
-        nome = f"distinta_{self.shipment_id}_{_oggi():%Y%m%d}.rfidman"
-        return blob, nome
+        distinta.manifest_uuid = identificativo
+        distinta.source_code = source_code
+        distinta.destination_code = destination_code
+        firmatario = ""
+        destinatario_fp = ""
+        usa_v2 = bool(destinatario.get("encryption_certificate")) or bool(
+            (self.config.get("pec", {}) or {}).get("enabled", False)
+        )
+        try:
+            if usa_v2:
+                if not str(laboratorio.get("codice", "")).strip():
+                    raise WorkflowError(
+                        "configurare il codice univoco del laboratorio mittente"
+                    )
+                if not str(destinatario.get("codice", "")).strip():
+                    raise WorkflowError(
+                        "configurare il codice univoco del laboratorio destinatario"
+                    )
+                materiale = self._materiale_mittente(destinatario)
+                distinta.schema = MANIFEST_SCHEMA_V2
+                blob = seal_secure_manifest(
+                    distinta,
+                    manifest_uuid=identificativo,
+                    source_code=source_code,
+                    destination_code=destination_code,
+                    recipient_certificate=materiale["recipient_certificate"],
+                    signing_key=materiale["station_private_key"],
+                    signer_certificate=materiale["station_certificate"],
+                )
+                firmatario = certificate_fingerprint(materiale["station_certificate"])
+                destinatario_fp = certificate_fingerprint(
+                    materiale["recipient_certificate"]
+                )
+            else:
+                if require_v2:
+                    raise WorkflowError(
+                        "il destinatario non ha un certificato pubblico di cifratura"
+                    )
+                blob = seal_manifest(distinta, self.keyring)
+        except WorkflowError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            raise WorkflowError(f"creazione della distinta sicura fallita: {exc}") from exc
+
+        impronta = hashlib.sha256(blob).hexdigest()
+        nome = (
+            f"distinta_{source_code}_{self.shipment_id}_{identificativo}.rfidman"
+        )
+        archivio = self._percorso(
+            self.lims_cfg.get("manifest_archive", "logs/archivio_distinte")
+        ) / f"{_oggi():%Y}" / f"{_oggi():%m}"
+        percorso = archivio / nome
+        try:
+            archivio.mkdir(parents=True, exist_ok=True)
+            temporaneo = percorso.with_suffix(percorso.suffix + ".tmp")
+            temporaneo.write_bytes(blob)
+            temporaneo.replace(percorso)
+            record = self.db.archive_outbound_manifest(
+                self.shipment_id,
+                manifest_uuid=identificativo,
+                encrypted_blob=blob,
+                manifest_hash=impronta,
+                filename=nome,
+                item_count=len(contenuto),
+                source_code=source_code,
+                destination_code=destination_code,
+                signer_fingerprint=firmatario,
+                recipient_fingerprint=destinatario_fp,
+                archive_path=str(percorso),
+                operator=self.operatore,
+            )
+            self.db.mark_manifest_exported(self.shipment_id, impronta)
+        except Exception as exc:  # noqa: BLE001
+            raise WorkflowError(f"archiviazione della distinta fallita: {exc}") from exc
+        return record
+
+    def esporta_distinta(self) -> tuple[bytes, str]:
+        """Restituisce sempre gli stessi byte della distinta archiviata."""
+        self._require_operator("esportare la distinta")
+        record = self._garantisci_distinta_archiviata()
+        return bytes(record["encrypted_blob"]), str(record["filename"])
+
+    def _pec_transport(self) -> PecTransport:
+        try:
+            return PecTransport(PecConfig.from_mapping(self.config.get("pec", {}) or {}))
+        except PecError as exc:
+            raise WorkflowError(str(exc)) from exc
+
+    def invia_distinta_pec(self) -> dict[str, Any]:
+        """Archivia e invia la medesima distinta dalla PEC dell'unita' locale."""
+        self._require_operator("inviare la distinta via PEC")
+        if self.shipment_id is None:
+            raise WorkflowError("preparare prima la spedizione")
+        record = self._garantisci_distinta_archiviata(require_v2=True)
+        if record["state"] in {
+            "smtp_accepted",
+            "pec_accepted",
+            "delivered",
+            "delivery_unknown",
+        }:
+            raise WorkflowError(
+                "la distinta risulta gia' affidata al gestore PEC; aggiornare le ricevute"
+            )
+        destinatario = self.destinatario(self.db.shipment_row(self.shipment_id)["destinazione"])
+        pec_destinatario = str((destinatario or {}).get("pec") or "").strip()
+        try:
+            esito = self._pec_transport().send_manifest(
+                recipient=pec_destinatario,
+                filename=record["filename"],
+                blob=bytes(record["encrypted_blob"]),
+                manifest_uuid=record["manifest_uuid"],
+                shipment_id=self.shipment_id,
+                item_count=int(record["item_count"]),
+                sha256=record["manifest_hash"],
+                source_code=record["source_code"],
+                destination_code=record["destination_code"],
+            )
+        except PecError as exc:
+            incerto = "incerto" in str(exc).lower()
+            self.db.mark_outbound_error(self.shipment_id, str(exc), uncertain=incerto)
+            raise WorkflowError(str(exc)) from exc
+        self.db.mark_outbound_smtp_accepted(
+            self.shipment_id, esito.message_id, esito.raw_message
+        )
+        return self.stato_spedizione()
+
+    def aggiorna_ricevute_pec(self) -> dict[str, Any]:
+        self._require_operator("aggiornare le ricevute PEC")
+        if self.shipment_id is None:
+            raise WorkflowError("non c'e' una spedizione attiva")
+        record = self.db.outbound_manifest(self.shipment_id)
+        if not record or not record.get("message_id"):
+            raise WorkflowError("la distinta non e' ancora stata inviata via PEC")
+        nuove = 0
+        try:
+            ricevute = self._pec_transport().fetch_receipts()
+        except PecError as exc:
+            raise WorkflowError(str(exc)) from exc
+        for ricevuta in ricevute:
+            collegata = self.db.find_outbound_by_message_id(ricevuta.message_id)
+            if collegata and collegata["id"] == record["id"]:
+                nuove += int(
+                    self.db.record_pec_receipt(
+                        record["id"],
+                        receipt_type=ricevuta.receipt_type,
+                        message_id=ricevuta.message_id,
+                        raw_eml=ricevuta.raw_eml,
+                        daticert_xml=ricevuta.daticert_xml,
+                    )
+                )
+        risposta = self.stato_spedizione()
+        risposta["nuove_ricevute"] = nuove
+        return risposta
+
+    def _autorizza_deroga(self, motivo: str, pin: str) -> None:
+        configurato = next(
+            (
+                voce
+                for voce in _voci_attive(self.config.get("operatori"))
+                if _etichetta_operatore(voce) == self.operatore
+            ),
+            None,
+        )
+        if not configurato or str(configurato.get("ruolo", "")).lower() != "responsabile":
+            raise WorkflowError("solo un responsabile puo' autorizzare la deroga PEC")
+        if not str(motivo).strip():
+            raise WorkflowError("indicare il motivo della partenza senza consegna PEC")
+        servizio = str(configurato.get("pin_service", "RFID-LIMS-SUPERVISORI"))
+        utente = str(configurato.get("pin_username", self.operatore))
+        try:
+            atteso = resolve_secret(servizio, utente)
+        except PecError as exc:
+            raise WorkflowError(str(exc)) from exc
+        if not hmac.compare_digest(str(pin), atteso):
+            raise WorkflowError("PIN del responsabile non valido")
+        self.db.record_departure_override(
+            self.shipment_id, operator=self.operatore, reason=motivo
+        )
+
+    def conferma_invio(self, *, motivo_deroga: str = "", pin: str = "") -> dict[str, Any]:
+        """Registra la partenza dopo consegna PEC o deroga responsabile."""
+        self._require_operator("confermare l'invio")
+        if self.shipment_id is None:
+            raise WorkflowError("non c'e' una spedizione attiva")
+        pec_attiva = bool((self.config.get("pec", {}) or {}).get("enabled", False))
+        if pec_attiva:
+            distinta = self.db.outbound_manifest(self.shipment_id)
+            consegnata = bool(distinta and distinta.get("state") == "delivered")
+            if not consegnata:
+                self._autorizza_deroga(motivo_deroga, pin)
+        try:
+            self.db.confirm_shipment_sent(self.shipment_id)
+        except Exception as exc:  # noqa: BLE001
+            raise WorkflowError(str(exc)) from exc
+        self._salva_contesto()
+        return self.stato_spedizione()
 
     def bozza_email(self) -> dict[str, Any]:
         """Testo e destinatari del messaggio con cui si manda la distinta.
@@ -805,8 +1425,14 @@ class Workflow:
         oggetto e testo. Dirlo qui, invece di lasciar credere che sia partito
         tutto, e' l'unico modo perche' nessuno spedisca una mail vuota.
         """
+        self._require_operator("preparare l'email della spedizione")
         if self.shipment_id is None:
             raise WorkflowError("preparare prima la spedizione")
+        if self.db.shipment_row(self.shipment_id)["state"] not in (
+            ShipmentState.EXPORTED.value,
+            ShipmentState.SENT.value,
+        ):
+            raise WorkflowError("esportare prima la distinta cifrata")
         stato = self.stato_spedizione()
         destinatario = stato.get("destinatario") or {}
         laboratorio = self.laboratorio()
@@ -817,7 +1443,7 @@ class Workflow:
             f"Spedizione {self.shipment_id} del {_oggi():%d/%m/%Y}"
             f" da {laboratorio['nome'] or 'laboratorio mittente'}.",
             "",
-            f"Contenitori spediti: {contenitori}.",
+            f"Contenitori inclusi: {contenitori}.",
             "",
             "In allegato la distinta cifrata (file "
             f"{nome_file}), da aprire con l'interfaccia di tracciabilita'"
@@ -854,8 +1480,48 @@ class Workflow:
         diverse: chiedere la chiave, sospettare un clone, oppure accorgersi che
         ha aperto il file sbagliato.
         """
+        self._require_operator("importare una distinta")
+        verifica = {
+            "verification_ok": None,
+            "manifest_uuid": "",
+            "signer_code": "",
+            "signer_fingerprint": "",
+            "recipient_fingerprint": "",
+            "verification_detail": "distinta legacy con chiave condivisa",
+        }
         try:
-            self.distinta = open_manifest(bytes(blob), self.keyring)
+            schema = (
+                blob[len(MANIFEST_MAGIC)]
+                if bytes(blob).startswith(MANIFEST_MAGIC)
+                and len(blob) > len(MANIFEST_MAGIC)
+                else 0
+            )
+            if schema == MANIFEST_SCHEMA_V2:
+                materiale = self._materiale_destinatario()
+                laboratorio = self.laboratorio()
+                if not str(laboratorio.get("codice", "")).strip():
+                    raise WorkflowError(
+                        "configurare il codice univoco di questo laboratorio"
+                    )
+                aperta = open_secure_manifest(
+                    bytes(blob),
+                    recipient_private_key=materiale["private_key"],
+                    recipient_certificate=materiale["certificate"],
+                    trusted_cas=materiale["trusted_cas"],
+                    revoked_serials=materiale["revoked_serials"],
+                    expected_destination_code=str(laboratorio.get("codice", "")),
+                )
+                distinta_aperta = aperta.manifest
+                verifica = {
+                    "verification_ok": True,
+                    "manifest_uuid": aperta.header.manifest_uuid,
+                    "signer_code": aperta.header.source_code,
+                    "signer_fingerprint": aperta.header.signer_fingerprint,
+                    "recipient_fingerprint": aperta.header.recipient_fingerprint,
+                    "verification_detail": "firma Ed25519 e cifratura destinatario verificate",
+                }
+            else:
+                distinta_aperta = open_manifest(bytes(blob), self.keyring)
         except UnknownKeyError as exc:
             raise WorkflowError(
                 f"{exc} — la chiave va concordata con il laboratorio mittente"
@@ -865,6 +1531,38 @@ class Workflow:
         except PayloadFormatError as exc:
             raise WorkflowError(f"non e' una distinta di questo sistema: {exc}") from exc
 
+        distinta = distinta_aperta
+        if distinta.shipment_id is None:
+            raise WorkflowError("la distinta non contiene il numero di spedizione")
+        impronta = hashlib.sha256(bytes(blob)).hexdigest()
+        if self.inbound_id is not None:
+            attiva = self.db.inbound_row(self.inbound_id)
+            if attiva["state"] != "received" and attiva["manifest_hash"] != impronta:
+                raise WorkflowError(
+                    "c'e' gia' una ricezione aperta: completarla prima di importarne un'altra"
+                )
+        try:
+            self.inbound_id, gia_nota = self.db.import_inbound_manifest(
+                origin_lab_id=distinta.lab_id,
+                origin_shipment_id=int(distinta.shipment_id),
+                manifest_hash=impronta,
+                encrypted_blob=bytes(blob),
+                destination=distinta.destination,
+                source_created_at=distinta.created_at,
+                operator=self.operatore,
+                **verifica,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise WorkflowError(str(exc)) from exc
+        self.distinta = distinta
+        self._salva_contesto()
+        risposta = self.stato_ricezione()
+        risposta["gia_importata"] = gia_nota
+        return risposta
+
+    def _descrivi_distinta(self) -> dict[str, Any]:
+        if self.distinta is None:
+            return {"attesi": 0, "contenitori": []}
         distinta = self.distinta
         return {
             "attesi": len(distinta.entries),
@@ -886,8 +1584,39 @@ class Workflow:
             ],
         }
 
+    def stato_ricezione(self) -> dict[str, Any]:
+        if self.inbound_id is None or self.distinta is None:
+            return {"inbound_id": None, "attesi": 0, "contenitori": []}
+        riga = self.db.inbound_row(self.inbound_id)
+        risposta = self._descrivi_distinta()
+        risposta.update(
+            {
+                "inbound_id": self.inbound_id,
+                "stato": riga["state"],
+                "importata": riga["imported_at"],
+                "confermata": riga["confirmed_at"],
+                "motivo_non_conformita": riga["nonconformity_reason"],
+                "verifica_documento": {
+                    "ok": None
+                    if riga.get("verification_ok") is None
+                    else bool(riga["verification_ok"]),
+                    "manifest_uuid": riga.get("manifest_uuid", ""),
+                    "mittente": riga.get("signer_code", ""),
+                    "firmatario": riga.get("signer_fingerprint", ""),
+                    "destinatario": riga.get("recipient_fingerprint", ""),
+                    "dettaglio": riga.get("verification_detail", ""),
+                    "sha256": riga.get("manifest_hash", ""),
+                },
+                "riconciliazione": self.db.latest_inbound_reconciliation(
+                    self.inbound_id
+                ),
+            }
+        )
+        return risposta
+
     def leggi_volume(self) -> dict[str, Any]:
         """Legge la scatola arrivata e la confronta con la distinta."""
+        self._require_operator("controllare una ricezione")
         attesi = list(self.distinta.epcs) if self.distinta is not None else None
         rilievo = self._tagio(scrittura=False).survey_field(expected_epcs=attesi)
         risposta: dict[str, Any] = {"rilievo": rilievo.to_dict()}
@@ -906,7 +1635,31 @@ class Workflow:
                 for epc in riconciliazione.missing
                 if epc in riconciliazione.details
             ]
+            if self.inbound_id is not None:
+                self.db.record_inbound_reconciliation(
+                    self.inbound_id,
+                    operator=self.operatore,
+                    expected=riconciliazione.expected,
+                    arrived=riconciliazione.arrived,
+                    missing=riconciliazione.missing,
+                    unexpected=riconciliazione.unexpected,
+                )
         return risposta
+
+    def conferma_ricezione(self, motivo_non_conformita: str = "") -> dict[str, Any]:
+        self._require_operator("confermare una ricezione")
+        if self.inbound_id is None:
+            raise WorkflowError("importare prima la distinta")
+        try:
+            self.db.confirm_inbound_receipt(
+                self.inbound_id,
+                operator=self.operatore,
+                nonconformity_reason=motivo_non_conformita,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise WorkflowError(str(exc)) from exc
+        self._salva_contesto()
+        return self.stato_ricezione()
 
     # -- strumenti e calibrazione -------------------------------------------
     def salute(self) -> dict[str, Any]:
@@ -943,8 +1696,6 @@ class Workflow:
         return risposta.to_dict()
 
     def imposta_gen2(self, parametri: Mapping[str, Any]) -> dict[str, Any]:
-        from rfid_silion.service import Gen2Settings
-
         try:
             impostazioni = Gen2Settings(
                 session=_intero_o_nulla(parametri.get("session")),
@@ -1001,8 +1752,8 @@ class Workflow:
         leggere niente *fuori*: senza i tag di controllo fuori, sceglierebbe
         sempre la potenza massima e il volume di lettura non sarebbe definito.
         """
-        from rfid_silion.service import InventoryRequest
         from lims.responses import inventory_epcs
+        from rfid_silion.service import InventoryRequest
 
         if posizione not in ("dentro", "fuori"):
             raise WorkflowError("posizione deve essere 'dentro' o 'fuori'")
@@ -1048,6 +1799,7 @@ class Workflow:
         )
         geometria = self.config.get("geometry", {}) or {}
         volume = geometria.get("volume_mm") or None
+        gen2_precedente = self._snapshot_gen2()
         try:
             campagna = ReadCampaign(
                 self.backend,
@@ -1064,6 +1816,8 @@ class Workflow:
             report = campagna.run(griglia, on_progress=on_progress, stop_event=stop_event)
         except ValueError as exc:
             raise WorkflowError(str(exc)) from exc
+        finally:
+            self._restore_radio(gen2_precedente)
         return report.to_dict()
 
     # -- impostazioni di collegamento ---------------------------------------
@@ -1312,9 +2066,27 @@ class Workflow:
         "email",
         "referente",
         "email_referente",
+        "pec",
     )
-    _CAMPI_OPERATORE = ("codice", "cognome", "nome", "email")
-    _CAMPI_DESTINATARIO = ("nome", "codice", "email", "referente", "indirizzo", "citta")
+    _CAMPI_OPERATORE = (
+        "codice",
+        "cognome",
+        "nome",
+        "email",
+        "ruolo",
+        "pin_service",
+        "pin_username",
+    )
+    _CAMPI_DESTINATARIO = (
+        "nome",
+        "codice",
+        "email",
+        "pec",
+        "referente",
+        "indirizzo",
+        "citta",
+        "encryption_certificate",
+    )
 
     def imposta_anagrafiche(self, dati: Mapping[str, Any]) -> dict[str, Any]:
         """Aggiorna laboratorio, operatori e destinatari in memoria.
@@ -1328,7 +2100,7 @@ class Workflow:
             for campo in self._CAMPI_LABORATORIO:
                 if campo in grezzo:
                     sezione[campo] = str(grezzo.get(campo) or "").strip()
-            for campo in ("email", "email_referente"):
+            for campo in ("email", "email_referente", "pec"):
                 if sezione.get(campo):
                     _controlla_email(sezione[campo], f"laboratorio.{campo}")
             self.config["laboratorio"] = sezione
@@ -1370,6 +2142,8 @@ class Workflow:
                 continue  # riga lasciata in bianco: si ignora, non e' un errore
             if voce.get("email"):
                 _controlla_email(voce["email"], f"{genere} {indice}")
+            if voce.get("pec"):
+                _controlla_email(voce["pec"], f"{genere} {indice} PEC")
             identita = (
                 _etichetta_operatore(voce) if genere == "operatore" else voce.get("nome")
             )

@@ -200,6 +200,34 @@ def run_webui() -> int:
         else "   Il token in fondo CAMBIA A OGNI AVVIO. Un indirizzo salvato\n"
         "   nei preferiti non funziona: usa sempre quello qui sopra.\n"
     )
+
+    # Se il server ascolta anche fuori da questa macchina, l'indirizzo del
+    # loopback non serve a chi arriva dalla rete: la tavoletta ha bisogno
+    # dell'IP di questo computer, che il browser non puo' indovinare.
+    indirizzi = server.indirizzi()
+    nota_rete = ""
+    if indirizzi["rete"]:
+        righe = "\n".join(f"   {u}" for u in indirizzi["rete"])
+        nota_rete = (
+            "\n"
+            "   Dalla tavoletta (stessa rete Wi-Fi), in Chrome:\n"
+            "\n" + righe + "\n"
+            "\n"
+            "   Se ce n'e' piu' di uno, il primo e' quello giusto quasi\n"
+            "   sempre. Poi Chrome → menu → «Aggiungi a schermata Home».\n"
+        )
+        if not fisso:
+            nota_rete += (
+                "   Prima pero' fissa webui.token in config.yaml, altrimenti\n"
+                "   quel collegamento smette di funzionare al prossimo avvio.\n"
+            )
+        print(
+            "\n"
+            "  [attenzione] L'interfaccia e' raggiungibile dalla rete locale\n"
+            f"  (webui.host: {indirizzi['host']}). Chi ha il token comanda il\n"
+            "  lettore: tienilo su una rete di cui ti fidi.\n",
+            flush=True,
+        )
     # flush esplicito: se stdout non e' un terminale (avvio da .bat, da un IDE,
     # da un lanciatore) Python bufferizza e l'indirizzo non compare finche' il
     # programma non chiude — cioe' proprio quando servirebbe.
@@ -210,7 +238,8 @@ def run_webui() -> int:
         "\n"
         f"   {server.url}\n"
         "\n" + nota_token + "   Serve a impedire che un altro programma usi il lettore.\n"
-        "\n"
+        + nota_rete
+        + "\n"
         "   Ctrl+C per chiudere.\n"
         "  ============================================================\n",
         flush=True,
@@ -292,6 +321,7 @@ def run_tests() -> int:
     eseguiti: set = set()
     from tests import (
         test_client,
+        test_config_misura,
         test_dense_inventory,
         test_extended_protocol,
         test_gen2_config,
@@ -339,6 +369,7 @@ def run_tests() -> int:
         test_lims_reuse,
         test_lims_sealing,
         test_lims_tagio,
+        test_config_misura,
         test_webui,
     ):
         # Un modulo ripetuto per distrazione gonfierebbe il totale dei test
