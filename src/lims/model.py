@@ -204,7 +204,7 @@ class Patient:
 
 @dataclass
 class Case:
-    """Accettazione: una richiesta di esame con la sua data di prelievo.
+    """Accettazione: una richiesta di esame con data e ora del prelievo.
 
     `accession_id` e' il numero di accettazione, univoco all'interno del
     laboratorio di origine: finisce sia nell'EPC sia nel payload cifrato.
@@ -213,6 +213,10 @@ class Case:
     accession_id: int
     patient_id: int | None = None
     data_prelievo: date | None = None
+    #: L'ora del prelievo come sta sull'etichetta del reparto, in forma
+    #: `HHMM`. Stringa e non `time` perche' spesso e' illeggibile o assente, e
+    #: un campo vuoto e' un dato onesto: la mezzanotte no.
+    ora_prelievo: str = ""
     reparto: str = ""
     medico: str = ""
     external_ref: str = ""

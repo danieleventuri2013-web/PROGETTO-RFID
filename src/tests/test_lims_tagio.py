@@ -143,6 +143,8 @@ def test_provision_rifiuta_user_memory_insufficiente() -> None:
     backend = _backend_vergine(user_bytes=16)
     esito = _tagio(backend, user_memory_bytes=16).provision(_payload())
     assert esito.ok is False
+    assert backend.only_tag.epc == VERGINE, "l'EPC non va cambiato prima del controllo spazio"
+    assert "write_epc" not in backend.calls
 
 
 def test_provision_riporta_il_fallimento_della_scrittura() -> None:

@@ -168,7 +168,11 @@ Nell'ordine:
 
 1. `0x67`/`0x71` — regione e SKU del modulo: conferma che `0xAA58` (dichiarata
    per CE, non FCC) sia davvero disponibile su questa unità;
-2. `0xAA4A` sulle antenne alle frequenze EU — **il dato da portare al fornitore**;
+2. `0xAA4A` sulle antenne alle frequenze EU — **il dato da portare al fornitore**.
+   Va misurato anche **fuori** dalla banda: il VSWR a 866 MHz da solo non
+   distingue un'antenna cattiva da una buona ma accordata a 915 MHz, e sono
+   due problemi che si curano in modi opposti. Come si legge la curva:
+   `docs/STRUMENTI_DI_MISURA.md`;
 3. `run.py tag-profile` sui tag reali: modello, USER memory, TID serializzato;
 4. `run.py campaign` con i tag di controllo esterni, per scegliere la
    configurazione con i numeri;

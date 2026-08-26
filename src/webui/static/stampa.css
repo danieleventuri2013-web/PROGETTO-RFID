@@ -1,0 +1,354 @@
+/* ==========================================================================
+   Il foglio della distinta.
+
+   È l'unico documento che il laboratorio destinatario riceve: i due archivi non
+   comunicano, quindi quello che non è scritto qui, dall'altra parte non esiste.
+   Da qui due scelte che sullo schermo non si farebbero:
+
+   * **la tabella è completa e leggibile a occhio**. Il QR è una comodità per
+     non ridigitare trenta righe, non la copia autorevole: se il lettore non
+     funziona, o la stampa è sbiadita, il foglio si legge lo stesso;
+   * **si stampa in nero su bianco**. La tavolozza ematossilina-eosina serve a
+     leggere uno schermo in laboratorio; su una stampante di reparto, spesso
+     laser monocromatica, i viola diventano grigi indistinguibili.
+
+   In stampa sparisce tutto il resto dell'interfaccia: la barra, la colonna dei
+   comandi, i pulsanti del foglio stesso. Resta il documento.
+   ========================================================================== */
+
+/* -- sullo schermo: il foglio è una sovrapposizione ----------------------- */
+.foglio {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  overflow: auto;
+  padding: var(--s6) var(--s5);
+  background: var(--fondo);
+  color: var(--ematossilina);
+}
+
+.foglio__testa {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--s5);
+  max-width: 190mm;
+  margin: 0 auto var(--s4);
+  padding-bottom: var(--s3);
+  border-bottom: 2px solid var(--ematossilina);
+}
+
+.foglio__titolo {
+  margin: 0;
+  font-family: var(--f-strumenti);
+  font-size: var(--t-titolo);
+  letter-spacing: 0.02em;
+}
+
+.foglio__sottotitolo {
+  margin: var(--s1) 0 0;
+  font-size: var(--t-medio);
+}
+
+.foglio__codici {
+  display: flex;
+  gap: var(--s3);
+  align-items: flex-start;
+}
+
+.foglio__codice {
+  text-align: center;
+  font-size: var(--t-micro);
+  color: var(--ematossilina-tenue);
+}
+
+.foglio__codice svg {
+  display: block;
+  /* Il QR si misura in millimetri perché è una misura fisica: deve uscire
+     dalla stampante grande abbastanza da farsi leggere. */
+  height: auto;
+}
+
+.foglio__dati {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--s2) var(--s4);
+  max-width: 190mm;
+  margin: 0 auto var(--s4);
+  font-size: var(--t-piccolo);
+}
+
+.foglio__dati dt {
+  font-family: var(--f-strumenti);
+  color: var(--ematossilina-debole);
+  text-transform: lowercase;
+}
+
+.foglio__dati dd {
+  margin: 0 0 var(--s2);
+  font-weight: 600;
+}
+
+.foglio__tabella {
+  width: 100%;
+  max-width: 190mm;
+  margin: 0 auto;
+  border-collapse: collapse;
+  font-size: var(--t-piccolo);
+}
+
+.foglio__tabella th,
+.foglio__tabella td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--bordo);
+  text-align: left;
+  vertical-align: top;
+}
+
+.foglio__tabella th {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-bottom: 1px solid var(--ematossilina);
+}
+
+.foglio__tabella td.hex {
+  font-family: var(--f-mono);
+  font-size: var(--t-micro);
+  white-space: nowrap;
+}
+
+/* La riga di un campione sta su due livelli: sopra chi è, sotto cosa è.
+   Il bordo separa i campioni, non i due livelli dello stesso campione. */
+.foglio__riga td {
+  border-bottom: none;
+  padding-bottom: 1px;
+}
+
+.foglio__paziente {
+  font-weight: 600;
+}
+
+.foglio__dettaglio td {
+  padding-top: 0;
+  font-size: var(--t-micro);
+  color: var(--ematossilina-tenue);
+}
+
+.foglio__dettaglio span + span::before {
+  content: " — ";
+  color: var(--ematossilina-debole);
+}
+
+.foglio__campione {
+  font-style: italic;
+}
+
+.foglio__epc {
+  font-family: var(--f-mono);
+  white-space: nowrap;
+}
+
+/* I due livelli non si separano mai fra due pagine: mezzo campione in fondo
+   al foglio è un modo sicuro di contarlo due volte. */
+.foglio__riga {
+  break-after: avoid;
+}
+
+.foglio__numero {
+  color: var(--ematossilina-debole);
+  text-align: right;
+}
+
+.foglio__nota,
+.foglio__piede,
+.foglio__comandi {
+  max-width: 190mm;
+  margin: var(--s4) auto 0;
+}
+
+.foglio__nota {
+  font-size: var(--t-piccolo);
+  color: var(--ematossilina-tenue);
+}
+
+.foglio__piede {
+  display: flex;
+  gap: var(--s5);
+}
+
+.foglio__firma {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+  font-size: var(--t-micro);
+  font-family: var(--f-strumenti);
+  text-transform: lowercase;
+  color: var(--ematossilina-debole);
+}
+
+.foglio__riga-firma {
+  border-bottom: 1px solid var(--bordo-forte);
+  min-height: 1.6em;
+}
+
+.foglio__comandi {
+  display: flex;
+  gap: var(--s3);
+  justify-content: flex-end;
+}
+
+/* L'elenco di cosa è atteso non è un allarme: è la lista che l'operatore
+   confronta con i vasetti che ha in mano. Il rosso è riservato a quello che
+   manca davvero, e usarlo qui lo renderebbe insignificante là. */
+.mancanti--atteso {
+  border-color: var(--bordo);
+  background: var(--superficie-alt);
+}
+
+.mancanti--atteso .mancanti__titolo {
+  color: var(--ematossilina);
+}
+
+/* -- il riepilogo del transito -------------------------------------------- */
+.transito {
+  margin-top: var(--s4);
+}
+
+.transito__verdetto {
+  margin: 0 0 var(--s4);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r2);
+  border: 1px solid var(--bordo);
+  font-size: var(--t-medio);
+}
+
+/* Verde solo quando ogni spedizione del periodo ha un verbale che dice che è
+   arrivata intera. «Spedito e mai confermato» è ambra, non verde: è la
+   distinzione fra sapere e sperare, ed è tutto il motivo per cui il verbale
+   esiste. */
+.transito__verdetto[data-esito="completo"] {
+  border-color: var(--conferma);
+  background: var(--conferma-velo);
+  color: var(--conferma);
+}
+
+.transito__verdetto[data-esito="attesa"] {
+  border-color: var(--attesa);
+  background: var(--attesa-velo);
+}
+
+.transito__verdetto[data-esito="incompleto"] {
+  border-color: var(--allarme);
+  background: var(--allarme-velo);
+  color: var(--allarme);
+}
+
+.transito td[data-esito="arrivata"] {
+  color: var(--conferma);
+}
+
+.transito td[data-esito="incompleta"] {
+  color: var(--allarme);
+  font-weight: 600;
+}
+
+/* -- la scansione del QR in ricezione ------------------------------------- */
+.scansione {
+  margin-top: var(--s4);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--bordo);
+}
+
+.campo--largo {
+  max-width: 640px;
+}
+
+.scansione__parti {
+  list-style: none;
+  margin: var(--s2) 0 0;
+  padding: 0;
+  display: flex;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+.scansione__parte {
+  padding: 2px var(--s2);
+  border-radius: var(--r1);
+  background: var(--conferma-velo);
+  color: var(--conferma);
+  font-size: var(--t-micro);
+  font-family: var(--f-strumenti);
+}
+
+/* ==========================================================================
+   In stampa
+   ========================================================================== */
+@media print {
+  /* Nero su bianco: su una laser di reparto i viola sono grigi che si
+     assomigliano tutti. */
+  :root,
+  :root[data-tema="scuro"] {
+    --fondo: #fff;
+    --fondo-alt: #fff;
+    --superficie: #fff;
+    --superficie-alt: #fff;
+    --ematossilina: #000;
+    --ematossilina-tenue: #333;
+    --ematossilina-debole: #555;
+    --bordo: #bbb;
+    --bordo-forte: #666;
+  }
+
+  body {
+    background: #fff;
+    color: #000;
+  }
+
+  /* Resta il documento, sparisce l'applicazione. */
+  .testata,
+  .rail,
+  .workflow-bar,
+  .schermata,
+  .avvisi,
+  .sbarramento,
+  .foglio__comandi {
+    display: none !important;
+  }
+
+  .foglio {
+    position: static;
+    padding: 0;
+    overflow: visible;
+  }
+
+  .foglio__tabella {
+    font-size: 9pt;
+  }
+
+  /* Una riga di campione non si spezza fra due pagine: mezzo paziente in fondo
+     al foglio è un modo sicuro di contarlo due volte. */
+  .foglio__tabella tr {
+    break-inside: avoid;
+  }
+
+  .foglio__riga {
+    break-after: avoid;
+  }
+
+  .foglio__tabella thead {
+    display: table-header-group;
+  }
+
+  .foglio__piede {
+    break-inside: avoid;
+  }
+
+  @page {
+    size: A4;
+    margin: 12mm;
+  }
+}

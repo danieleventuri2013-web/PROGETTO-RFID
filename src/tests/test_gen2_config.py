@@ -202,7 +202,7 @@ def test_vswr_riproduce_il_calcolo_del_manuale() -> None:
 
 def test_misura_onda_stazionaria_decodificata() -> None:
     # Eco dei 5 byte inviati + due punti di misura.
-    eco = _hex("0BB8 01 01 00")
+    eco = _hex("0BB8 01 08 00")
     # Un punto di misura sono 4 byte: 3 di frequenza in kHz + 1 di return loss.
     punti = _hex("0DF732 78") + _hex("0D3A3C 14")   # 915250 kHz e 866876 kHz
     reader, _ = _reader(_extended_reply(P.SUBCMD_STANDING_WAVE, eco + punti))
@@ -223,12 +223,13 @@ def test_misura_onda_stazionaria_decodificata() -> None:
 def test_misura_con_elenco_di_frequenze() -> None:
     # Frequenze del canale EU: vanno inviate in kHz su 3 byte, big-endian.
     eu = [865700, 866300, 866900, 867500]
-    eco = _hex("0BB8 02 01 04")
+    eco = _hex("0BB8 02 08 04")
     reader, transport = _reader(_extended_reply(P.SUBCMD_STANDING_WAVE, eco))
     reader.measure_standing_wave(2, frequencies_khz=eu)
 
     inviato = bytes(transport.tx)
     conteggio = 3 + len(P.EXTENDED_MARKER) + 2 + 2 + 1 + 1  # ..subcmd, potenza, antenna, banda
+    assert inviato[conteggio - 1] == 0x08, "il default deve restare nella banda EU"
     assert inviato[conteggio] == len(eu), "il numero di frequenze deve precedere l'elenco"
     elenco = inviato[conteggio + 1 : conteggio + 1 + 3 * len(eu)]
     assert [
@@ -237,7 +238,7 @@ def test_misura_con_elenco_di_frequenze() -> None:
 
 
 def test_misura_rifiuta_corpo_non_multiplo_di_quattro() -> None:
-    eco = _hex("0BB8 01 01 00")
+    eco = _hex("0BB8 01 08 00")
     reader, _ = _reader(_extended_reply(P.SUBCMD_STANDING_WAVE, eco + b"\x01\x02\x03"))
     _expect(
         P.SilionFrameError,

@@ -50,6 +50,14 @@ const Scena = (() => {
     antenna = elemento.querySelector("#scena-antenna");
   }
 
+  /** Chi vuole sapere quando la scena cambia (il diario). Uno solo, e
+   *  facoltativo: la scena non deve dipendere da chi la guarda. */
+  let osservatore = null;
+
+  function osserva(funzione) {
+    osservatore = funzione;
+  }
+
   /** Cambia stato. `testo` sovrascrive l'istruzione quando serve dire di più
    *  (per esempio il motivo preciso di un errore). */
   function stato(nome, testo) {
@@ -58,6 +66,13 @@ const Scena = (() => {
     statoCorrente = nome;
     radice.dataset.stato = nome === "troppi" ? "errore" : nome;
     istruzione.textContent = testo || voce.istruzione;
+    // Dopo aver dipinto, non prima: quello che si annota è quello che
+    // l'operatore ha davvero davanti agli occhi.
+    try {
+      osservatore?.(nome, istruzione.textContent);
+    } catch (errore) {
+      /* chi guarda non può rompere la scena */
+    }
   }
 
   function contatore(indice, totale) {
@@ -69,5 +84,14 @@ const Scena = (() => {
     if (antenna) antenna.textContent = id ?? "—";
   }
 
-  return { collega, stato, contatore, antennaAttiva, get corrente() { return statoCorrente; } };
+  return {
+    collega,
+    stato,
+    contatore,
+    antennaAttiva,
+    osserva,
+    get corrente() {
+      return statoCorrente;
+    },
+  };
 })();

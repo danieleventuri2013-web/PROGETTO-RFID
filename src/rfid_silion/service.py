@@ -424,7 +424,7 @@ class AntennaDiagnosticsRequest:
     """Misura di onda stazionaria su un'antenna (comando 0xAA4A)."""
 
     antenna: int
-    band: int = 0x01
+    band: int = 0x08
     frequencies_khz: tuple[int, ...] = ()
     timeout_ms: int = 30000
 
@@ -437,7 +437,7 @@ class AntennaDiagnosticsRequest:
     def from_mapping(cls, value: Mapping[str, Any]) -> "AntennaDiagnosticsRequest":
         return cls(
             antenna=int(value["antenna"]),
-            band=int(value.get("band", 0x01)),
+            band=int(value.get("band", 0x08)),
             frequencies_khz=tuple(value.get("frequencies_khz", ())),
             timeout_ms=int(value.get("timeout_ms", 30000)),
         )

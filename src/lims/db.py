@@ -31,7 +31,7 @@ import json
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping, Sequence
 
 from .model import (
     Case,
@@ -56,7 +56,7 @@ __all__ = [
     "NotFoundError",
 ]
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class LimsDatabaseError(Exception):
@@ -457,12 +457,60 @@ def _migrazione_v5(conn: sqlite3.Connection) -> None:
 #: Una migrazione e' uno script SQL oppure una funzione che riceve la
 #: connessione. La seconda forma serve quando il passo non e' ripetibile scritto
 #: in SQL puro.
+
+def _migrazione_v6(conn: sqlite3.Connection) -> None:
+    """L'ora del prelievo, e il riscontro che chiude il giro.
+
+    Due aggiunte che vengono dal flusso di lavoro vero:
+
+    * l'etichetta del reparto porta **data e ora** del prelievo, e finora si
+      trascriveva solo la data. L'ora serve sulla distinta stampata, che e'
+      l'unico documento che il laboratorio destinatario riceve;
+    * `shipment_arrivals` registra il **verbale di riscontro** che il
+      destinatario rimanda. Senza, il mittente non sa mai come e' andata: sa
+      solo di aver spedito. E' una tabella nuova invece di colonne aggiunte
+      perche' un arrivo e' un fatto a se', con la sua data e il suo firmatario.
+    """
+    colonne_casi = {riga[1] for riga in conn.execute("PRAGMA table_info(cases)")}
+    if "ora_prelievo" not in colonne_casi:
+        conn.execute("ALTER TABLE cases ADD COLUMN ora_prelievo TEXT NOT NULL DEFAULT ''")
+
+    conn.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS shipment_arrivals (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            shipment_id         INTEGER NOT NULL UNIQUE
+                                  REFERENCES shipments(id) ON DELETE RESTRICT,
+            -- Il numero che la spedizione ha nell'archivio del destinatario:
+            -- non coincide col nostro, e serve per parlarsi al telefono.
+            remote_inbound_id   INTEGER,
+            manifest_uuid       TEXT NOT NULL DEFAULT '',
+            arrived_at          TEXT,
+            confirmed_at        TEXT NOT NULL,
+            operator            TEXT NOT NULL DEFAULT '',
+            expected            INTEGER NOT NULL DEFAULT 0,
+            arrived             INTEGER NOT NULL DEFAULT 0,
+            missing             INTEGER NOT NULL DEFAULT 0,
+            unexpected          INTEGER NOT NULL DEFAULT 0,
+            ok                  INTEGER NOT NULL DEFAULT 0,
+            nonconformity       TEXT NOT NULL DEFAULT '',
+            detail_json         TEXT NOT NULL DEFAULT '',
+            signer_fingerprint  TEXT NOT NULL DEFAULT '',
+            imported_at         TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_arrivals_shipment
+            ON shipment_arrivals(shipment_id);
+        """
+    )
+
+
 _MIGRATIONS: dict[int, "str | Callable[[sqlite3.Connection], None]"] = {
     1: _SCHEMA,
     2: _MIGRATION_V2,
     3: _migrazione_v3,
     4: _migrazione_v4,
     5: _migrazione_v5,
+    6: _migrazione_v6,
 }
 
 
@@ -520,6 +568,12 @@ class ContainerRecord:
     data_prelievo: dt.date | None
     flags: int = 0
     external_ref: str = ""
+    #: Servono alla distinta stampata, che e' l'unico documento che il
+    #: laboratorio destinatario riceve: li' un paziente va identificato per
+    #: intero, non per pseudonimo.
+    ora_prelievo: str = ""
+    data_nascita: dt.date | None = None
+    sesso: str = ""
 
     @property
     def display_name(self) -> str:
@@ -678,12 +732,13 @@ class LimsDatabase:
             raise ValueError("patient_id obbligatorio per creare un'accettazione")
         try:
             cursor = self._conn.execute(
-                "INSERT INTO cases (accession_id, patient_id, data_prelievo, reparto, medico, "
-                "external_ref, note, created_at) VALUES (?,?,?,?,?,?,?,?)",
+                "INSERT INTO cases (accession_id, patient_id, data_prelievo, ora_prelievo, "
+                "reparto, medico, external_ref, note, created_at) VALUES (?,?,?,?,?,?,?,?,?)",
                 (
                     case.accession_id,
                     case.patient_id,
                     _as_iso(case.data_prelievo),
+                    case.ora_prelievo,
                     case.reparto,
                     case.medico,
                     case.external_ref,
@@ -709,6 +764,7 @@ class LimsDatabase:
             accession_id=row["accession_id"],
             patient_id=row["patient_id"],
             data_prelievo=_as_date(row["data_prelievo"]),
+            ora_prelievo=row["ora_prelievo"] or "",
             reparto=row["reparto"],
             medico=row["medico"],
             external_ref=row["external_ref"],
@@ -735,17 +791,38 @@ class LimsDatabase:
         self._conn.commit()
         return int(cursor.lastrowid)
 
-    def plan_containers(self, specimen_id: int, total: int) -> list[int]:
-        """Crea i `total` contenitori previsti per un reperto, ancora senza tag."""
+    def plan_containers(
+        self,
+        specimen_id: int,
+        total: int,
+        *,
+        start_index: int = 1,
+        accession_total: int | None = None,
+    ) -> list[int]:
+        """Crea i contenitori previsti per un reperto, ancora senza tag.
+
+        `start_index` e `accession_total` servono quando l'accettazione ha piu'
+        reperti: la numerazione che finisce nell'EPC e nel payload e' quella
+        **dell'accettazione**, non quella del singolo reperto. Un vassoio con
+        due vasetti di colon e uno di linfonodo fa 1/3, 2/3 e 3/3 — non
+        1/2, 2/2 e 1/1, che sarebbero tre etichette in cui il paziente si
+        perde. Senza i due parametri il comportamento e' quello di prima.
+        """
         if not 1 <= total <= 255:
             raise ValueError("il numero di contenitori deve essere compreso tra 1 e 255")
+        complessivo = total if accession_total is None else int(accession_total)
+        if not 1 <= complessivo <= 255:
+            raise ValueError("il totale dell'accettazione deve essere compreso tra 1 e 255")
         created: list[int] = []
         # Tutto o niente: un reperto con meta' dei contenitori previsti sarebbe
         # peggio di un reperto senza contenitori, perche' sembrerebbe completo.
         try:
             with self._conn:
-                for index in range(1, total + 1):
-                    container = Container(index=index, total=total, specimen_id=specimen_id)
+                for scarto in range(total):
+                    indice = start_index + scarto
+                    container = Container(
+                        index=indice, total=complessivo, specimen_id=specimen_id
+                    )
                     cursor = self._conn.execute(
                         "INSERT INTO containers (specimen_id, idx, total, state, created_at) "
                         "VALUES (?,?,?,?,?)",
@@ -758,6 +835,58 @@ class LimsDatabase:
                 f"impossibile creare i contenitori del reperto {specimen_id}: {exc}"
             ) from exc
         return created
+
+    def plan_accession(
+        self, case_id: int, reperti: "Sequence[tuple[Specimen, int]]"
+    ) -> list[dict[str, Any]]:
+        """Registra i reperti di un'accettazione e i loro contenitori.
+
+        Un'accettazione puo' contenere **piu' reperti diversi dello stesso
+        paziente**: quattro campioni presi nella stessa seduta hanno lo stesso
+        nome sopra, ma descrizione, materiale, fissativo, sede e avvertenze
+        possono essere tutti diversi — ed e' il caso normale, non l'eccezione.
+        Un reperto solo, con N vasetti uguali, resta il caso piu' frequente e
+        continua a funzionare com'era.
+
+        La numerazione e' dell'accettazione: i contenitori vanno da 1 a N
+        nell'ordine in cui sono stati trascritti, qualunque sia il reperto a
+        cui appartengono.
+        """
+        elenco = list(reperti)
+        if not elenco:
+            raise ValueError("un'accettazione deve avere almeno un reperto")
+        complessivo = sum(max(1, int(quanti)) for _, quanti in elenco)
+        if not 1 <= complessivo <= 255:
+            raise ValueError("il numero di contenitori deve essere compreso tra 1 e 255")
+
+        pianificati: list[dict[str, Any]] = []
+        indice = 1
+        for reperto, quanti in elenco:
+            quanti = max(1, int(quanti))
+            specimen_id = self.add_specimen(
+                Specimen(
+                    case_id=case_id,
+                    descrizione=reperto.descrizione,
+                    material_code=reperto.material_code,
+                    site_code=reperto.site_code,
+                    fixative_code=reperto.fixative_code,
+                    flags=reperto.flags,
+                )
+            )
+            contenitori = self.plan_containers(
+                specimen_id, quanti, start_index=indice, accession_total=complessivo
+            )
+            for scarto, container_id in enumerate(contenitori):
+                pianificati.append(
+                    {
+                        "container_id": container_id,
+                        "specimen_id": specimen_id,
+                        "index": indice + scarto,
+                        "total": complessivo,
+                    }
+                )
+            indice += quanti
+        return pianificati
 
     def assign_epc(self, container_id: int, epc: str, tid: str = "", revision: int = 0) -> None:
         """Registra lo pseudonimo assegnato a un contenitore.
@@ -805,8 +934,8 @@ class LimsDatabase:
     _RECORD_QUERY = """
         SELECT c.id AS container_id, c.epc, c.tid, c.idx, c.total, c.state, c.revision,
                s.descrizione, s.material_code, s.site_code, s.fixative_code, s.flags,
-               k.accession_id, k.data_prelievo, k.external_ref,
-               p.codice_fiscale, p.cognome, p.nome
+               k.accession_id, k.data_prelievo, k.ora_prelievo, k.external_ref,
+               p.codice_fiscale, p.cognome, p.nome, p.data_nascita, p.sesso
         FROM containers c
         JOIN specimens s ON s.id = c.specimen_id
         JOIN cases     k ON k.id = s.case_id
@@ -855,6 +984,9 @@ class LimsDatabase:
             external_ref=row["external_ref"],
             descrizione=row["descrizione"],
             data_prelievo=_as_date(row["data_prelievo"]),
+            ora_prelievo=row["ora_prelievo"] or "",
+            data_nascita=_as_date(row["data_nascita"]),
+            sesso=row["sesso"] or "",
         )
 
     # -- parco tag riutilizzabili ------------------------------------------
@@ -1076,16 +1208,32 @@ class LimsDatabase:
         if not 1 <= new_total <= 255:
             raise ValueError("il numero di contenitori deve essere compreso tra 1 e 255")
 
+        # La numerazione appartiene all'accettazione, non al reperto: se ci sono
+        # piu' reperti bisogna guardarli tutti, altrimenti si assegnerebbero
+        # due volte gli stessi numeri.
+        riga = self._conn.execute(
+            "SELECT case_id FROM specimens WHERE id=?", (specimen_id,)
+        ).fetchone()
+        if riga is None:
+            raise NotFoundError(f"il reperto {specimen_id} non esiste")
+        case_id = int(riga["case_id"])
+
         attivi = [
             dict(row)
             for row in self._conn.execute(
-                "SELECT id, idx, total, epc, state FROM containers "
-                "WHERE specimen_id=? AND state<>? ORDER BY idx",
-                (specimen_id, ContainerState.VOIDED.value),
+                """
+                SELECT c.id, c.idx, c.total, c.epc, c.state, c.specimen_id
+                  FROM containers c
+                  JOIN specimens s ON s.id = c.specimen_id
+                 WHERE s.case_id=? AND c.state<>?
+                 ORDER BY c.idx
+                """,
+                (case_id, ContainerState.VOIDED.value),
             ).fetchall()
         ]
         if not attivi:
             raise NotFoundError(f"il reperto {specimen_id} non ha contenitori attivi")
+        altri_reperti = {c["specimen_id"] for c in attivi} - {specimen_id}
 
         scritti = [c for c in attivi if c["epc"]]
         bloccati = [c for c in scritti if c["idx"] > new_total]
@@ -1094,6 +1242,15 @@ class LimsDatabase:
             raise LimsDatabaseError(
                 f"non si puo' scendere a {new_total}: i contenitori {etichette} sono "
                 "gia' stati scritti. Vanno annullati singolarmente con una motivazione."
+            )
+
+        if altri_reperti:
+            # Con piu' reperti «quanti sono in tutto» non individua piu' quale
+            # cambiare: aggiungere o togliere un vasetto va fatto sul reperto
+            # che lo riguarda, dicendo quale.
+            raise LimsDatabaseError(
+                "questa accettazione ha piu' reperti: il numero di contenitori "
+                "va corretto su un reperto alla volta"
             )
 
         da_rimuovere = [c["id"] for c in attivi if c["idx"] > new_total]
@@ -1331,6 +1488,39 @@ class LimsDatabase:
                 [(ContainerState.PACKED.value, container_id) for container_id in ids],
             )
         return len(ids)
+
+    def remove_from_shipment(self, shipment_id: int, container_ids: Iterable[int]) -> int:
+        """Toglie contenitori da una spedizione ancora aperta.
+
+        Serve al riempimento: se la lettura ha aggiunto un contenitore che sta
+        sul tavolo accanto e non nella scatola, l'operatore deve poterlo
+        togliere subito. Su una spedizione gia' sigillata non si tocca niente —
+        li' la composizione e' quella certificata.
+        """
+        ids = tuple(dict.fromkeys(int(value) for value in container_ids))
+        if not ids:
+            return 0
+        if self.shipment_row(shipment_id)["state"] != ShipmentState.OPEN.value:
+            raise LimsDatabaseError(
+                "la composizione di una spedizione non aperta e' immutabile"
+            )
+        segnaposti = ",".join("?" for _ in ids)
+        with self._conn:
+            cursore = self._conn.execute(
+                f"DELETE FROM shipment_items WHERE shipment_id=? AND container_id IN ({segnaposti})",
+                (shipment_id, *ids),
+            )
+            tolti = int(cursore.rowcount or 0)
+            # Tornano pronti da spedire: il contenitore esiste ancora, e'
+            # soltanto uscito da questa scatola.
+            self._conn.executemany(
+                "UPDATE containers SET state=? WHERE id=? AND state=?",
+                [
+                    (ContainerState.PROVISIONED.value, container_id, ContainerState.PACKED.value)
+                    for container_id in ids
+                ],
+            )
+        return tolti
 
     def ready_containers(self) -> list[ContainerRecord]:
         righe = self._conn.execute(
@@ -1671,6 +1861,167 @@ class LimsDatabase:
         self._conn.commit()
 
     # -- ricezioni --------------------------------------------------------
+    # -- arrivi confermati dal destinatario ---------------------------------
+    def record_arrival(
+        self,
+        shipment_id: int,
+        *,
+        manifest_uuid: str = "",
+        remote_inbound_id: int | None = None,
+        operator: str = "",
+        arrived_at: str = "",
+        confirmed_at: str = "",
+        expected: int = 0,
+        arrived: int = 0,
+        missing: int = 0,
+        unexpected: int = 0,
+        ok: bool = False,
+        nonconformity: str = "",
+        detail: Mapping[str, Any] | None = None,
+        signer_fingerprint: str = "",
+    ) -> int:
+        """Registra il verbale di riscontro arrivato dal destinatario.
+
+        Si sostituisce se ne arriva uno nuovo per la stessa spedizione: capita
+        quando il destinatario riapre una ricezione e la richiude, e l'ultimo
+        verbale e' quello che vale. La sostituzione non cancella niente
+        d'altro: la spedizione, la distinta e il sigillo restano dove sono.
+        """
+        riga = self.shipment_row(int(shipment_id))
+        adesso = _now()
+        with self._conn:
+            self._conn.execute(
+                """
+                INSERT INTO shipment_arrivals
+                    (shipment_id, remote_inbound_id, manifest_uuid, arrived_at,
+                     confirmed_at, operator, expected, arrived, missing, unexpected,
+                     ok, nonconformity, detail_json, signer_fingerprint, imported_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(shipment_id) DO UPDATE SET
+                    remote_inbound_id=excluded.remote_inbound_id,
+                    manifest_uuid=excluded.manifest_uuid,
+                    arrived_at=excluded.arrived_at,
+                    confirmed_at=excluded.confirmed_at,
+                    operator=excluded.operator,
+                    expected=excluded.expected,
+                    arrived=excluded.arrived,
+                    missing=excluded.missing,
+                    unexpected=excluded.unexpected,
+                    ok=excluded.ok,
+                    nonconformity=excluded.nonconformity,
+                    detail_json=excluded.detail_json,
+                    signer_fingerprint=excluded.signer_fingerprint,
+                    imported_at=excluded.imported_at
+                """,
+                (
+                    int(shipment_id),
+                    remote_inbound_id,
+                    str(manifest_uuid or ""),
+                    arrived_at or None,
+                    confirmed_at or adesso,
+                    operator,
+                    int(expected),
+                    int(arrived),
+                    int(missing),
+                    int(unexpected),
+                    1 if ok else 0,
+                    nonconformity,
+                    json.dumps(dict(detail or {}), ensure_ascii=False),
+                    signer_fingerprint,
+                    adesso,
+                ),
+            )
+            # Lo stato della spedizione segue il fatto: se il verbale dice che
+            # e' arrivata tutta, «ricevuta» e' la verita'. Se manca qualcosa
+            # resta «spedita», perche' quella spedizione non e' finita bene e
+            # non deve sembrare chiusa.
+            if ok and riga["state"] in (
+                ShipmentState.SENT.value,
+                ShipmentState.EXPORTED.value,
+                ShipmentState.SEALED.value,
+            ):
+                self._conn.execute(
+                    "UPDATE shipments SET state=? WHERE id=?",
+                    (ShipmentState.RECEIVED.value, int(shipment_id)),
+                )
+        return int(shipment_id)
+
+    def arrival_for_shipment(self, shipment_id: int) -> dict[str, Any] | None:
+        riga = self._conn.execute(
+            "SELECT * FROM shipment_arrivals WHERE shipment_id=?", (int(shipment_id),)
+        ).fetchone()
+        if riga is None:
+            return None
+        voce = dict(riga)
+        try:
+            voce["detail"] = json.loads(voce.get("detail_json") or "{}")
+        except ValueError:
+            voce["detail"] = {}
+        voce["ok"] = bool(voce["ok"])
+        return voce
+
+    def transit_summary(
+        self, destinazione: str, *, dal: str = "", al: str = ""
+    ) -> list[dict[str, Any]]:
+        """Le spedizioni verso una controparte, con quello che si sa dell'arrivo.
+
+        Solo cio' che un verbale ha confermato risulta arrivato. Il resto e'
+        marcato come non confermato invece che dato per buono: e' la
+        differenza fra sapere e sperare, ed e' tutto il motivo per cui il
+        verbale esiste.
+        """
+        condizioni = ["s.state != ?"]
+        parametri: list[Any] = [ShipmentState.CANCELLED.value]
+        if destinazione:
+            condizioni.append("s.destinazione = ?")
+            parametri.append(destinazione)
+        if dal:
+            condizioni.append("COALESCE(s.sent_at, s.sealed_at, s.data) >= ?")
+            parametri.append(dal)
+        if al:
+            # Fino a tutto il giorno indicato: chi scrive una data intende il
+            # giorno intero, non la sua mezzanotte.
+            condizioni.append("COALESCE(s.sent_at, s.sealed_at, s.data) <= ?")
+            parametri.append(al + "T23:59:59")
+
+        righe = self._conn.execute(
+            f"""
+            SELECT s.id, s.destinazione, s.data, s.state, s.sealed_at, s.exported_at,
+                   s.sent_at, s.sealing_ok, s.sealing_detail,
+                   a.ok AS arrivo_ok, a.confirmed_at AS arrivo_il, a.operator AS arrivo_da,
+                   a.expected AS arrivo_attesi, a.arrived AS arrivo_arrivati,
+                   a.missing AS arrivo_mancanti, a.unexpected AS arrivo_inattesi,
+                   a.nonconformity AS arrivo_non_conformita,
+                   COUNT(i.container_id) AS pezzi
+              FROM shipments s
+              LEFT JOIN shipment_items i ON i.shipment_id = s.id
+              LEFT JOIN shipment_arrivals a ON a.shipment_id = s.id
+             WHERE {" AND ".join(condizioni)}
+             GROUP BY s.id
+             ORDER BY COALESCE(s.sent_at, s.sealed_at, s.data), s.id
+            """,
+            parametri,
+        ).fetchall()
+        return [dict(riga) for riga in righe]
+
+    def patients_in_shipment(self, shipment_id: int) -> list[dict[str, Any]]:
+        """Chi c'era dentro una spedizione, un paziente per riga."""
+        righe = self._conn.execute(
+            """
+            SELECT p.codice_fiscale, p.cognome, p.nome, COUNT(c.id) AS pezzi
+              FROM shipment_items i
+              JOIN containers c ON c.id = i.container_id
+              JOIN specimens s ON s.id = c.specimen_id
+              JOIN cases k ON k.id = s.case_id
+              JOIN patients p ON p.id = k.patient_id
+             WHERE i.shipment_id = ?
+             GROUP BY p.id
+             ORDER BY p.cognome, p.nome
+            """,
+            (int(shipment_id),),
+        ).fetchall()
+        return [dict(riga) for riga in righe]
+
     def import_inbound_manifest(
         self,
         *,
@@ -1815,35 +2166,89 @@ class LimsDatabase:
         self._conn.commit()
 
     # -- archivio: ricerca e storico ---------------------------------------
-    def search_patients(self, query: str, *, limit: int = 50) -> list[dict[str, Any]]:
+    #: Come si ordina l'elenco dei pazienti. Sono due domande diverse: «cosa e'
+    #: passato di qui ultimamente» e «trovami questo cognome che non so scrivere».
+    ORDINI_PAZIENTI = {
+        "recenti": "ultima DESC NULLS LAST, p.cognome, p.nome",
+        "alfabetico": "p.cognome, p.nome, ultima DESC NULLS LAST",
+    }
+
+    def search_patients(
+        self,
+        query: str = "",
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        order: str = "recenti",
+    ) -> list[dict[str, Any]]:
         """Cerca per cognome, nome, codice fiscale o numero di accettazione.
 
         Una ricerca sola su tutti i campi: chi ha in mano un foglio non sa in
         quale colonna cercare, sa solo cosa c'e' scritto sopra.
+
+        **Una ricerca vuota vuol dire «tutti»**, non «nessuno». L'archivio serve
+        anche a sfogliare: chi cerca un caso di tre mesi fa spesso non ricorda il
+        cognome, ricorda che c'era. Restituire una tabella vuota davanti a un
+        archivio pieno lo manderebbe a indovinare.
         """
-        testo = str(query).strip()
-        if not testo:
-            return []
-        come = f"%{testo.upper()}%"
-        accettazione = int(testo) if testo.isdigit() else -1
+        dove, parametri = self._filtro_pazienti(query)
+        ordine = self.ORDINI_PAZIENTI.get(str(order), self.ORDINI_PAZIENTI["recenti"])
         righe = self._conn.execute(
-            """
+            f"""
             SELECT p.id, p.codice_fiscale, p.cognome, p.nome, p.data_nascita, p.sesso,
                    COUNT(DISTINCT c.id)  AS accettazioni,
                    MAX(c.created_at)     AS ultima
               FROM patients p
               LEFT JOIN cases c ON c.patient_id = p.id
-             WHERE UPPER(p.cognome) LIKE ?
-                OR UPPER(p.nome) LIKE ?
-                OR UPPER(p.codice_fiscale) LIKE ?
-                OR c.accession_id = ?
+             {dove}
              GROUP BY p.id
-             ORDER BY ultima DESC NULLS LAST, p.cognome
-             LIMIT ?
+             ORDER BY {ordine}
+             LIMIT ? OFFSET ?
             """,
-            (come, come, come, accettazione, int(limit)),
+            (*parametri, int(limit), max(0, int(offset))),
         ).fetchall()
         return [dict(riga) for riga in righe]
+
+    def count_patients(self, query: str = "") -> int:
+        """Quanti pazienti risponderebbero a questa ricerca, in tutto.
+
+        Serve per dire «50 di 1284» invece di lasciar credere che l'archivio
+        finisca dove finisce la pagina.
+        """
+        dove, parametri = self._filtro_pazienti(query)
+        riga = self._conn.execute(
+            f"""
+            SELECT COUNT(*) FROM (
+                SELECT p.id
+                  FROM patients p
+                  LEFT JOIN cases c ON c.patient_id = p.id
+                 {dove}
+                 GROUP BY p.id
+            )
+            """,
+            parametri,
+        ).fetchone()
+        return int(riga[0])
+
+    @staticmethod
+    def _filtro_pazienti(query: str) -> tuple[str, tuple[Any, ...]]:
+        """La clausola WHERE condivisa fra elenco e conteggio.
+
+        Scritta una volta sola perche' un conteggio che filtrasse diversamente
+        dall'elenco direbbe «1284 pazienti» sopra una tabella che ne pesca altri.
+        """
+        testo = str(query).strip()
+        if not testo:
+            return "", ()
+        come = f"%{testo.upper()}%"
+        accettazione = int(testo) if testo.isdigit() else -1
+        return (
+            """WHERE UPPER(p.cognome) LIKE ?
+                OR UPPER(p.nome) LIKE ?
+                OR UPPER(p.codice_fiscale) LIKE ?
+                OR c.accession_id = ?""",
+            (come, come, come, accettazione),
+        )
 
     def patient_history(self, patient_id: int) -> dict[str, Any]:
         """Tutto lo storico di un paziente, accettazione per accettazione.
@@ -1897,6 +2302,53 @@ class LimsDatabase:
                 }
             )
         return {"paziente": dict(paziente), "accettazioni": accettazioni}
+
+    def other_containers_for_patient(
+        self,
+        codice_fiscale: str,
+        *,
+        exclude_accession: int | None = None,
+        days: int = 1,
+    ) -> list[dict[str, Any]]:
+        """Gli altri contenitori attivi dello stesso paziente, di recente.
+
+        I campioni arrivano in ordine sparso e nessuno sa, mentre trascrive il
+        primo, se quel paziente ne ha altri tre in fondo al vassoio: si scopre
+        solo dopo. Questa e' la risposta che il sistema puo' dare **appena la
+        conosce**, cioe' alla trascrizione successiva, ed e' una nota da
+        mostrare, non un blocco: due campioni dello stesso paziente sono
+        normali, e il sistema non ha titolo per dubitarne.
+
+        `days=1` significa «oggi». I contenitori annullati non contano: quelli
+        sono contenitori che non esistono piu'.
+        """
+        cercato = str(codice_fiscale).strip().upper()
+        if not cercato:
+            return []
+        limite = (dt.date.today() - dt.timedelta(days=max(0, int(days) - 1))).isoformat()
+        righe = self._conn.execute(
+            """
+            SELECT c.id AS container_id, c.idx, c.total, c.epc, c.state,
+                   k.accession_id, k.data_prelievo, s.descrizione
+              FROM containers c
+              JOIN specimens s ON s.id = c.specimen_id
+              JOIN cases k ON k.id = s.case_id
+              JOIN patients p ON p.id = k.patient_id
+             WHERE p.codice_fiscale = ?
+               AND c.state != ?
+               AND k.data_prelievo >= ?
+               AND (? IS NULL OR k.accession_id != ?)
+             ORDER BY k.accession_id, c.idx
+            """,
+            (
+                cercato,
+                ContainerState.VOIDED.value,
+                limite,
+                exclude_accession,
+                exclude_accession,
+            ),
+        ).fetchall()
+        return [dict(riga) for riga in righe]
 
     def container_trace(self, epc: str) -> list[dict[str, Any]]:
         """Ogni operazione registrata su un EPC, dalla prima all'ultima."""

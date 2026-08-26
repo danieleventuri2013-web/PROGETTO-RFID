@@ -8,17 +8,6 @@ reader:
   boot_timeout_ms: 3000
   response_timeout_ms: 2000
   max_power_dbm: 30
-# Montaggio del prototipo: tutte e tre le antenne a pavimento.
-# 1 e 2 affiancate, con il contenitore appoggiato sopra: sono quelle di lettura.
-# 3 poco distante, per scrivere i tag uno alla volta.
-#
-# I ruoli sono descrittivi e il driver non li usa: l'identita' dell'antenna e'
-# il suo id. Servono a chi legge la configurazione fra sei mesi.
-#
-# Nota sul limite di questo montaggio: tre antenne complanari non danno
-# discriminazione in altezza, quindi il consenso geometrico di `lims.sealing`
-# (`min_antennas`) distingue meno bene un tag dentro il volume da uno appoggiato
-# accanto. Con la terza antenna in verticale il criterio diventerebbe piu' netto.
 antennas:
 - id: 1
   role: floor_read_left
@@ -39,30 +28,38 @@ geometry:
   - 220
   - 220
   - 24
-  # Volume di lettura dichiarato: ingombro del contenitore appoggiato sulle due
-  # antenne di lettura. Non entra nei calcoli, ma viene riportato nel report
-  # della campagna di misura: un risultato senza le dimensioni a cui si
-  # riferisce non e' confrontabile con un'altra installazione.
   volume_mm:
   - 440
   - 220
   - 220
-  # Posizione reale delle antenne, in millimetri. Origine al centro della coppia
-  # di lettura; X verso destra, Y in profondita', Z verso l'alto.
-  #
-  # Serve al frontend per disegnare il banco com'e' davvero. Non e' un dettaglio
-  # estetico: un'animazione che mostra un'antenna verticale dove non c'e'
-  # istruirebbe male l'operatore. Se il montaggio cambia, si cambia qui.
   antenna_positions_mm:
   - id: 1
-    center: [-110, 0, 0]
-    normal: [0, 0, 1]      # a pavimento, rivolta verso l'alto
+    center:
+    - -110
+    - 0
+    - 0
+    normal:
+    - 0
+    - 0
+    - 1
   - id: 2
-    center: [110, 0, 0]
-    normal: [0, 0, 1]
+    center:
+    - 110
+    - 0
+    - 0
+    normal:
+    - 0
+    - 0
+    - 1
   - id: 3
-    center: [520, 0, 0]    # postazione di scrittura, staccata dalle altre
-    normal: [0, 0, 1]
+    center:
+    - 520
+    - 0
+    - 0
+    normal:
+    - 0
+    - 0
+    - 1
 inventory:
   antennas:
   - 1
@@ -86,97 +83,68 @@ tag_access:
   auto_epc_bytes: 12
   auto_epc_prefix_hex: ''
   barcode_verify_attempts: 3
-# Anagrafica di questo laboratorio: quello che effettua l'accettazione.
-# Compare in alto nell'interfaccia, sulle etichette e nella distinta.
 laboratorio:
-  nome: ''
-  # Sigla breve mostrata in alto quando il nome per esteso non ci sta.
-  codice: ''
-  indirizzo: ''
+  nome: Ospedale Spoleto
+  codice: OSP-S
+  indirizzo: Ospedale Spoleto
   cap: ''
-  citta: ''
-  provincia: ''
+  citta: Spoleto
+  provincia: PG
   telefono: ''
-  # Email del laboratorio e del referente: la seconda e' quella da cui parte la
-  # distinta verso il destinatario.
   email: ''
-  # Casella PEC istituzionale della singola unita' locale.
   pec: ''
   referente: ''
   email_referente: ''
-# Operatori abilitati. Nell'interfaccia si sceglie da un elenco, non si digita:
-# un nome scritto a mano ogni volta diverso rende il registro inutilizzabile.
-# Viene mostrato `codice` se c'e', altrimenti il cognome.
-operatori: []
-# - codice: DV
-#   cognome: Venturi
-#   nome: Daniele
-#   email: ''
-#   ruolo: operatore       # oppure responsabile, per le deroghe motivate
-#   pin_service: RFID-LIMS-SUPERVISORI
-#   pin_username: DV
-#   attivo: true
-# Laboratori destinatari. Riempiono il menu a tendina del sigillo, e la loro
-# email serve a preparare il messaggio con cui si spedisce la distinta.
-destinatari: []
-# - nome: Anatomia patologica - Ospedale B
-#   codice: AP-B
-#   email: anatomia@ospedaleb.it
-#   pec: anatomia@pec.ospedaleb.it
-#   encryption_certificate: certificati/ospedale-b-encryption.pem
-#   referente: ''
-#   indirizzo: ''
-#   citta: ''
-#   attivo: true
-# Tracciabilita' dei campioni (pacchetto src/lims/).
-# Vedi docs/SCHEMA_DATI_TAG.md per il significato dei campi.
+operatori:
+- codice: DV
+  cognome: Venturi
+  nome: Daniele
+  email: ''
+  ruolo: ''
+  pin_service: ''
+  pin_username: ''
+  attivo: true
+destinatari:
+- nome: Ospedale Foligno
+  codice: OF
+  email: ''
+  pec: ''
+  referente: ''
+  indirizzo: ''
+  citta: Foligno
+  encryption_certificate: ''
+  attivo: true
 lims:
-  # Identificativo di questo laboratorio: finisce nell'EPC di ogni contenitore.
   lab_id: 1
-  # Archivio pazienti/reperti/contenitori e registro di unicita' degli EPC.
   database: logs/lims.db
-  # Portachiavi delle chiavi condivise con i laboratori destinatari.
-  # NON versionare questo file e proteggere la cartella che lo contiene.
   keyring: logs/lims_keys.json
-  # Archivio delle copie esatte inviate: il file viene creato una sola volta.
   manifest_archive: logs/archivio_distinte
-  # Vuoto = nessuna cancellazione automatica. Se valorizzato, l'eventuale
-  # procedura di conservazione dovra' rispettare questo numero di giorni.
-  manifest_retention_days:
-  # Byte di USER memory dei tag in uso. NON si deduce dal datasheet: i datasheet
-  # dichiarano «fino a» e i lotti variano. Lo scrive qui da solo
-  # `python run.py tag-profile` (voce 4 di AVVIA.bat) dopo averlo misurato.
-  user_memory_bytes: 64
-  # Scritto da `python run.py tag-profile`: cosa e' stato misurato, su quanti
-  # tag e quando. Il codice non lo legge, e' la prova di dove viene il numero
-  # qui sopra. `minimo_byte` e' il tag peggiore incontrato: la soglia deve
-  # reggere anche quello, quindi scende da sola e non sale senza --forza.
+  manifest_retention_days: null
+  user_memory_bytes: 86
+  # Cosa si scrive sul tag: «payload» (pseudonimo + campione cifrato) oppure
+  # «solo_epc» per i chip senza USER memory utilizzabile. In «solo_epc» i dati
+  # del paziente viaggiano sulla distinta stampata e si perde il legame
+  # anti-clonazione fra campione e numero di serie del chip.
+  modalita_scrittura: payload
   tag_misurato:
-    chip: ''
-    tid_serializzato: false
-    minimo_byte: 0
-    ultimo_byte: 0
-    tag_provati: 0
-    ultimo_epc: ''
-    aggiornato: ''
-  # Postazione di scrittura: antenna 3, distante dalle altre, un contenitore per
-  # volta. Senza filtro Select il comando colpisce il primo tag che risponde;
-  # con `lims.tagio` che ora usa il Select la distanza resta comunque la difesa
-  # piu' semplice contro le scritture sul contenitore sbagliato.
-  write_antennas: [3]
-  # Antenne del volume di lettura: le due a pavimento sotto il contenitore.
-  read_antennas: [1, 2]
-  # Sigillo della scatola: quante antenne distinte devono aver visto un tag
-  # perche' sia considerato dentro. Con antenne complanari il criterio e' debole:
-  # va alzato solo dopo la campagna di misura, e solo se i dati lo giustificano.
+    chip: 'Alien Technology, modello 0x821, TID serializzato'
+    tid_serializzato: true
+    minimo_byte: 86
+    ultimo_byte: 86
+    tag_provati: 1
+    ultimo_epc: '010001000000030102DA7942'
+    aggiornato: '2026-08-26T10:40:55'
+  write_antennas:
+  - 3
+  read_antennas:
+  - 1
+  - 2
   seal_min_antennas: 1
-  # Potenze provate dal sigillo, dalla piu' bassa: la piu' bassa che legge tutto
-  # e' anche quella che legge meno di quello che sta fuori.
-  seal_powers_cdbm: [2000, 2500, 2900]
-  # Nome del laboratorio stampato sulle etichette.
-  lab_name: ''
-  # Etichette dei contenitori (ZPL). `printer_host` vuoto = nessuna stampante
-  # configurata: l'interfaccia mostra l'anteprima e lo ZPL, ma non stampa.
+  seal_powers_cdbm:
+  - 2000
+  - 2500
+  - 2900
+  lab_name: Ospedale Spoleto
   label:
     width_mm: 50
     height_mm: 30
@@ -184,9 +152,6 @@ lims:
     copies: 1
     printer_host: ''
     printer_port: 9100
-
-# Invio automatico dalla PEC di questa unita'. La password non va qui: viene
-# letta dal portachiavi del sistema operativo con service+username.
 pec:
   enabled: false
   sender: ''
@@ -194,12 +159,9 @@ pec:
   credential_service: RFID-LIMS-PEC
   smtp_host: ''
   smtp_port: 465
-  smtp_mode: ssl          # ssl oppure starttls
+  smtp_mode: ssl
   imap_host: ''
   imap_port: 993
-
-# Identita' crittografica della postazione e materiale per la ricezione. Le
-# chiavi private devono essere PKCS#8 cifrate; la password resta nel portachiavi.
 security:
   station_certificate: ''
   station_private_key: ''
@@ -211,39 +173,19 @@ security:
   station_credential_username: station-signing-key
   recipient_credential_service: RFID-LIMS-KEYS
   recipient_credential_username: recipient-decryption-key
-# Interfaccia web locale (`python run.py webui`).
 webui:
-  # Solo l'interfaccia di loopback: l'hardware non deve essere raggiungibile
-  # dalla rete del laboratorio.
-  #
-  # Per usare l'interfaccia da una tavoletta serve invece 0.0.0.0, cioe'
-  # «ascolta su tutte le schede di rete». E' una decisione, non una comodita':
-  # da quel momento chiunque sulla stessa rete e in possesso del token puo'
-  # comandare il lettore. Va fatto su una rete di laboratorio, non sul Wi-Fi
-  # degli ospiti, e insieme a un `token` fisso e lungo (vedi sotto).
-  # Vedi docs/POSTAZIONE_TAVOLETTA.md.
   host: 127.0.0.1
   port: 8770
-  # Apre il browser da solo all'avvio, con il token di sessione nell'indirizzo.
   open_browser: true
-  # Token fisso, opzionale. Vuoto = ne viene generato uno nuovo a ogni avvio
-  # (piu' sicuro, ma l'indirizzo cambia ogni volta). Scrivendo qui una stringa
-  # lunga e non indovinabile, l'indirizzo resta sempre lo stesso e si puo'
-  # salvare come collegamento sul desktop: comodo su una postazione dedicata.
-  # NON usare parole comuni: chiunque sulla macchina che indovini il token puo'
-  # usare il lettore.
-  #
-  # Con la tavoletta il token fisso non e' piu' una comodita' ma una
-  # condizione: il collegamento salvato sulla schermata Home contiene il
-  # token, e con un token nuovo a ogni avvio smette di funzionare ogni
-  # mattina. Una riga come questa va bene (generala a caso, non copiarla):
-  #   token: 'k7Qm-2xVb9La-Rt4Wz8Pn'
   token: ''
-  # Tema iniziale: chiaro | scuro | sistema
   theme: sistema
-  # Ogni quanto la postazione di scrittura interroga il piatto per accorgersi
-  # che il contenitore e' stato appoggiato.
   watch_interval_ms: 900
+diario:
+  attivo: true
+  dir: logs/diario
+  pseudonimo: false
+  max_mb: 50
+  interfaccia: true
 logging:
   dir: logs
   level: INFO

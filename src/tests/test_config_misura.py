@@ -2,9 +2,8 @@
 
 Due promesse, e nessuna delle due e' scontata:
 
-* **la soglia scende ma non sale.** `lims.user_memory_bytes` deve reggere il tag
-  peggiore del lotto: alzarla perche' l'ultimo tag misurato era piu' capiente
-  renderebbe illeggibili quelli piu' piccoli gia' in giro;
+* **la soglia scende ma non sale nello stesso modello.** `lims.user_memory_bytes`
+  deve reggere il tag peggiore del lotto; un modello diverso apre una nuova serie;
 * **il file resta quello che era.** `config.yaml` e' pieno di commenti che
   spiegano ogni parametro: sono la documentazione operativa, e una riscrittura
   con `yaml.safe_dump` li cancellerebbe tutti. Qui si toccano solo le righe
@@ -102,6 +101,19 @@ def test_forza_riparte_dal_tag_in_mano():
     assert _lims(testo)["user_memory_bytes"] == 128
     assert _lims(testo)["tag_misurato"]["tag_provati"] == 1
     assert esito.tag_provati == 1
+
+
+def test_un_chip_diverso_apre_una_nuova_serie():
+    """Il minimo di un vecchio modello non deve contaminare quello nuovo."""
+    testo, _ = aggiorna_testo(BASE, _misura(16, chip="Quanray Qstar-6"), adesso=QUANDO)
+    testo, esito = aggiorna_testo(
+        testo, _misura(86, chip="Alien Technology, modello 0x821"), adesso=QUANDO
+    )
+    lims = _lims(testo)
+    assert lims["user_memory_bytes"] == 86
+    assert lims["tag_misurato"]["minimo_byte"] == 86
+    assert lims["tag_misurato"]["tag_provati"] == 1
+    assert "chip cambiato" in esito.motivo
 
 
 def test_una_misura_a_zero_non_tocca_niente():

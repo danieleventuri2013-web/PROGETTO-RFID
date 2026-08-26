@@ -31,6 +31,9 @@ python run.py service                    # JSON-RPC 2.0 JSONL host on stdin/stdo
 python run.py tag-profile                # measure a tag's TID + USER memory (needs hardware)
 python run.py lims                       # intake / sealing / receiving GUI
 python run.py campaign                   # read-reliability tuning campaign (needs hardware)
+python run.py diario                     # replay the prototyping journal (no hardware)
+python run.py webui --simulato [file]    # the whole web UI on a simulated reader
+python run.py webui --config <file>      # ...against another config (keeps the real archive out)
 
 python src/tests/test_protocol.py        # framing/CRC/tag-parser tests directly
 python src/tests/test_reader.py          # reader tests (FakeTransport, counters)
@@ -38,6 +41,9 @@ python src/tests/test_transports.py      # transport tests (fake serial/socket)
 python src/tests/test_service.py         # headless service contract tests
 python src/tests/test_rpc.py             # JSON-RPC dispatcher/JSONL host tests
 python src/tests/test_webui.py           # web UI routes/flow over real HTTP, no hardware
+python src/tests/test_flusso_continuo.py # the operational flow of `flusso-di-lavoro.txt`, over HTTP
+python src/tests/test_diario.py          # journal: radio capture, UI channel, redaction
+python src/tests/test_lims_qr.py         # QR encoder + Base45 (published capacities, read-back)
 python src/app/step1_test_rw.py --config src/app/config.yaml  # read-only default
 python src/app/gui.py --config src/app/config.yaml
 ```
@@ -84,6 +90,16 @@ transports — only the bottom layer changes.
    GUI and framework adapters must not import reader/protocol/transports.
 5. **`tags.py`** — `Tag` dataclass + `parse_tag_buffer()` for the `0x29` Get Tag Buffer payload,
    driven by the metadata-flags bitmask.
+   **`diario.py`** - the prototyping journal: append-only JSONL of everything
+   that happens (keys pressed, data typed, every radio exchange with
+   RSSI/antenna). `BackendTracciato` wraps an `RFIDBackend`, so it sits on the
+   seam the architecture already defines and works over `RFIDService` *and*
+   over the RPC client.
+   **`simulazione.py`** - `FakeTagBackend`/`SimulatedTag`, promoted out of
+   `tests/` because it is also the bench the web UI runs on without hardware;
+   `tests/fake_backend.py` re-exports it, so every existing test is untouched.
+   **`scenario.py`** - rebuilds that bench from a journal: same tags, same
+   TIDs, same USER memory, same difficulty. See `docs/DIARIO_PROTOTIPAZIONE.md`.
    **`src/lims/`** sits *above* this boundary (a client of `RFIDService`, API 1.2) and
    implements sample traceability: `model` (patient/case/specimen/container),
    `codec` (12-byte pseudonymous EPC + sample payload, versioned binary schema),
@@ -92,13 +108,19 @@ transports — only the bottom layer changes.
    **perpetual** — tags are write-once and never come back), `tagio`
    (provision/survey orchestration), `profiler` (TID decode + USER-memory
    measurement), `sealing` (closed-set verification of a sealed box — the core
-   requirement), `campaign` (power/Gen2 tuning against *two* objectives: read
+   requirement), `riempimento` (the opposite and complementary half: it
+   *builds* that set while the box is open, recognising each sample as it goes
+   in), `campaign` (power/Gen2 tuning against *two* objectives: read
    everything inside, nothing outside), `labels` (ZPL), `manifest` (encrypted
-   shipping manifest + reconciliation). It must never import
+   shipping manifest + reconciliation), `qr`/`base45`/`tabella` (the printed
+   distinta and its QR, see `docs/DISTINTA_QR.md`), `riscontro` (the arrival
+   report the recipient sends back, which is the only way the sender ever
+   learns how it went). It must never import
    reader/protocol/transports. Wire format is documented in
    `docs/SCHEMA_DATI_TAG.md` — that file is the contract with the receiving lab,
    so changing it breaks tags already in transit. Read-reliability reasoning is in
-   `docs/AFFIDABILITA_LETTURA.md`.
+   `docs/AFFIDABILITA_LETTURA.md`; the five measurement panels that tune it
+   are in `docs/STRUMENTI_DI_MISURA.md`.
    **`src/webui/`** sits above *both*: `workflow.py` orchestrates `lims.*` and
    returns JSON-safe dicts (no HTTP, no Tk — testable without a port);
    `server.py` is a stdlib `ThreadingHTTPServer` bound to `127.0.0.1` with a
@@ -161,6 +183,16 @@ The everyday interface. Tkinter GUIs stay as bench tools.
   destination dropdown is fed by `destinatari` (it was a free-text field before).
   `lims.lab_name` is still read as a fallback so installed configs keep their
   printed name.
+- **The archive lists everyone by default.** An empty query means *all*, not
+  *none*: whoever is chasing a case from three months ago often can't remember
+  the surname, only that it happened, and an empty table in front of a full
+  archive sends them guessing. Opening the screen loads the first page;
+  `cerca_paziente` returns the page **plus the archive total**, because "50
+  patients" and "50 of 1284" read the same and mean different things. Ordering is
+  a two-question toggle — *più recenti* for "what came through here lately",
+  *alfabetico* for "find me this surname I can't spell" — and `_filtro_pazienti`
+  is shared by list and count so the total can never describe a different set
+  from the rows under it.
 - **Archive answers the outside question.** `db.search_patients` /
   `patient_history` / `container_trace`; `workflow.storico_paziente` builds the
   per-accession summary (pieces, written, shipped, where, when, who supervised,
@@ -170,11 +202,74 @@ The everyday interface. Tkinter GUIs stay as bench tools.
   **that migration is a Python callable, not a script**, because
   `ALTER TABLE ADD COLUMN` isn't repeatable and a half-applied script would make
   the archive permanently unopenable.
+- **Filling and sealing are two different things and both are needed.** The
+  filling (`lims/riempimento.py`) knows *what went in*, but with the lid open:
+  what it sees might be sitting next to the box. The seal certifies *what is
+  inside* the closed box, but only against a list somebody had to give it. A
+  container left beside the box is counted by the first and missed by the
+  second, so the shipment doesn't leave and you find out why.
+- **The filling thresholds are asymmetric on purpose.** Entering takes few
+  sightings (the beep must land right after the gesture, or the operator has
+  already moved on); leaving takes more. Dropping a row makes the operator
+  believe a sample is missing that is already in; keeping one too many is
+  caught by the seal. Sightings are **not** reset by a single missed round:
+  a tag shielded by the jar in front alternates, and zeroing the count on
+  every gap would mean never recognising exactly the difficult tags that
+  repeated reads exist for.
+- **Filling power is deliberately low** (`min(seal_powers_cdbm)`). A false
+  positive here silently adds to the shipment a container that is on the next
+  table. The seal would then hunt for it in vain: the error surfaces, but late.
+- **Correcting a wrongly-added sample excludes it, it doesn't forget it.** The
+  tag is still in the field (that's why it was read), so forgetting it means it
+  walks back in on the next round. It stays excluded until it physically leaves.
+- **A sealed shipment no longer blocks the next box.** Writing more tags than
+  fit in one transport container is the normal case; the sealed one waits for
+  the courier under *Scatole da finire*, with what it still needs.
 - **`annulla_accettazione` never pretends to un-write a tag.** Written containers
   stay — they exist physically, with a label on them. Only the unwritten ones are
   voided.
 - **Dates and times are Italian in the UI** (`dataOra` / `data` in `app.js`);
   storage stays ISO 8601.
+- **Collection date and time come from the ward label, not from the clock.** A
+  sample may have been taken yesterday. The date pre-fills to today because it
+  usually is; the time stays empty until read, because an invented midnight is
+  worse than a blank field.
+- **One accession can hold several different specimens of the same patient.**
+  How many samples a patient has is not knowable in advance: you find out
+  taking them off the tray. So one transcription per container stays the
+  normal path. But when they *are* registered together, description,
+  material, fixative, site and warnings are usually **all different** -
+  `db.plan_accession` creates one `Specimen` per reperto and each tag gets its
+  own codes. Writing them alike would be an error nobody can correct at the
+  far end.
+- **Container numbering belongs to the accession, not to the specimen.** Two
+  jars of colon plus one lymph node are 1/3, 2/3, 3/3 - not 1/1, 1/1, 1/1.
+  The EPC already carries an accession-scoped index; `plan_containers` takes
+  `start_index`/`accession_total` for exactly this.
+- **One campione, one container: the UI has no count field.** A number alone
+  would not say *which* samples they are, and how many a patient has is not
+  knowable before holding them. A second jar is a second campione, with its
+  own description. `contenitori` per reperto still exists in the API (and in
+  the tests) and defaults to 1; `adjust_container_count` stays reachable but
+  is no longer offered in the UI, and refuses outright when the accession has
+  more than one reperto.
+- **With one container the count confirmation isn't asked.** That question
+  exists because the total goes into the chip irreversibly; with one jar in
+  hand it has no object. It is still logged (`count_confirm`, "conferma
+  implicita"). From two up it is mandatory as before.
+- **The station returns to the form by itself** once the written container
+  leaves the pad, not on a timer but on the reading that saw it go. Asking
+  "Nuova accettazione" after every jar would be a ceremony thirty times a day.
+- **Everything the recipient will ever know is on the printed sheet.** The two
+  archives don't talk: the distinta carries the full table (patient identifier,
+  name, sex, birth date, collection date and time, sample, codes, EPC) plus a
+  QR with the same rows. It contains health data in the clear, QR included:
+  that is the direct consequence of having no shared archive, and it belongs in
+  the envelope attached to the box, not taped outside. See `docs/DISTINTA_QR.md`.
+- **"Tutto a buon fine" has one meaning and no shades.** Only a shipment whose
+  arrival report says it arrived whole counts as arrived. Sent-and-never-
+  confirmed is called *non confermato*, never *arrivato*: that difference is
+  the entire reason `lims/riscontro.py` exists.
 - **Settings screen owns the transport.** `applica_collegamento` is stop →
   `replace_config` → `start` (the config can't be swapped with the transport open),
   so it doubles as the connection test: if the reader answers with its version, the
@@ -187,6 +282,47 @@ The everyday interface. Tkinter GUIs stay as bench tools.
   listed as an explicitly unavailable card — it exists in newer firmware but
   `HttpTransport` is not implemented, and hiding it would send the operator looking
   for a option the manual promises.
+- **Strumenti lives inside Impostazioni, in a second tab.** `Impostazioni` has
+  `data-scheda` panels (*Configurazione* / *Misure*); `mostra("impostazioni",
+  "misure")` deep-links to the measurement side. These panels tune the prototype
+  and do **not** affect the operational flows: `SealingSession._apply` and
+  `inventario_campagna` set their own Gen2 every pass, which is why the panel
+  says so out loud. Rationale for all five: `docs/STRUMENTI_DI_MISURA.md`.
+- **The antenna sweep must be able to leave the EU band, or it answers nothing.**
+  A high VSWR at 866 MHz doesn't distinguish "bad antenna" from "good antenna
+  tuned elsewhere" — and the SLP1027 is specified 902–928 MHz, so the second is
+  the expected case. `diagnostica_antenna` therefore takes `da_khz/a_khz/passo_khz`
+  (explicit `frequencies_khz`, no region code needed) and reports the **resonance
+  minimum** plus its offset from the EU band centre: that offset is the number
+  that goes in the supplier request. A minimum landing on the sweep **edge** is
+  reported as an edge, never as a resonance — the real one is further out, and
+  quoting it would give the supplier a frequency that doesn't exist. Curves
+  accumulate on one graph instead of replacing each other, because three
+  same-model antennas that disagree mean a cable, not a design. Colours are set
+  via `element.style.stroke`: the CSS class default would otherwise win.
+- **Region switching restores in `finally`, and it's tested on the failure path.**
+  Firmware certified for one region refuses the others (`0x010B`); the UI treats
+  that as a question, not an error, and offers to switch for the length of the
+  sweep. A measurement that died halfway and left the station transmitting out of
+  the ETSI band would be a silent one.
+- **Every Gen2 apply reads back** (`read_gen2_settings`). The module can accept an
+  RF mode it doesn't support and substitute it silently — without the read-back
+  you'd believe you were measuring at max sensitivity while you weren't, and
+  every number collected after that would be worthless.
+- **`lims.modalita_scrittura: payload | solo_epc`** — tags whose USER memory can't
+  hold the payload still run the whole workflow. In `solo_epc`, `provision` writes
+  the EPC and stops (no seal, no USER write), and `survey_field` marks the tag
+  `solo_epc`, **not** `illeggibile` — calling it broken would send the operator
+  hunting a fault that isn't there. What is lost is the payload↔TID binding, i.e.
+  the anti-clone defence; what remains is the perpetual EPC registry and the
+  signed distinta. **The mode is never selected automatically**: profiling
+  proposes, the operator confirms once, `app.config_misura` writes it into
+  `config.yaml` line-by-line (comments survive), and a fixed banner says so on
+  every screen. A defence that lapses in silence is one nobody decided. This mode
+  only makes sense *after* the printed distinta carries the patient data.
+- **Profiling lowers the byte threshold freely and raises it only on confirmation.**
+  The threshold must hold the worst tag of the batch; raising it would make a
+  smaller tag already written and in transit unreadable.
 - **Under `prefers-reduced-motion` the RF arcs are painted statically** (`app.css`).
   They start at `opacity: 0` and only appear inside the animation, so killing
   animations would remove the only sign that the reader is transmitting.
@@ -275,7 +411,14 @@ starting value, not a measurement.
 Implemented: the full driver command set needed for dense reading — extended
 `Moduletech` framing, Gen2 parameters (`0x9B`), antenna standing-wave diagnostics
 (`0xAA4A`), dense async inventory (`0xAA58`/`0xAA59`), Select filter, embedded read,
-lock (`0x25`) — plus the whole sample workflow in `src/lims/`.
+lock (`0x25`) - plus the whole sample workflow in `src/lims/`: continuous
+intake, one-sample-at-a-time box filling with audible confirmation, closed-set
+sealing, printed distinta with QR, and the arrival report that closes the loop.
+
+**The prototyping journal is on by default** (`diario:` in `config.yaml`) and
+the whole UI runs without hardware (`python run.py webui --simulato`). That is
+how the flow above was exercised end to end while the reader is still on the
+bench: see `docs/DIARIO_PROTOTIPAZIONE.md` and `docs/FLUSSO_OPERATIVO.md`.
 
 Deliberately not implemented: kill (`0x26`).
 

@@ -20,6 +20,7 @@
 <link rel="stylesheet" href="app.css">
 <!-- Ultimo: tutto quello che contiene vale solo in modalita' tavoletta. -->
 <link rel="stylesheet" href="tocco.css">
+<link rel="stylesheet" href="stampa.css">
 </head>
 <body>
 
@@ -78,13 +79,6 @@
     </svg>
     <span>Ricezione</span>
   </button>
-  <button class="rail__voce" data-schermata="strumenti">
-    <svg viewBox="0 0 24 24" aria-hidden="true">
-      <path d="M12 3v4M12 17v4M4.9 7l2.8 2.8M16.3 16.3l2.8 2.8M3 13h4M17 13h4M4.9 19.1l2.8-2.8M16.3 9.8l2.8-2.8"/>
-      <circle cx="12" cy="13" r="3"/>
-    </svg>
-    <span>Strumenti</span>
-  </button>
   <button class="rail__voce" data-schermata="archivio">
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <circle cx="10.5" cy="10.5" r="5.5"/>
@@ -111,6 +105,14 @@
 
 <main class="palco">
 
+  <!-- Quando si scrive solo l'EPC la difesa anti-clonazione non c'è
+
+
+       più: non deve essere una cosa che si scopre leggendo il codice. -->
+
+
+  <p class="modalita-ridotta" id="modalita-ridotta" hidden></p>
+
   <aside class="workflow-bar" id="workflow-bar" aria-live="polite">
     <span class="etichetta">Lavoro attivo</span>
     <span id="workflow-stato">Nessun flusso da riprendere</span>
@@ -125,7 +127,8 @@
     <div class="pannello" id="pannello-anagrafica">
       <header class="pannello__testa">
         <h2>Accettazione</h2>
-        <p class="tenue">Registra il paziente e il numero di contenitori, poi scrivi i tag uno per uno.</p>
+        <p class="tenue">Trascrivi quello che c'è sull'etichetta, poi scrivi il tag.
+          Un campione, un contenitore: se il paziente ne ha un altro, aggiungilo qui sotto.</p>
       </header>
 
       <form class="modulo" id="modulo-accettazione" autocomplete="off">
@@ -153,6 +156,10 @@
             </select>
           </label>
           <label class="campo">
+            <span class="etichetta">Data di nascita</span>
+            <input id="data-nascita" name="data_nascita" type="date">
+          </label>
+          <label class="campo">
             <span class="etichetta">Reparto</span>
             <input id="reparto" name="reparto">
           </label>
@@ -160,8 +167,20 @@
             <span class="etichetta">Medico</span>
             <input id="medico" name="medico">
           </label>
+          <!-- Data e ora del prelievo stanno sull'etichetta del reparto e vanno
+               sulla distinta: il campione può essere stato prelevato ieri. La
+               data si precompila a oggi, l'ora resta vuota finché non la si
+               legge — una mezzanotte inventata sarebbe peggio di un vuoto. -->
+          <label class="campo">
+            <span class="etichetta">Data del prelievo</span>
+            <input id="data-prelievo" name="data_prelievo" type="date">
+          </label>
+          <label class="campo">
+            <span class="etichetta">Ora del prelievo</span>
+            <input id="ora-prelievo" name="ora_prelievo" type="time">
+          </label>
           <label class="campo modulo__largo">
-            <span class="etichetta">Descrizione del reperto</span>
+            <span class="etichetta" id="etichetta-descrizione">Descrizione del reperto</span>
             <input id="descrizione" name="descrizione" placeholder="pezzo operatorio, biopsia…">
           </label>
           <label class="campo">
@@ -186,27 +205,23 @@
           <label class="interruttore"><input type="checkbox" value="CYTOLOGY"><span>Citologia</span></label>
         </fieldset>
 
-        <!-- Il conteggio ha un posto suo e una dimensione sua: e' il dato che
-             l'operatore sbaglia piu' facilmente e che dopo la scrittura non si
-             corregge piu' senza annullare contenitori. -->
-        <div class="conteggio">
-          <div class="conteggio__campo">
-            <span class="etichetta">Contenitori da inizializzare</span>
-            <div class="conteggio__riga">
-              <button type="button" class="bottone conteggio__passo" data-delta="-1" aria-label="Uno in meno">–</button>
-              <input id="contenitori" class="cifra conteggio__numero" type="number" min="1" max="255" value="1"
-                     inputmode="numeric">
-              <button type="button" class="bottone conteggio__passo" data-delta="1" aria-label="Uno in più">+</button>
-            </div>
-          </div>
-          <p class="conteggio__avviso">
-            <strong>Conta i contenitori adesso.</strong>
-            Il numero finisce dentro ogni tag come <span class="hex">n/N</span>: cambiarlo dopo la prima
-            scrittura obbliga ad annullare i tag già scritti, che non si riscrivono.
-          </p>
-        </div>
+        <!-- Nessun conteggio da digitare: un campione, un contenitore. Se il
+             paziente ne ha un altro lo si aggiunge, con la sua descrizione e i
+             suoi codici. Un numero da solo non direbbe comunque *quali* sono i
+             campioni, e quanti siano non si sa prima di averli in mano. -->
+
+        <!-- ALTRI REPERTI DELLO STESSO PAZIENTE.
+             Quattro campioni presi nella stessa seduta hanno lo stesso nome
+             sopra, ma descrizione, materiale, fissativo, sede e avvertenze
+             possono essere tutti diversi. Il caso di un reperto solo resta
+             quello che si vede aprendo la schermata: qui sotto non c'è niente
+             finché non serve. -->
+        <div class="reperti" id="reperti-extra"></div>
 
         <div class="modulo__azioni">
+          <button type="button" class="bottone bottone--sobrio" id="aggiungi-reperto">
+            + Un altro campione di questo paziente
+          </button>
           <button type="submit" class="bottone bottone--primario" id="registra">Registra e prepara i tag</button>
           <span class="tenue" id="errore-accettazione" role="alert"></span>
         </div>
@@ -215,6 +230,13 @@
 
     <!-- Passo 2: la postazione di scrittura ------------------------------ -->
     <div class="pannello pannello--nascosto" id="pannello-postazione">
+
+      <!-- I campioni arrivano in ordine sparso: che lo stesso paziente ne
+           abbia altri lo si scopre solo trascrivendo il successivo. Questa è
+           una nota, non un ostacolo — due campioni dello stesso paziente sono
+           normali, e il sistema non ha titolo per dubitarne. -->
+      <p class="nota-paziente" id="nota-paziente" hidden></p>
+
       <div class="postazione">
 
         <!-- LA SCENA — l'elemento firma. Nessun fotogramma parte da un timer:
@@ -281,6 +303,9 @@
           </header>
           <h3 class="cartella__paziente" id="cartella-paziente">—</h3>
           <p class="hex cartella__cf" id="cartella-cf"></p>
+        <!-- Con quattro reperti dello stesso paziente il nome non basta a dire
+             quale vasetto si ha in mano: la descrizione sì. -->
+        <p class="cartella__reperto" id="cartella-reperto" hidden></p>
           <dl class="cartella__dati" id="cartella-dati"></dl>
           <ul class="cartella__avvertenze" id="cartella-avvertenze"></ul>
 
@@ -309,7 +334,6 @@
           <span class="etichetta">Contenitori dell'accettazione</span>
           <div class="serie__comandi">
             <button class="bottone bottone--sobrio" id="nuova-accettazione">Nuova accettazione</button>
-            <button class="bottone bottone--sobrio" id="cambia-conteggio">Cambia il numero…</button>
             <button class="bottone bottone--sobrio" id="annulla-accettazione">Annulla l'accettazione</button>
             <button class="bottone bottone--sobrio" id="vai-al-sigillo">Vai al sigillo →</button>
           </div>
@@ -318,6 +342,7 @@
       </div>
     </div>
   </section>
+
 
   <!-- ================================================================== -->
   <section class="schermata" id="schermata-sigillo">
@@ -336,10 +361,26 @@
           <select id="destinazione"></select>
           <small class="campo__nota tenue" id="destinazione-nota"></small>
         </label>
-        <button class="bottone" id="prepara">Prepara la spedizione</button>
+        <button class="bottone bottone--primario" id="apri-scatola">Apri la scatola e riempi</button>
+        <button class="bottone bottone--sobrio" id="prepara">Componi dall’elenco</button>
         <span class="tenue" id="errore-spedizione" role="alert"></span>
       </div>
 
+      <!-- Le scatole già sigillate non spariscono: aspettano il corriere ma
+           hanno ancora la distinta da mandare. -->
+      <div class="in-sospeso" id="in-sospeso" hidden>
+        <h3 class="in-sospeso__titolo">Scatole da finire</h3>
+        <ul class="in-sospeso__elenco" id="in-sospeso-elenco"></ul>
+      </div>
+
+      <details class="coda-avanzata">
+        <summary>Comporre la scatola dall’elenco, senza leggere i tag</summary>
+        <p class="tenue">
+          La strada normale è riempire: si appoggiano i campioni sulle antenne e
+          la scatola si compone da sola, riconoscendoli uno per uno. Questo elenco
+          serve quando si sa già cosa spedire e non si vuole passare dal banco —
+          per esempio per rifare una scatola annullata.
+        </p>
       <fieldset class="coda" id="coda-spedizione">
         <legend class="etichetta">Contenitori pronti da includere</legend>
         <div class="coda__comandi">
@@ -349,6 +390,57 @@
         </div>
         <div class="coda__elenco" id="coda-elenco"></div>
       </fieldset>
+      </details>
+    </div>
+
+    <!-- IL RIEMPIMENTO — la scatola aperta sulle antenne di lettura.
+         Ogni riga compare quando la radio riconosce davvero un campione: non
+         c'è nessun pulsante che dica «l'ho messo dentro», ed è voluto. -->
+    <div class="pannello pannello--nascosto" id="pannello-riempimento">
+      <header class="pannello__testa">
+        <h2>Riempimento della scatola</h2>
+        <p class="tenue">
+          Appoggia la scatola sulle antenne di lettura e inserisci i campioni
+          <strong>uno alla volta</strong>. Ogni campione riconosciuto compare qui
+          sotto con un segnale acustico; quello che non è stato preparato viene
+          dichiarato in rosso.
+        </p>
+      </header>
+
+      <div class="riempimento">
+        <aside class="riempimento__quadro">
+          <span class="etichetta">Campioni nella scatola</span>
+          <p class="cifra riempimento__cifra" id="riempimento-quanti">0</p>
+          <p class="riempimento__stato" id="riempimento-stato">In attesa del primo campione…</p>
+          <dl class="riempimento__dati">
+            <dt>destinazione</dt><dd id="riempimento-destinazione">—</dd>
+            <dt>scatola</dt><dd id="riempimento-scatola">—</dd>
+            <dt>ancora da spedire</dt><dd id="riempimento-residuo">—</dd>
+          </dl>
+          <div class="riempimento__azioni">
+            <button class="bottone bottone--primario" id="chiudi-scatola" disabled>
+              Ho finito: chiudi la scatola
+            </button>
+            <button class="bottone bottone--sobrio" id="annulla-scatola">Annulla la scatola</button>
+            <label class="interruttore">
+              <input type="checkbox" id="suono-attivo" checked>
+              <span>Segnale acustico</span>
+            </label>
+          </div>
+        </aside>
+
+        <div class="riempimento__colonna">
+          <ol class="dentro" id="riempimento-dentro" aria-live="polite"></ol>
+          <p class="tenue dentro__vuoto" id="riempimento-vuoto">
+            Nessun campione ancora riconosciuto.
+          </p>
+
+          <div class="anomalie" id="riempimento-anomalie" hidden>
+            <h3 class="anomalie__titolo">Da guardare</h3>
+            <ul class="anomalie__elenco" id="anomalie-elenco"></ul>
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="pannello pannello--nascosto" id="pannello-sigillo">
@@ -384,6 +476,7 @@
             <span class="pastiglia" id="stato-spedizione">bozza</span>
             <button class="bottone bottone--radio" id="sigilla">Chiudo la scatola e certifico</button>
             <button class="bottone bottone--sobrio" id="interrompi" hidden>Interrompi</button>
+            <button class="bottone bottone--primario" id="stampa-distinta" disabled>Stampa la distinta</button>
             <button class="bottone" id="esporta" disabled>Esporta la distinta cifrata</button>
             <button class="bottone" id="invia-pec" disabled>Archivia e invia via PEC</button>
             <button class="bottone bottone--sobrio" id="aggiorna-pec" disabled>Aggiorna ricevute PEC</button>
@@ -444,7 +537,31 @@
         <span class="tenue" id="errore-distinta" role="alert"></span>
       </div>
 
+      <!-- La strada che non passa da nessun file: il pacco arriva col foglio
+           attaccato e si legge il QR. Il lettore 2D si comporta da tastiera e
+           chiude con Invio, quindi il campo si accontenta di ricevere il
+           testo — nessun driver, nessuna fotocamera. -->
+      <div class="scansione">
+        <label class="campo campo--largo">
+          <span class="etichetta">Oppure leggi il QR sul foglio</span>
+          <input id="scansione-qr" autocomplete="off" spellcheck="false"
+                 placeholder="appoggia il lettore sul codice e premi il grilletto">
+          <small class="campo__nota tenue" id="scansione-nota">
+            Se il foglio porta più codici, leggili uno dopo l’altro.
+          </small>
+        </label>
+        <ul class="scansione__parti" id="scansione-parti"></ul>
+        <span class="tenue" id="errore-scansione" role="alert"></span>
+      </div>
+
       <dl class="distinta" id="distinta" hidden></dl>
+
+      <!-- Chi è atteso nella scatola, con nome e campione: è quello che
+           l'operatore confronta con i vasetti che ha in mano. -->
+      <div class="mancanti mancanti--atteso" id="contenitore-atteso" hidden>
+        <h3 class="mancanti__titolo">Campioni attesi</h3>
+        <ul class="mancanti__elenco" id="elenco-atteso"></ul>
+      </div>
     </div>
 
     <!-- L'avvertenza sanitaria viene prima di tutto il resto e prima che la
@@ -497,6 +614,7 @@
               <textarea id="motivo-ricezione" rows="3" placeholder="Obbligatorio se mancano contenitori o ce ne sono di inattesi"></textarea>
             </label>
             <button class="bottone" id="conferma-ricezione" disabled>Conferma la ricezione</button>
+            <button class="bottone" id="esporta-riscontro" disabled>Esporta il verbale per il mittente</button>
           </div>
         </aside>
       </div>
@@ -528,333 +646,64 @@
     </div>
   </section>
 
-  <section class="schermata" id="schermata-strumenti">
-
-    <!-- Antenne: potenze e diagnostica ---------------------------------- -->
-    <div class="pannello">
-      <header class="pannello__testa">
-        <h2>Antenne</h2>
-        <p class="tenue">
-          Le potenze sono in dBm, e sono la leva che definisce <em>fisicamente</em>
-          il volume di lettura.
-        </p>
-      </header>
-
-      <div class="spiega">
-        <p>
-          <b>Perché non basta alzare al massimo.</b>
-          Più potenza significa più portata, quindi anche i tag <em>fuori</em> dal
-          contenitore — sul tavolo accanto, nella scatola vicina — cominciano a
-          rispondere. Un campione contato che non c'è è l'errore peggiore, perché
-          il conteggio torna e nessuno sospetta. La regola è la
-          <strong>potenza più bassa che legge tutto quello che è dentro</strong>.
-        </p>
-        <p>
-          <b>Lettura e scrittura sono separate.</b>
-          La <em>lettura</em> serve alle due antenne a pavimento sotto il contenitore
-          e vuole coprire tutto il volume. La <em>scrittura</em> serve alla postazione
-          singola e conviene tenerla bassa: un tag scritto per sbaglio a distanza è
-          un tag da annullare, e i tag non si riscrivono.
-        </p>
-        <p>
-          <b>Da dove partire.</b> 20 dBm in scrittura, 27–29 dBm in lettura, poi si
-          esegue la taratura con la campagna di misura qui sotto invece che a sentimento.
-          Il limite ETSI vale sulla potenza irradiata (EIRP), quindi conta anche il
-          guadagno dell'antenna: le SLP1027 sono da 8 dBi.
-        </p>
-      </div>
-
-      <div class="antenne" id="antenne"></div>
-      <div class="modulo__azioni">
-        <button class="bottone bottone--radio" id="applica-potenze">Applica le potenze</button>
-        <span class="tenue" id="esito-potenze" role="status"></span>
-      </div>
-    </div>
-
-    <!-- Il grafico del return loss: il dato per il fornitore ------------- -->
-    <div class="pannello">
-      <header class="pannello__testa">
-        <h2>Adattamento delle antenne</h2>
-        <p class="tenue">
-          Return loss misurato frequenza per frequenza. Le SLP1027 sono caratterizzate
-          dal costruttore <strong>solo da 900 MHz in su</strong>, mentre la banda europea sta
-          35 MHz più in basso: questa misura dice come si comportano dove le usiamo davvero.
-        </p>
-      </header>
-
-      <div class="spiega">
-        <p>
-          <b>Cosa misura.</b> Il modulo trasmette a bassa potenza su ogni frequenza
-          della banda e misura quanta energia <em>torna indietro</em> invece di essere
-          irradiata. Da quel valore (return loss, in dB) si ricava il
-          <strong>VSWR</strong>: 1 sarebbe l'antenna perfetta, valori alti dicono che
-          l'antenna non è accordata su quella frequenza e la potenza rimbalza nel cavo.
-        </p>
-        <p>
-          <b>Come si legge il grafico.</b> La curva è il VSWR frequenza per frequenza.
-          La fascia in evidenza è la banda ETSI 865–868 MHz, l'unica in cui il sistema
-          può lavorare in Italia: <strong>conta solo quello che succede lì dentro</strong>.
-          La linea tratteggiata è la soglia di allarme (VSWR&nbsp;7): sopra, una parte
-          consistente della potenza non esce dall'antenna.
-        </p>
-        <p>
-          <b>Come si esegue.</b> Antenna collegata al suo cavo e
-          <strong>nella posizione di lavoro</strong> — una mano vicina o un piano
-          metallico cambiano la misura. Nessun contenitore sopra. Una misura per
-          antenna, poi si confrontano: due antenne uguali che danno curve molto
-          diverse indicano un cavo o un connettore difettoso, non un problema di
-          progetto.
-        </p>
-        <p>
-          <b>Cosa farne.</b> Questa è la misura da allegare quando si chiede al
-          fornitore un'antenna tarata per la banda europea: le SLP1027 sono
-          specificate 902–928 MHz e il costruttore non pubblica curve sotto i
-          900&nbsp;MHz, quindi il dato in banda EU può darlo solo chi le usa lì.
-        </p>
-      </div>
-
-      <div class="diagnostica__comandi">
-        <label class="campo">
-          <span class="etichetta">Antenna</span>
-          <select id="antenna-diagnosi"></select>
-        </label>
-        <button class="bottone bottone--radio" id="misura-antenna">Misura</button>
-        <span class="pastiglia" id="verdetto-vswr" hidden></span>
-      </div>
-
-      <figure class="grafico">
-        <svg viewBox="0 0 640 300" id="grafico-rl" role="img" aria-labelledby="rl-titolo">
-          <title id="rl-titolo">Return loss per frequenza</title>
-          <g class="grafico__griglia" id="rl-griglia"></g>
-          <rect class="grafico__banda" id="rl-banda" x="0" y="0" width="0" height="0"/>
-          <path class="grafico__soglia" id="rl-soglia"/>
-          <path class="grafico__curva" id="rl-curva"/>
-          <g class="grafico__punti" id="rl-punti"></g>
-          <g class="grafico__assi" id="rl-assi"></g>
-        </svg>
-        <figcaption class="tenue" id="rl-nota">
-          Nessuna misura ancora fatta. La zona evidenziata è la banda ETSI 865–868 MHz.
-        </figcaption>
-      </figure>
-    </div>
-
-    <!-- Parametri Gen2 --------------------------------------------------- -->
-    <div class="pannello">
-      <header class="pannello__testa">
-        <h2>Parametri Gen2</h2>
-        <p class="tenue">
-          Lasciare un campo vuoto significa «non toccarlo». La modalità RF <span class="hex">0x71</span>
-          vale circa 5&nbsp;dB di sensibilità rispetto alla predefinita
-          <span class="hex">0x6B</span>, ma se il modulo non la supporta la accetta e poi
-          la sostituisce in silenzio: il valore va riletto.
-        </p>
-      </header>
-
-      <div class="spiega">
-        <p>
-          <b>Sessione (S0–S3).</b> È la memoria del tag: per quanto tempo si ricorda
-          di aver già risposto, e quindi resta zitto. <strong>S0</strong> dimentica
-          subito — i tag rispondono in continuazione, va bene per pochi tag e letture
-          brevi, ma in mezzo a tanti i più forti coprono i deboli.
-          <strong>S2</strong> ricorda per secondi: chi ha già risposto tace e lascia
-          parlare gli altri. È la scelta giusta per una scatola piena.
-        </p>
-        <p>
-          <b>Target (A / B).</b> Ogni tag ha una bandierina che vale A o B, e il
-          lettore interroga un lato per volta; chi risponde passa dall'altro lato.
-          Con <strong>A↔B alternato</strong> il lettore fa un giro su A e uno su B,
-          e così ripesca anche chi era stato messo a tacere: è quello che serve per
-          non perdere nessuno.
-        </p>
-        <p>
-          <b>Q.</b> Quanti «slot» apre il lettore a ogni giro: circa 2<sup>Q</sup>.
-          Troppo basso con molti tag e le risposte si sovrappongono; troppo alto e si
-          spreca tempo in slot vuoti. <strong>Q automatico</strong> lo fa regolare al
-          modulo, ed è la scelta sensata finché la campagna non dice altro.
-        </p>
-        <p>
-          <b>Modalità RF.</b> Come il lettore modula e demodula.
-          <span class="hex">0x71</span> è la più sensibile: circa
-          <strong>−93 dBm contro i −88 dBm</strong> della predefinita, cioè 5 dB di
-          margine — su un tag al limite è la differenza fra leggerlo e non leggerlo.
-          Si paga in velocità, quindi si prova e si misura.
-        </p>
-      </div>
-
-      <div class="modulo__griglia">
-        <label class="campo">
-          <span class="etichetta">Sessione</span>
-          <select id="gen2-session">
-            <option value="">non toccare</option>
-            <option value="0">S0 — inventari brevi</option>
-            <option value="1">S1</option>
-            <option value="2">S2 — molti tag, letture ripetute</option>
-            <option value="3">S3</option>
-          </select>
-        </label>
-        <label class="campo">
-          <span class="etichetta">Target</span>
-          <select id="gen2-target">
-            <option value="">non toccare</option>
-            <option value="0">A</option>
-            <option value="1">B</option>
-          </select>
-        </label>
-        <label class="campo">
-          <span class="etichetta">Q</span>
-          <input id="gen2-q" type="number" min="0" max="15" placeholder="non toccare">
-        </label>
-        <label class="campo">
-          <span class="etichetta">Modalità RF</span>
-          <select id="gen2-rf">
-            <option value="">non toccare</option>
-            <option value="113">0x71 — massima sensibilità</option>
-            <option value="107">0x6B — predefinita</option>
-          </select>
-        </label>
-      </div>
-      <fieldset class="avvertenze">
-        <legend class="etichetta">Dinamici</legend>
-        <label class="interruttore"><input type="checkbox" id="gen2-target-dyn"><span>Target A↔B alternato</span></label>
-        <label class="interruttore"><input type="checkbox" id="gen2-q-dyn"><span>Q automatico</span></label>
-      </fieldset>
-      <div class="modulo__azioni">
-        <button class="bottone bottone--radio" id="applica-gen2">Applica</button>
-        <span class="tenue" id="esito-gen2" role="status"></span>
-      </div>
-    </div>
-
-    <!-- Profilazione tag -------------------------------------------------- -->
-    <div class="pannello">
-      <header class="pannello__testa">
-        <h2>Profilazione di un tag</h2>
-        <p class="tenue">
-          Appoggia <strong>un solo</strong> tag sulla postazione di scrittura. La misura dice
-          quanta USER memory ha davvero e se il TID è serializzato — senza numero di serie
-          di fabbrica il legame anti-clonazione non regge.
-        </p>
-      </header>
-
-      <div class="spiega">
-        <p>
-          <b>Perché va fatta per prima.</b> Quanti dati entrano in un tag lo decide il
-          chip, non il lettore. I datasheet dichiarano spesso la memoria «fino a», e i
-          lotti variano: questa misura legge davvero, parola per parola, fino a dove la
-          memoria finisce. Il numero che esce va riportato in
-          <span class="hex">lims.user_memory_bytes</span>, altrimenti la scrittura
-          fallisce a metà sul primo campione vero.
-        </p>
-        <p>
-          <b>Il TID serializzato.</b> È il numero di serie di fabbrica, immutabile. Il
-          payload cifrato è legato a quel numero, quindi un tag copiato su un altro
-          chip non supera l'autenticazione. <strong>Senza TID serializzato quel legame
-          decade</strong> e il tag diventa clonabile: per questo la misura lo dichiara.
-        </p>
-        <p>
-          <b>Come si esegue.</b> <strong>Un solo tag</strong> sulla postazione, gli
-          altri lontani: senza filtro i comandi colpiscono il primo che risponde e la
-          misura mescolerebbe chip diversi. Conviene provarne tre o quattro dello stesso
-          lotto — se danno risultati diversi il lotto non è omogeneo, e la soglia va
-          presa dal peggiore.
-        </p>
-      </div>
-
-      <div class="modulo__azioni">
-        <button class="bottone bottone--radio" id="profila">Misura il tag</button>
-        <span class="tenue" id="esito-profilo" role="status"></span>
-      </div>
-      <dl class="verdetto__dettagli" id="profilo-dati"></dl>
-      <ul class="cartella__avvertenze" id="profilo-avvisi"></ul>
-    </div>
-
-    <!-- Campagna di misura ------------------------------------------------ -->
-    <div class="pannello">
-      <header class="pannello__testa">
-        <h2>Campagna di misura</h2>
-        <p class="tenue">
-          Prova una griglia di configurazioni e sceglie la <strong>più bassa</strong> che legge
-          tutto quello che è dentro <strong>senza leggere niente di quello che è fuori</strong>.
-          I tag di controllo fuori dal contenitore non sono facoltativi: senza,
-          la campagna sceglierebbe sempre la potenza massima.
-        </p>
-      </header>
-
-      <div class="spiega">
-        <p>
-          <b>Cosa misura, esattamente.</b> Per ogni combinazione di antenne, potenza,
-          sessione e modalità RF fa una serie di cicli di lettura e conta due cose:
-          quante volte ha visto ciascun tag <em>dentro</em> (tasso di rilevamento) e
-          quante volte ha visto un tag <em>fuori</em> (fuga). Una configurazione è
-          <strong>utilizzabile</strong> solo se il primo numero è pieno e il secondo è zero.
-        </p>
-        <p>
-          <b>Perché i tag di controllo fuori sono obbligatori.</b> Senza, ogni
-          configurazione risulta «perfetta» e vince sempre la potenza massima — che è
-          anche quella che legge il tavolo accanto. I tag fuori vanno messi dove
-          realisticamente potrebbe finire un campione: accanto al lettore, sul bancone,
-          nella scatola successiva. Sono loro a definire il confine del volume.
-        </p>
-        <p>
-          <b>Come prepararsi.</b> Contenitore carico <strong>come in esercizio</strong>,
-          coperchio chiuso, appoggiato sulle antenne nella posizione reale. I campioni
-          contengono liquido, che assorbe: misurare con i contenitori vuoti dà un
-          risultato ottimista e inutile. Durante la misura non spostare niente —
-          nemmeno le mani vicino alle antenne.
-        </p>
-        <p>
-          <b>Come si legge il risultato.</b> Fra le configurazioni utilizzabili viene
-          proposta la <strong>più bassa in potenza</strong>: più margine di rumore,
-          volume più netto, meno riscaldamento. Se nessuna è utilizzabile non è un
-          problema di taratura ma di geometria — vanno cambiate posizione o antenne.
-        </p>
-      </div>
-
-      <ol class="ricetta">
-        <li>
-          <div>
-            <strong>Metti i tag dentro il contenitore</strong> e rilevali.
-            <span class="tenue">Sono quelli che devono essere letti.</span>
-          </div>
-          <button class="bottone" data-posizione="dentro">Rileva i tag dentro</button>
-          <span class="pastiglia" id="conta-dentro">0</span>
-        </li>
-        <li>
-          <div>
-            <strong>Metti i tag di controllo fuori</strong>, dove capiterebbe un campione
-            appoggiato accanto al lettore, e rilevali.
-            <span class="tenue">Sono quelli che <em>non</em> devono essere letti.</span>
-          </div>
-          <button class="bottone" data-posizione="fuori">Rileva i tag fuori</button>
-          <span class="pastiglia" id="conta-fuori">0</span>
-        </li>
-        <li>
-          <div>
-            <strong>Rimetti tutto in posizione</strong> e avvia la misura.
-            <span class="tenue">Dura diversi minuti: non spostare niente nel frattempo.</span>
-          </div>
-          <button class="bottone bottone--radio" id="avvia-campagna" disabled>Avvia la campagna</button>
-          <span class="pastiglia" id="avanzamento-campagna" hidden>—</span>
-        </li>
-      </ol>
-
-      <div class="consigliata" id="consigliata" hidden></div>
-
-      <details class="prova">
-        <summary>Tutte le configurazioni provate</summary>
-        <table class="tabella" id="tabella-campagna">
-          <thead>
-            <tr><th>Configurazione</th><th>Dentro</th><th>Fuori</th><th>Tasso</th><th>Esito</th></tr>
-          </thead>
-          <tbody></tbody>
-        </table>
-      </details>
-    </div>
-  </section>
 
   <!-- ================================================================== -->
   <!-- ARCHIVIO PAZIENTI                                                   -->
   <!-- ================================================================== -->
   <section class="schermata" id="schermata-archivio">
+
+    <!-- IL GIRO SI CHIUDE QUI.
+         Il destinatario manda il verbale, il mittente lo importa, e solo
+         allora una spedizione smette di essere «partita» e diventa
+         «arrivata». Prima, dire che è andata bene sarebbe una supposizione. -->
+    <div class="pannello">
+      <header class="pannello__testa">
+        <h2>Materiale transitato</h2>
+        <p class="tenue">
+          Importa il <strong>verbale di riscontro</strong> che il laboratorio
+          destinatario rimanda dopo aver aperto la scatola: è l'unico modo di
+          sapere com'è finita. Poi genera il riepilogo del periodo.
+        </p>
+      </header>
+
+      <div class="importa">
+        <label class="bottone" for="file-riscontro">Importa un verbale…</label>
+        <input id="file-riscontro" type="file" accept=".rfidric,application/octet-stream" hidden>
+        <span class="tenue" id="esito-riscontro" role="alert"></span>
+      </div>
+
+      <div class="preparazione">
+        <label class="campo">
+          <span class="etichetta">Controparte</span>
+          <select id="transito-controparte"></select>
+        </label>
+        <label class="campo">
+          <span class="etichetta">Dal</span>
+          <input id="transito-dal" type="date">
+        </label>
+        <label class="campo">
+          <span class="etichetta">Al</span>
+          <input id="transito-al" type="date">
+        </label>
+        <button class="bottone" id="genera-transito">Genera il riepilogo</button>
+        <button class="bottone bottone--sobrio" id="scarica-transito" disabled>Scarica in CSV</button>
+      </div>
+
+      <div class="transito" id="transito" hidden>
+        <p class="transito__verdetto" id="transito-verdetto"></p>
+        <dl class="foglio__dati" id="transito-totali"></dl>
+        <table class="tabella" id="transito-tabella">
+          <thead>
+            <tr>
+              <th>Spedizione</th><th>Data</th><th>Pezzi</th><th>Pazienti</th>
+              <th>Sigillo</th><th>Arrivo</th><th>Esito</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
     <div class="pannello">
       <header class="pannello__testa">
         <h2>Archivio pazienti</h2>
@@ -868,10 +717,22 @@
       <div class="cerca">
         <label class="campo cerca__campo">
           <span class="etichetta">Cerca</span>
+          <!-- Vuoto vuol dire tutti: l'elenco c'e' gia' quando si apre la
+               schermata, e questo campo lo restringe. -->
           <input id="cerca-paziente" type="search" spellcheck="false"
-                 placeholder="cognome, nome, codice fiscale o numero di accettazione">
+                 placeholder="cognome, nome, codice fiscale o numero di accettazione — vuoto: tutti">
         </label>
         <button class="bottone bottone--primario" id="cerca">Cerca</button>
+
+        <!-- Due domande diverse: «cosa e' passato di qui ultimamente» e
+             «trovami questo cognome che non so scrivere». -->
+        <div class="ordine" role="tablist" aria-label="Ordine dell'elenco">
+          <button type="button" class="ordine__voce" role="tab"
+                  data-ordine="recenti" aria-selected="true">Più recenti</button>
+          <button type="button" class="ordine__voce" role="tab"
+                  data-ordine="alfabetico" aria-selected="false">Alfabetico</button>
+        </div>
+
         <span class="tenue" id="esito-ricerca" role="status"></span>
       </div>
 
@@ -881,6 +742,10 @@
         </thead>
         <tbody></tbody>
       </table>
+
+      <div class="archivio__piede">
+        <button class="bottone bottone--sobrio" id="altri-pazienti" hidden>Mostra altri 50</button>
+      </div>
     </div>
 
     <div class="pannello pannello--nascosto" id="pannello-storico">
@@ -928,6 +793,20 @@
   <!-- IMPOSTAZIONI                                                        -->
   <!-- ================================================================== -->
   <section class="schermata" id="schermata-impostazioni">
+
+    <!-- Due attività diverse sotto lo stesso tetto: la configurazione si fa
+         una volta e si dimentica, le misure si fanno col lettore in mano e si
+         rifanno ogni volta che cambia qualcosa. Tenerle su una schermata sola
+         significherebbe undici riquadri in fila e la cosa che serve sempre in
+         fondo. -->
+    <nav class="schede" role="tablist" aria-label="Sezioni delle impostazioni">
+      <button class="schede__voce" role="tab" data-scheda="configurazione"
+              aria-selected="true">Configurazione</button>
+      <button class="schede__voce" role="tab" data-scheda="misure"
+              aria-selected="false">Misure e strumenti</button>
+    </nav>
+
+    <div class="scheda scheda--attiva" id="scheda-configurazione" role="tabpanel">
 
     <!-- Questo laboratorio ----------------------------------------------- -->
     <div class="pannello">
@@ -1351,6 +1230,498 @@
       </div>
       <p class="tenue" id="dove-si-salva"></p>
     </div>
+    </div>
+
+    <div class="scheda" id="scheda-misure" role="tabpanel">
+
+    <!-- Antenne: potenze e diagnostica ---------------------------------- -->
+    <div class="pannello">
+      <header class="pannello__testa">
+        <h2>Antenne</h2>
+        <p class="tenue">
+          Le potenze sono in dBm, e sono la leva che definisce <em>fisicamente</em>
+          il volume di lettura.
+        </p>
+      </header>
+
+      <div class="spiega">
+        <p>
+          <b>Perché non basta alzare al massimo.</b>
+          Più potenza significa più portata, quindi anche i tag <em>fuori</em> dal
+          contenitore — sul tavolo accanto, nella scatola vicina — cominciano a
+          rispondere. Un campione contato che non c'è è l'errore peggiore, perché
+          il conteggio torna e nessuno sospetta. La regola è la
+          <strong>potenza più bassa che legge tutto quello che è dentro</strong>.
+        </p>
+        <p>
+          <b>Lettura e scrittura sono separate.</b>
+          La <em>lettura</em> serve alle due antenne a pavimento sotto il contenitore
+          e vuole coprire tutto il volume. La <em>scrittura</em> serve alla postazione
+          singola e conviene tenerla bassa: un tag scritto per sbaglio a distanza è
+          un tag da annullare, e i tag non si riscrivono.
+        </p>
+        <p>
+          <b>Da dove partire.</b> 20 dBm in scrittura, 27–29 dBm in lettura, poi si
+          esegue la taratura con la campagna di misura qui sotto invece che a sentimento.
+          Il limite ETSI vale sulla potenza irradiata (EIRP), quindi conta anche il
+          guadagno dell'antenna: le SLP1027 sono da 8 dBi.
+        </p>
+      </div>
+
+      <div class="antenne" id="antenne"></div>
+      <div class="modulo__azioni">
+        <button class="bottone bottone--radio" id="applica-potenze">Applica le potenze</button>
+        <span class="tenue" id="esito-potenze" role="status"></span>
+      </div>
+    </div>
+
+    <!-- Il grafico del return loss: il dato per il fornitore ------------- -->
+    <div class="pannello">
+      <header class="pannello__testa">
+        <h2>Adattamento delle antenne</h2>
+        <p class="tenue">
+          Return loss misurato frequenza per frequenza. Le SLP1027 sono caratterizzate
+          dal costruttore <strong>solo da 900 MHz in su</strong>, mentre la banda europea sta
+          35 MHz più in basso: questa misura dice come si comportano dove le usiamo davvero.
+        </p>
+      </header>
+
+      <div class="spiega">
+        <p>
+          <b>Cosa misura.</b> Il modulo trasmette a bassa potenza su ogni frequenza
+          della banda e misura quanta energia <em>torna indietro</em> invece di essere
+          irradiata. Da quel valore (return loss, in dB) si ricava il
+          <strong>VSWR</strong>: 1 sarebbe l'antenna perfetta, valori alti dicono che
+          l'antenna non è accordata su quella frequenza e la potenza rimbalza nel cavo.
+        </p>
+        <p>
+          <b>Come si legge il grafico.</b> La curva è il VSWR frequenza per frequenza.
+          La fascia in evidenza è la banda ETSI 865–868 MHz, l'unica in cui il sistema
+          può lavorare in Italia: <strong>conta solo quello che succede lì dentro</strong>.
+          La linea tratteggiata è la soglia di allarme (VSWR&nbsp;7): sopra, una parte
+          consistente della potenza non esce dall'antenna.
+        </p>
+        <p>
+          <b>Come si esegue.</b> Antenna collegata al suo cavo e
+          <strong>nella posizione di lavoro</strong> — una mano vicina o un piano
+          metallico cambiano la misura. Nessun contenitore sopra. Una misura per
+          antenna, poi si confrontano: due antenne uguali che danno curve molto
+          diverse indicano un cavo o un connettore difettoso, non un problema di
+          progetto.
+        </p>
+        <p>
+          <b>Cosa farne.</b> Questa è la misura da allegare quando si chiede al
+          fornitore un'antenna tarata per la banda europea: le SLP1027 sono
+          specificate 902–928 MHz e il costruttore non pubblica curve sotto i
+          900&nbsp;MHz, quindi il dato in banda EU può darlo solo chi le usa lì.
+        </p>
+      </div>
+
+      <div class="spiega spiega--attenzione">
+        <p>
+          <b>Perché guardare anche fuori dalla banda.</b> Il VSWR misurato a
+          866&nbsp;MHz dice se l'antenna è adattata <em>lì</em>. Non dice la cosa
+          che serve sapere per decidere: se quell'antenna è <strong>cattiva</strong>
+          o è <strong>buona ma accordata altrove</strong>. Sono due problemi
+          diversi — il primo si risolve cambiando antenna, il secondo chiedendo al
+          fornitore la stessa antenna tarata per l'Europa. Per distinguerli serve
+          vedere <em>dove</em> sta il minimo, e quindi misurare più in largo.
+        </p>
+        <p>
+          <b>Fuori dalla banda ETSI non si può trasmettere in esercizio.</b> Qui
+          si sta tarando un prototipo su un banco, e la misura dura qualche
+          decina di secondi a 20&nbsp;dBm. Se il modulo rifiuta la banda perché è
+          certificato per l'Europa, l'interfaccia lo dice e chiede se commutarlo
+          per il tempo della misura: la regione viene <strong>rimessa a
+          posto subito dopo</strong>, anche se la misura fallisce a metà.
+        </p>
+      </div>
+
+      <div class="diagnostica__comandi">
+        <label class="campo">
+          <span class="etichetta">Antenna</span>
+          <select id="antenna-diagnosi"></select>
+        </label>
+        <label class="campo">
+          <span class="etichetta">Intervallo</span>
+          <select id="intervallo-diagnosi">
+            <option value="banda">banda configurata (865–868 MHz)</option>
+            <option value="860,880">860–880 MHz — attorno alla banda EU</option>
+            <option value="900,930">900–930 MHz — dove sono specificate</option>
+            <option value="850,960">850–960 MHz — spazzata larga</option>
+          </select>
+          <small class="campo__nota tenue">
+            Un intervallo esplicito non tocca la regione impostata.
+          </small>
+        </label>
+        <button class="bottone bottone--radio" id="misura-antenna">Misura</button>
+        <button class="bottone bottone--sobrio" id="svuota-curve">Svuota il grafico</button>
+        <span class="pastiglia" id="verdetto-vswr" hidden></span>
+      </div>
+
+      <figure class="grafico">
+        <svg viewBox="0 0 640 300" id="grafico-rl" role="img" aria-labelledby="rl-titolo">
+          <title id="rl-titolo">Return loss per frequenza</title>
+          <g class="grafico__griglia" id="rl-griglia"></g>
+          <rect class="grafico__banda" id="rl-banda" x="0" y="0" width="0" height="0"/>
+          <path class="grafico__soglia" id="rl-soglia"/>
+          <!-- Le curve si accumulano: si confrontano le tre antenne fra loro
+               (un cavo difettoso dà una curva che non somiglia alle altre) e la
+               stessa antenna dentro e fuori banda. -->
+          <g class="grafico__curve" id="rl-curve"></g>
+          <g class="grafico__assi" id="rl-assi"></g>
+        </svg>
+        <ul class="legenda" id="rl-legenda"></ul>
+        <figcaption class="tenue" id="rl-nota">
+          Nessuna misura ancora fatta. La zona evidenziata è la banda ETSI 865–868 MHz.
+        </figcaption>
+        <p class="grafico__conclusione" id="risonanza-nota"></p>
+      </figure>
+    </div>
+
+    <!-- Parametri Gen2 --------------------------------------------------- -->
+    <div class="pannello">
+      <header class="pannello__testa">
+        <h2>Parametri Gen2</h2>
+        <p class="tenue">
+          Lasciare un campo vuoto significa «non toccarlo». La modalità RF <span class="hex">0x71</span>
+          vale circa 5&nbsp;dB di sensibilità rispetto alla predefinita
+          <span class="hex">0x6B</span>, ma se il modulo non la supporta la accetta e poi
+          la sostituisce in silenzio: il valore va riletto.
+        </p>
+      </header>
+
+      <div class="spiega">
+        <p>
+          <b>Sessione (S0–S3).</b> È la memoria del tag: per quanto tempo si ricorda
+          di aver già risposto, e quindi resta zitto. <strong>S0</strong> dimentica
+          subito — i tag rispondono in continuazione, va bene per pochi tag e letture
+          brevi, ma in mezzo a tanti i più forti coprono i deboli.
+          <strong>S2</strong> ricorda per secondi: chi ha già risposto tace e lascia
+          parlare gli altri. È la scelta giusta per una scatola piena.
+        </p>
+        <p>
+          <b>Target (A / B).</b> Ogni tag ha una bandierina che vale A o B, e il
+          lettore interroga un lato per volta; chi risponde passa dall'altro lato.
+          Con <strong>A↔B alternato</strong> il lettore fa un giro su A e uno su B,
+          e così ripesca anche chi era stato messo a tacere: è quello che serve per
+          non perdere nessuno.
+        </p>
+        <p>
+          <b>Q.</b> Quanti «slot» apre il lettore a ogni giro: circa 2<sup>Q</sup>.
+          Troppo basso con molti tag e le risposte si sovrappongono; troppo alto e si
+          spreca tempo in slot vuoti. <strong>Q automatico</strong> lo fa regolare al
+          modulo, ed è la scelta sensata finché la campagna non dice altro.
+        </p>
+        <p>
+          <b>Modalità RF.</b> Come il lettore modula e demodula.
+          <span class="hex">0x71</span> è la più sensibile: circa
+          <strong>−93 dBm contro i −88 dBm</strong> della predefinita, cioè 5 dB di
+          margine — su un tag al limite è la differenza fra leggerlo e non leggerlo.
+          Si paga in velocità, quindi si prova e si misura.
+        </p>
+      </div>
+
+      <div class="modulo__griglia">
+        <label class="campo">
+          <span class="etichetta">Sessione</span>
+          <select id="gen2-session">
+            <option value="">non toccare</option>
+            <option value="0">S0 — inventari brevi</option>
+            <option value="1">S1</option>
+            <option value="2">S2 — molti tag, letture ripetute</option>
+            <option value="3">S3</option>
+          </select>
+        </label>
+        <label class="campo">
+          <span class="etichetta">Target</span>
+          <select id="gen2-target">
+            <option value="">non toccare</option>
+            <option value="0">A</option>
+            <option value="1">B</option>
+          </select>
+        </label>
+        <label class="campo">
+          <span class="etichetta">Q</span>
+          <input id="gen2-q" type="number" min="0" max="15" placeholder="non toccare">
+        </label>
+        <label class="campo">
+          <span class="etichetta">Modalità RF</span>
+          <select id="gen2-rf">
+            <option value="">non toccare</option>
+            <option value="113">0x71 — massima sensibilità</option>
+            <option value="107">0x6B — predefinita</option>
+          </select>
+        </label>
+      </div>
+      <fieldset class="avvertenze">
+        <legend class="etichetta">Dinamici</legend>
+        <label class="interruttore"><input type="checkbox" id="gen2-target-dyn"><span>Target A↔B alternato</span></label>
+        <label class="interruttore"><input type="checkbox" id="gen2-q-dyn"><span>Q automatico</span></label>
+      </fieldset>
+      <div class="modulo__azioni">
+        <button class="bottone bottone--primario" id="gen2-consigliato">Metti i valori consigliati</button>
+        <button class="bottone bottone--radio" id="applica-gen2">Applica</button>
+        <span class="tenue" id="esito-gen2" role="status"></span>
+      </div>
+      <!-- Il modulo puo' accettare una modalita' RF che non supporta e
+           sostituirla in silenzio: questa non e' una copia di quello che hai
+           chiesto, e' quello che il modulo dice di avere. Va etichettata,
+           altrimenti si legge come una seconda copia del modulo di sopra. -->
+      <div class="riletti" id="gen2-riletti-blocco" hidden>
+        <h3 class="riletti__titolo">Il modulo dice di avere</h3>
+        <dl class="verdetto__dettagli" id="gen2-riletti"></dl>
+      </div>
+
+      <!-- IL RITORNO CHE A QUESTI PARAMETRI È SEMPRE MANCATO.
+           Si cambia una tendina, si preme, e un numero dice se è servito. Da
+           solo «14 letture al secondo» non vuol dire niente: vale il confronto
+           con la misura precedente, e per questo si tiene accanto. -->
+      <div class="prova-lettura">
+        <h3 class="sezione">Prova di lettura</h3>
+        <p class="tenue">
+          Metti sulle antenne di lettura i tag su cui vuoi misurare — meglio se
+          nella posizione vera, dentro il contenitore. Poi cambia un parametro,
+          applica, e guarda cosa succede al numero.
+        </p>
+        <div class="modulo__azioni">
+          <button class="bottone bottone--radio" id="prova-lettura">Misura una volta</button>
+          <button class="bottone" id="prova-continua">Misura in continuo</button>
+          <span class="tenue" id="esito-prova" role="status"></span>
+        </div>
+        <div class="confronto">
+          <div class="confronto__lato" id="prova-adesso">
+            <span class="etichetta">Adesso</span>
+            <p class="cifra confronto__cifra" id="prova-rate">—</p>
+            <p class="tenue" id="prova-dettaglio">nessuna misura</p>
+          </div>
+          <div class="confronto__lato confronto__lato--prima" id="prova-prima" hidden>
+            <span class="etichetta">Prima</span>
+            <p class="cifra confronto__cifra" id="prova-rate-prima">—</p>
+            <p class="tenue" id="prova-dettaglio-prima"></p>
+          </div>
+        </div>
+        <table class="tabella" id="tabella-prova" hidden>
+          <thead>
+            <tr><th>EPC</th><th>Letture</th><th>Tasso</th><th>Antenne</th><th>RSSI</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Profilazione tag -------------------------------------------------- -->
+    <div class="pannello">
+      <header class="pannello__testa">
+        <h2>Profilazione di un tag</h2>
+        <p class="tenue">
+          Appoggia <strong>un solo</strong> tag sulla postazione di scrittura. La misura dice
+          quanta USER memory ha davvero e se il TID è serializzato — senza numero di serie
+          di fabbrica il legame anti-clonazione non regge.
+        </p>
+      </header>
+
+      <div class="spiega">
+        <p>
+          <b>Perché va fatta per prima.</b> Quanti dati entrano in un tag lo decide il
+          chip, non il lettore. I datasheet dichiarano spesso la memoria «fino a», e i
+          lotti variano: questa misura legge davvero, parola per parola, fino a dove la
+          memoria finisce. Il numero che esce va riportato in
+          <span class="hex">lims.user_memory_bytes</span>, altrimenti la scrittura
+          fallisce a metà sul primo campione vero.
+        </p>
+        <p>
+          <b>Il TID serializzato.</b> È il numero di serie di fabbrica, immutabile. Il
+          payload cifrato è legato a quel numero, quindi un tag copiato su un altro
+          chip non supera l'autenticazione. <strong>Senza TID serializzato quel legame
+          decade</strong> e il tag diventa clonabile: per questo la misura lo dichiara.
+        </p>
+        <p>
+          <b>Come si esegue.</b> <strong>Un solo tag</strong> sulla postazione, gli
+          altri lontani: senza filtro i comandi colpiscono il primo che risponde e la
+          misura mescolerebbe chip diversi. Conviene provarne tre o quattro dello stesso
+          lotto — se danno risultati diversi il lotto non è omogeneo, e la soglia va
+          presa dal peggiore.
+        </p>
+      </div>
+
+      <div class="modulo__azioni">
+        <button class="bottone bottone--radio" id="profila">Misura il tag</button>
+        <span class="tenue" id="esito-profilo" role="status"></span>
+      </div>
+      <dl class="verdetto__dettagli" id="profilo-dati"></dl>
+      <ul class="cartella__avvertenze" id="profilo-avvisi"></ul>
+
+      <!-- Un numero misurato che nessuno riporta è un numero perso: finora
+           andava ricopiato a mano in config.yaml. La proposta non cambia niente
+           da sola — una modalità ridotta che si attiva in silenzio farebbe
+           decadere una difesa senza che nessuno l'abbia decisa. -->
+      <div class="proposta" id="profilo-proposta" hidden>
+        <h3 class="proposta__titolo" id="proposta-titolo">Cosa cambierebbe</h3>
+        <dl class="verdetto__dettagli" id="proposta-dati"></dl>
+        <ul class="proposta__motivi" id="proposta-motivi"></ul>
+        <div class="modulo__azioni">
+          <button class="bottone bottone--primario" id="applica-profilo">Applica alla configurazione</button>
+          <span class="tenue" id="esito-proposta" role="status"></span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Campagna di misura ------------------------------------------------ -->
+    <div class="pannello">
+      <header class="pannello__testa">
+        <h2>Campagna di misura</h2>
+        <p class="tenue">
+          Prova una griglia di configurazioni e sceglie la <strong>più bassa</strong> che legge
+          tutto quello che è dentro <strong>senza leggere niente di quello che è fuori</strong>.
+          I tag di controllo fuori dal contenitore non sono facoltativi: senza,
+          la campagna sceglierebbe sempre la potenza massima.
+        </p>
+      </header>
+
+      <div class="spiega">
+        <p>
+          <b>Cosa misura, esattamente.</b> Per ogni combinazione di antenne, potenza,
+          sessione e modalità RF fa una serie di cicli di lettura e conta due cose:
+          quante volte ha visto ciascun tag <em>dentro</em> (tasso di rilevamento) e
+          quante volte ha visto un tag <em>fuori</em> (fuga). Una configurazione è
+          <strong>utilizzabile</strong> solo se il primo numero è pieno e il secondo è zero.
+        </p>
+        <p>
+          <b>Perché i tag di controllo fuori sono obbligatori.</b> Senza, ogni
+          configurazione risulta «perfetta» e vince sempre la potenza massima — che è
+          anche quella che legge il tavolo accanto. I tag fuori vanno messi dove
+          realisticamente potrebbe finire un campione: accanto al lettore, sul bancone,
+          nella scatola successiva. Sono loro a definire il confine del volume.
+        </p>
+        <p>
+          <b>Come prepararsi.</b> Contenitore carico <strong>come in esercizio</strong>,
+          coperchio chiuso, appoggiato sulle antenne nella posizione reale. I campioni
+          contengono liquido, che assorbe: misurare con i contenitori vuoti dà un
+          risultato ottimista e inutile. Durante la misura non spostare niente —
+          nemmeno le mani vicino alle antenne.
+        </p>
+        <p>
+          <b>Come si legge il risultato.</b> Fra le configurazioni utilizzabili viene
+          proposta la <strong>più bassa in potenza</strong>: più margine di rumore,
+          volume più netto, meno riscaldamento. Se nessuna è utilizzabile non è un
+          problema di taratura ma di geometria — vanno cambiate posizione o antenne.
+        </p>
+      </div>
+
+      <ol class="ricetta">
+        <li>
+          <div>
+            <strong>Prepara insieme i tag interni ed esterni.</strong>
+            <span class="tenue">
+              Metti il contenitore sulle antenne, i tag interni nel contenitore e quelli
+              esterni nelle posizioni che il sistema deve escludere. Non spostarli più.
+            </span>
+          </div>
+          <button class="bottone" id="inventaria-campagna">Leggi tutti i tag (20 cicli)</button>
+          <span class="pastiglia" id="avanzamento-inventario">0 / 20</span>
+        </li>
+        <li>
+          <div>
+            <strong>Classifica ogni tag rilevato.</strong>
+            <span class="tenue">
+              Indica quali EPC sono dentro e quali sono fuori. Ogni tag va classificato,
+              altrimenti la verifica ignorerebbe una presenza reale.
+            </span>
+          </div>
+          <div class="ricetta__conteggi">
+            <span class="pastiglia" id="conta-dentro">0 dentro</span>
+            <span class="pastiglia" id="conta-fuori">0 fuori</span>
+          </div>
+        </li>
+        <li class="ricetta__selezione" id="selezione-campagna" hidden>
+          <div class="tabella-contenitore">
+            <table class="tabella tabella--classificazione" id="tabella-tag-campagna">
+              <thead>
+                <tr>
+                  <th>EPC rilevato</th><th>Letture</th><th>Antenne</th><th>Posizione reale</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </li>
+        <li>
+          <div>
+            <strong>Avvia la misura senza spostare niente.</strong>
+            <span class="tenue">Dura diversi minuti: non spostare niente nel frattempo.</span>
+          </div>
+          <button class="bottone bottone--radio" id="avvia-campagna" disabled>Avvia la campagna</button>
+          <span class="pastiglia" id="avanzamento-campagna" hidden>—</span>
+        </li>
+      </ol>
+
+      <div class="consigliata" id="consigliata" hidden></div>
+
+      <details class="prova">
+        <summary>Tutte le configurazioni provate</summary>
+        <table class="tabella" id="tabella-campagna">
+          <thead>
+            <tr><th>Configurazione</th><th>Dentro</th><th>Fuori</th><th>Tasso</th><th>Esito</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </details>
+    </div>
+
+    <!-- Salute del lettore ------------------------------------------------ -->
+    <div class="pannello">
+      <header class="pannello__testa">
+        <h2>Salute del lettore</h2>
+        <p class="tenue">
+          È la risposta a «è il cavo, è il rumore o è il tag?». I contatori
+          separano le tre cose, e distinguerle cambia dove si va a cercare.
+        </p>
+      </header>
+
+      <div class="spiega">
+        <p>
+          <b>Antenne collegate.</b> Il modulo le interroga davvero (comando
+          <span class="hex">0x61</span> opzione <span class="hex">0x05</span>). Un'antenna
+          che sta in configurazione ma non risulta collegata è la causa più
+          comune di «non legge»: prima di tarare le potenze conviene guardare qui.
+        </p>
+        <p>
+          <b>I contatori.</b> <strong>Timeout</strong> significa che il lettore non
+          ha risposto: cavo, porta, alimentazione. <strong>Errori di frame</strong>
+          significa che ha risposto male: rumore elettrico, cavo lungo o
+          schermato male. <strong>Status rifiutati</strong> significa che ha
+          capito e ha detto di no: comando non supportato o parametro fuori
+          intervallo. <strong>Nessun tag</strong> non è un guasto — è un campo vuoto.
+        </p>
+      </div>
+
+      <div class="modulo__azioni">
+        <button class="bottone bottone--radio" id="controlla-salute">Controlla</button>
+        <span class="pastiglia" id="verdetto-salute" hidden></span>
+      </div>
+      <dl class="verdetto__dettagli" id="salute-dati"></dl>
+      <ul class="cartella__avvertenze" id="salute-avvisi"></ul>
+    </div>
+
+    <!-- Registro delle misure --------------------------------------------- -->
+    <div class="pannello">
+      <header class="pannello__testa">
+        <h2>Misure già fatte</h2>
+        <p class="tenue">
+          Rilette dal diario di prototipazione, che le registra tutte. Serve per
+          rivedere una misura di ieri senza rifarla — e per accorgersi che una
+          cosa è cambiata.
+        </p>
+      </header>
+
+      <div class="modulo__azioni">
+        <button class="bottone" id="aggiorna-misure">Rileggi il diario</button>
+        <span class="tenue" id="esito-misure" role="status"></span>
+      </div>
+      <ul class="misure" id="elenco-misure"></ul>
+    </div>
+    </div>
   </section>
 </main>
 
@@ -1412,6 +1783,89 @@
     </p>
   </div>
 </div>
+
+
+  <!-- IL FOGLIO DELLA DISTINTA.
+       Vive fuori dalle schermate perché in stampa è l'unica cosa che resta:
+       `stampa.css` nasconde tutto il resto. È il documento che accompagna la
+       scatola, e i due laboratori non condividono nessun archivio — quello che
+       non è scritto qui, a destinazione non esiste. -->
+  <div class="foglio" id="foglio" hidden>
+    <header class="foglio__testa">
+      <div>
+        <h1 class="foglio__titolo">Distinta di spedizione</h1>
+        <p class="foglio__sottotitolo">
+          <span id="foglio-mittente">—</span> → <span id="foglio-destinatario">—</span>
+        </p>
+      </div>
+      <div class="foglio__codici" id="foglio-codici"></div>
+    </header>
+
+    <dl class="foglio__dati" id="foglio-dati"></dl>
+
+    <table class="foglio__tabella" id="foglio-tabella">
+      <thead><tr id="foglio-intestazioni"></tr></thead>
+      <tbody id="foglio-righe"></tbody>
+    </table>
+
+    <p class="foglio__nota" id="foglio-nota"></p>
+
+    <footer class="foglio__piede">
+      <div class="foglio__firma">
+        <span>Consegnato da</span>
+        <span class="foglio__riga-firma"></span>
+      </div>
+      <div class="foglio__firma">
+        <span>Ricevuto da</span>
+        <span class="foglio__riga-firma"></span>
+      </div>
+      <div class="foglio__firma">
+        <span>Data e ora</span>
+        <span class="foglio__riga-firma"></span>
+      </div>
+    </footer>
+
+    <div class="foglio__comandi">
+      <button class="bottone bottone--primario" id="foglio-stampa">Stampa</button>
+      <button class="bottone bottone--sobrio" id="foglio-chiudi">Chiudi</button>
+    </div>
+  </div>
+
+
+  <!-- Il modello di un reperto aggiuntivo. Sta in un <template> perché la sua
+       forma è markup, non stringhe dentro il JavaScript: così resta leggibile
+       accanto al resto del modulo. -->
+  <template id="modello-reperto">
+    <fieldset class="reperto">
+      <legend class="etichetta reperto__titolo">Campione</legend>
+      <button type="button" class="bottone bottone--sobrio reperto__togli" aria-label="Togli questo campione">×</button>
+      <div class="modulo__griglia">
+        <label class="campo modulo__largo">
+          <span class="etichetta">Descrizione del reperto</span>
+          <input data-campo="descrizione" placeholder="pezzo operatorio, biopsia…">
+        </label>
+        <label class="campo">
+          <span class="etichetta">Materiale</span>
+          <select data-campo="material_code"></select>
+        </label>
+        <label class="campo">
+          <span class="etichetta">Fissativo</span>
+          <select data-campo="fixative_code"></select>
+        </label>
+        <label class="campo">
+          <span class="etichetta">Sede</span>
+          <select data-campo="site_code"></select>
+        </label>
+      </div>
+      <fieldset class="avvertenze">
+        <legend class="etichetta">Avvertenze</legend>
+        <label class="interruttore"><input type="checkbox" data-avvertenza value="INFECTIOUS"><span>Rischio biologico</span></label>
+        <label class="interruttore"><input type="checkbox" data-avvertenza value="URGENT"><span>Urgente</span></label>
+        <label class="interruttore"><input type="checkbox" data-avvertenza value="FROZEN"><span>Congelato</span></label>
+        <label class="interruttore"><input type="checkbox" data-avvertenza value="CYTOLOGY"><span>Citologia</span></label>
+      </fieldset>
+    </fieldset>
+  </template>
 
 <div class="avvisi" id="avvisi" aria-live="polite"></div>
 

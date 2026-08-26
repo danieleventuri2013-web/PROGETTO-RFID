@@ -55,6 +55,8 @@ from .responses import (
 )
 
 __all__ = [
+    "MODALITA_PAYLOAD",
+    "MODALITA_SOLO_EPC",
     "MAX_WRITE_BYTES",
     "FieldSurvey",
     "MissingContainer",
@@ -64,6 +66,16 @@ __all__ = [
 ]
 
 log = logging.getLogger("lims.tagio")
+
+#: Sul tag va lo pseudonimo **e** il campione cifrato. E' la modalita' normale:
+#: il tag e' autosufficiente e il payload e' legato al TID, quindi un chip
+#: copiato non passa l'autenticazione.
+MODALITA_PAYLOAD = "payload"
+#: Sul tag va **solo** lo pseudonimo. Per i chip senza USER memory utilizzabile.
+#: Si perde il legame payload-TID, cioe' la difesa anti-clonazione; restano il
+#: registro perpetuo degli EPC e la distinta firmata. I dati del paziente
+#: viaggiano sulla carta.
+MODALITA_SOLO_EPC = "solo_epc"
 
 # Limite del comando 0x24: oltre 64 byte la scrittura va spezzata in blocchi
 # (`reader.py:429`). La lettura ne consente 192 per volta (`reader.py:29`).
@@ -231,6 +243,7 @@ class TagIO:
         user_memory_bytes: int = 64,
         db: Any = None,
         operator: str = "",
+        modalita: str = MODALITA_PAYLOAD,
     ):
         self.backend = backend
         self.keyring = keyring
@@ -241,6 +254,20 @@ class TagIO:
         self.user_memory_bytes = user_memory_bytes
         self.db = db
         self.operator = operator
+        if modalita not in (MODALITA_PAYLOAD, MODALITA_SOLO_EPC):
+            raise ValueError(f"modalita' di scrittura sconosciuta: {modalita}")
+        self.modalita = modalita
+
+    @property
+    def solo_epc(self) -> bool:
+        """Vero se sul tag va scritto soltanto lo pseudonimo.
+
+        Serve per i chip senza USER memory utilizzabile. Ha senso **da quando la
+        distinta stampata porta i dati del paziente sulla carta**: prima, un tag
+        senza payload avrebbe lasciato il laboratorio destinatario senza nessun
+        modo di sapere cosa aveva in mano.
+        """
+        return self.modalita == MODALITA_SOLO_EPC
 
     # -- costruzione delle richieste --------------------------------------
     def _read_request(self, bank: int, address: int, words: int, select_epc: str = ""):
@@ -352,6 +379,12 @@ class TagIO:
             esito.antenna = antenna
             passo(f"TID letto su antenna {antenna}: {esito.tid}")
 
+            # Si valida lo spazio PRIMA di cambiare l'EPC. In precedenza il
+            # controllo avveniva dopo: con una configurazione troppo prudente
+            # il tag restava con il nuovo EPC ma senza payload, cioe' a meta'
+            # della procedura mostrata all'operatore.
+            chiaro = pack_payload(payload, max_bytes=self.payload_capacity)
+
             # Scrittura unica: il chip si interroga PRIMA di toccarlo.
             # Un archivio che non tiene il registro dei tag equivale a non averlo:
             # la guardia non si puo' applicare, e va detto invece di fallire con
@@ -427,8 +460,37 @@ class TagIO:
                 )
             passo("nuovo EPC confermato")
 
+            if self.solo_epc:
+                # 6-8 non hanno oggetto: questo chip non ha una USER memory in
+                # cui mettere il campione. Il contenitore resta identificato
+                # dall'EPC, e cosa contiene lo dice la distinta.
+                passo("solo EPC: questo tag non porta il campione")
+                esito.payload_bytes = 0
+                esito.blocks_written = 0
+                if self.db is not None and container_id is not None:
+                    self.db.mark_provisioned(container_id, esito.tid, revision)
+                    self.db.assign_tag(
+                        esito.tid,
+                        container_id,
+                        esito.epc,
+                        revision,
+                        allow_rewrite=authorized_rewrite,
+                    )
+                    self.db.clear_tag_failures(esito.tid)
+                esito.ok = True
+                self._log(
+                    "provision",
+                    ok=True,
+                    epc=esito.epc,
+                    tid=esito.tid,
+                    container_id=container_id,
+                    antenna=antenna,
+                    detail="solo EPC (nessuna USER memory)",
+                )
+                log.info("Contenitore scritto in sola identita': EPC %s", esito.epc)
+                return esito
+
             # 6. sigillo: EPC e TID sono dati autenticati, quindi si sigilla ora.
-            chiaro = pack_payload(payload, max_bytes=self.payload_capacity)
             sigillato = seal(
                 chiaro,
                 epc=nuovo_epc,
@@ -754,6 +816,26 @@ class TagIO:
         from rfid_silion.service import MemoryBank
 
         select = observation.epc if isolate else ""
+        if self.solo_epc:
+            # Un tag senza payload non e' un tag rotto. Chiamarlo «illeggibile»
+            # manderebbe l'operatore a cercare un guasto che non c'e', e a
+            # buttare via un chip che funziona.
+            observation.status = "solo_epc"
+            observation.detail = "questo circuito non porta il campione: sta sulla distinta"
+            try:
+                lettura_tid = raise_for_status(
+                    self.backend.read(
+                        self._read_request(MemoryBank.TID, 0, TID_AAD_WORDS, select)
+                    ),
+                    "lettura TID",
+                )
+                _, tid_bytes = first_read(lettura_tid)
+                observation.tid = tid_bytes[:TID_AAD_BYTES].hex().upper()
+            except ServiceCallError as exc:
+                observation.detail = f"TID non letto: {exc}"
+            if observation.epc_info is None:
+                observation.status = "estraneo"
+            return
         try:
             lettura_tid = raise_for_status(
                 self.backend.read(

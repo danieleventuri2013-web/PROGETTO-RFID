@@ -70,6 +70,16 @@
 :root[data-postazione="tavoletta"] select,
 :root[data-postazione="tavoletta"] textarea,
 :root[data-postazione="tavoletta"] .serie__voce,
+/* Le due schede di Impostazioni sono un bersaglio da dito come gli altri: a
+   banco bastano i 40px del riempimento, qui no. Sono anche l'unico modo per
+   arrivare alle misure, quindi mancarle costa un giro di ricerca. */
+:root[data-postazione="tavoletta"] .schede__voce {
+  min-height: var(--tocco);
+  padding-left: var(--s6, 32px);
+  padding-right: var(--s6, 32px);
+  font-size: var(--t-medio);
+}
+
 :root[data-postazione="tavoletta"] .rail__voce {
   touch-action: manipulation;
   -webkit-tap-highlight-color: transparent;
@@ -168,21 +178,6 @@
   padding: 0 var(--s2);
   margin-inline: calc(-1 * var(--s2));
   border-radius: var(--r2);
-}
-
-/* -- Il conteggio dei contenitori ----------------------------------------
-   E' il dato che si sbaglia piu' spesso e l'unico che dopo la scrittura non
-   si corregge: qui i due passi valgono un bersaglio pieno. */
-:root[data-postazione="tavoletta"] .conteggio__passo {
-  width: var(--tocco-verbo);
-  height: var(--tocco-verbo);
-  font-size: var(--t-titolo);
-}
-
-:root[data-postazione="tavoletta"] .conteggio__numero {
-  width: 116px;
-  min-height: var(--tocco-verbo);
-  font-size: 2.5rem;
 }
 
 /* -- I cursori delle potenze ----------------------------------------------

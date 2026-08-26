@@ -895,6 +895,56 @@ def test_la_campagna_pretende_i_tag_dentro():
         assert "rilevato" in errore["errore"]
 
 
+def test_inventario_campagna_unisce_venti_letture_e_ripristina_la_radio():
+    """Tag intermittenti e tag stabili compaiono nella stessa fotografia."""
+    stabile = _tag_vergine(1)
+    intermittente = _tag_vergine(2)
+    intermittente.visible_every = 2
+    with _Postazione(_tmp("inventario_campagna"), [stabile, intermittente]) as posto:
+        gen2_prima = dict(posto.backend.gen2)
+        stato, esito = posto.post("/api/inventario_campagna", {"cicli": 20})
+
+        assert stato == 200
+        assert esito["cicli"] == 20
+        per_epc = {voce["epc"]: voce for voce in esito["tag"]}
+        assert per_epc[stabile.epc_hex]["letture"] == 20
+        assert per_epc[intermittente.epc_hex]["letture"] == 10
+        assert posto.backend.inventory_calls == 20
+        assert posto.backend.read_power_cdbm == 2900, "le potenze operative vanno ripristinate"
+        assert posto.backend.gen2 == gen2_prima
+
+
+def test_campagna_richiede_la_classificazione_completa_della_fotografia():
+    interno = _tag_vergine(1)
+    esterno = _tag_vergine(2)
+    non_classificato = _tag_vergine(3)
+    with _Postazione(
+        _tmp("classificazione_campagna"), [interno, esterno, non_classificato]
+    ) as posto:
+        stato, _ = posto.post("/api/inventario_campagna", {"cicli": 2})
+        assert stato == 200
+
+        stato, errore = posto.post(
+            "/api/campagna",
+            {"dentro": [interno.epc_hex], "fuori": [esterno.epc_hex]},
+        )
+        assert stato == 400
+        assert "classificare tutti" in errore["errore"]
+
+        stato, report = posto.post(
+            "/api/campagna",
+            {
+                "cicli": 1,
+                "potenze_dbm": [20],
+                "dentro": [interno.epc_hex],
+                "fuori": [esterno.epc_hex, non_classificato.epc_hex],
+            },
+        )
+        assert stato == 200
+        assert report["dentro"] == [interno.epc_hex]
+        assert set(report["fuori"]) == {esterno.epc_hex, non_classificato.epc_hex}
+
+
 def test_un_epc_non_puo_essere_dentro_e_fuori():
     """Dichiararlo due volte renderebbe la misura insensata."""
     tag = _tag_vergine(1)
@@ -972,6 +1022,135 @@ def test_lo_storico_dice_cosa_dove_quando_e_chi():
         assert spedizione["sigillo_ok"] == 1
         # Data e ora della partenza, non solo la data.
         assert spedizione["inviata"] and "T" in spedizione["inviata"]
+
+
+def _accetta_paziente(posto: _Postazione, cf: str, cognome: str, nome: str) -> None:
+    stato, dati = posto.post(
+        "/api/registra",
+        {
+            "codice_fiscale": cf,
+            "cognome": cognome,
+            "nome": nome,
+            "sesso": "F",
+            "descrizione": "biopsia",
+        },
+    )
+    assert stato == 200, dati
+    # I tag non si scrivono: qui interessa solo che il paziente entri in
+    # archivio. `nuova_accettazione` rifiuterebbe con contenitori da scrivere.
+    posto.post("/api/annulla_accettazione", {"motivo": "prova d'archivio"})
+
+
+def test_l_archivio_si_apre_gia_pieno():
+    """Vuoto vuol dire tutti.
+
+    Chi cerca un caso di tre mesi fa spesso non ricorda il cognome, ricorda che
+    c'era: una tabella vuota davanti a un archivio pieno lo manda a indovinare.
+    """
+    cartella = _tmp("archivio_tutti")
+    with _Postazione(cartella, []) as posto:
+        posto.post("/api/operatore", {"nome": "DV"})
+        for cf, cognome in (
+            ("MRTMTT25D09F205Z", "Della Valle"),
+            ("RSSMRA80A01H501U", "Rossi"),
+            ("BNCLCU75M41F839Q", "Bianchi"),
+        ):
+            _accetta_paziente(posto, cf, cognome, "Prova")
+
+        stato, risposta = posto.post("/api/cerca_paziente", {})
+        assert stato == 200, risposta
+        assert len(risposta["risultati"]) == 3
+        assert risposta["totale"] == 3
+        assert risposta["filtrato"] is False
+        assert risposta["altri"] == 0
+
+
+def test_la_ricerca_continua_a_restringere():
+    cartella = _tmp("archivio_filtro")
+    with _Postazione(cartella, []) as posto:
+        posto.post("/api/operatore", {"nome": "DV"})
+        for cf, cognome in (
+            ("MRTMTT25D09F205Z", "Della Valle"),
+            ("RSSMRA80A01H501U", "Rossi"),
+        ):
+            _accetta_paziente(posto, cf, cognome, "Prova")
+
+        _, tutti = posto.post("/api/cerca_paziente", {})
+        assert tutti["totale"] == 2
+        _, filtrati = posto.post("/api/cerca_paziente", {"query": "Rossi"})
+        assert filtrati["totale"] == 1
+        assert filtrati["filtrato"] is True
+        assert filtrati["risultati"][0]["cognome"] == "ROSSI"
+
+
+def test_il_totale_non_e_quello_della_pagina():
+    """«50 pazienti» e «50 dei 1284» si leggono uguale e non lo sono."""
+    cartella = _tmp("archivio_pagine")
+    with _Postazione(cartella, []) as posto:
+        posto.post("/api/operatore", {"nome": "DV"})
+        codici = ["MRTMTT25D09F205Z", "RSSMRA80A01H501U", "BNCLCU75M41F839Q"]
+        for indice, cf in enumerate(codici):
+            _accetta_paziente(posto, cf, f"Cognome{indice}", "Prova")
+
+        prima = posto.server.workflow.cerca_paziente("", limite=2)
+        assert len(prima["risultati"]) == 2
+        assert prima["totale"] == 3, "il totale conta tutto l'archivio"
+        assert prima["altri"] == 1
+
+        seconda = posto.server.workflow.cerca_paziente("", limite=2, offset=2)
+        assert len(seconda["risultati"]) == 1
+        assert seconda["altri"] == 0
+        # Nessun paziente compare in due pagine, e nessuno sparisce.
+        visti = [r["id"] for r in prima["risultati"]] + [r["id"] for r in seconda["risultati"]]
+        assert len(set(visti)) == 3
+
+
+def test_l_ordine_alfabetico_e_quello_per_data_sono_due_domande_diverse():
+    cartella = _tmp("archivio_ordine")
+    with _Postazione(cartella, []) as posto:
+        posto.post("/api/operatore", {"nome": "DV"})
+        # Inseriti in ordine alfabetico inverso: se l'ordinamento non facesse
+        # niente, i due elenchi verrebbero identici e il test non direbbe nulla.
+        for cf, cognome in (
+            ("RSSMRA80A01H501U", "Zoppi"),
+            ("BNCLCU75M41F839Q", "Neri"),
+            ("MRTMTT25D09F205Z", "Alberti"),
+        ):
+            _accetta_paziente(posto, cf, cognome, "Prova")
+
+        _, alfabetico = posto.post("/api/cerca_paziente", {"ordine": "alfabetico"})
+        assert [r["cognome"] for r in alfabetico["risultati"]] == ["ALBERTI", "NERI", "ZOPPI"]
+        assert alfabetico["ordine"] == "alfabetico"
+
+        _, recenti = posto.post("/api/cerca_paziente", {"ordine": "recenti"})
+        assert recenti["risultati"][0]["cognome"] == "ALBERTI", "l'ultimo accettato in cima"
+
+        # Un ordine inventato non fa esplodere niente: si ripiega sul predefinito.
+        _, strano = posto.post("/api/cerca_paziente", {"ordine": "a caso"})
+        assert strano["ordine"] == "recenti"
+        assert len(strano["risultati"]) == 3
+
+
+def test_un_archivio_vuoto_lo_dice():
+    cartella = _tmp("archivio_vuoto")
+    with _Postazione(cartella, []) as posto:
+        stato, risposta = posto.post("/api/cerca_paziente", {})
+        assert stato == 200
+        assert risposta["risultati"] == []
+        assert risposta["totale"] == 0
+        assert risposta["filtrato"] is False
+
+
+def test_l_elenco_resta_leggibile_durante_una_lettura_lunga():
+    """L'archivio non tocca la radio: si consulta mentre un sigillo e' in corso."""
+    cartella = _tmp("archivio_durante")
+    with _Postazione(cartella, []) as posto:
+        posto.post("/api/operatore", {"nome": "DV"})
+        _accetta_paziente(posto, "MRTMTT25D09F205Z", "Della Valle", "Prova")
+        with posto.server._radio_lock:
+            stato, risposta = posto.post("/api/cerca_paziente", {})
+        assert stato == 200, "niente 409: non e' un'operazione radio"
+        assert risposta["totale"] == 1
 
 
 def test_lo_storico_non_dichiara_completo_cio_che_non_lo_e():

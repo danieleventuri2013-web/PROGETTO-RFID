@@ -34,6 +34,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+from rfid_silion.diario import Diario
 from rfid_silion.rpc import RFIDRPCDispatcher
 
 from . import icone
@@ -52,6 +53,21 @@ _OVUNQUE = frozenset({"0.0.0.0", "", "::"})
 #: Oltre questa soglia una richiesta viene rifiutata senza leggerla: il corpo
 #: piu' grande e' una distinta, che sta in poche decine di kilobyte.
 MAX_BODY_BYTES = 4 * 1024 * 1024
+
+#: Operazioni che non finiscono nel diario come record `api`. `traccia`
+#: scriverebbe un record per ogni lotto di record; `stato` e' una lettura di
+#: stato che non cambia niente e comparirebbe a decine.
+_API_SILENZIOSE = frozenset({"traccia", "stato"})
+
+#: Nomi di campo il cui valore non entra mai nel diario, da qualunque canale
+#: arrivi: il PIN della deroga alla partenza, la password di accesso ai tag, il
+#: token della postazione. Del gesto resta traccia, del segreto no.
+_CHIAVI_SEGRETE = ("password", "pin", "token", "passphrase", "segreto", "credenzial")
+
+#: Quanti eventi dell'interfaccia si accettano in un solo lotto. La pagina ne
+#: manda una decina per volta: oltre questa soglia non e' piu' il browser che
+#: racconta, e' qualcuno che riempie il disco.
+_MAX_EVENTI_UI = 200
 
 #: Ogni quanto il flusso SSE manda un commento di tenuta. Serve a scoprire un
 #: browser chiuso senza aspettare il timeout del sistema operativo.
@@ -83,11 +99,15 @@ class EventBus:
     contratto del servizio.
     """
 
-    def __init__(self, *, max_queue: int = 200):
+    def __init__(self, *, max_queue: int = 200, diario: Diario | None = None):
         self._lock = threading.Lock()
         self._subscribers: list[queue.Queue] = []
         self._max_queue = max_queue
         self._sequence = 0
+        # Il diario registra gli eventi *emessi*, non quelli consegnati: cosi'
+        # nel file resta la scena come il server l'ha raccontata, anche se un
+        # browser lento ne ha persi per strada.
+        self.diario = diario or Diario.spento()
 
     def subscribe(self) -> queue.Queue:
         coda: queue.Queue = queue.Queue(maxsize=self._max_queue)
@@ -115,6 +135,7 @@ class EventBus:
                 "timestamp": time.time(),
             }
             iscritti = list(self._subscribers)
+        self.diario.scrivi("evento", kind, evento["data"])
         for coda in iscritti:
             try:
                 coda.put_nowait(evento)
@@ -205,9 +226,20 @@ class WebUIServer:
         static_dir: Path | None = None,
         workflow: Workflow | None = None,
         config_path: str | Path | None = None,
+        diario: Diario | None = None,
+        banco: Any = None,
     ):
         self.config = dict(config)
         self.backend = backend
+        # Il diario e' sempre presente, eventualmente spento: cosi' nessuna
+        # chiamata deve chiedersi se esiste.
+        self.diario = diario or Diario.spento()
+        # Gli eventi del browser si possono spegnere da soli, lasciando accesi
+        # quelli della radio: sono le due meta' del diario e non sempre
+        # servono insieme.
+        self.diario_interfaccia = bool(
+            (self.config.get("diario", {}) or {}).get("interfaccia", True)
+        )
         self.host = host
         self.port = port
         self.token = token or secrets.token_urlsafe(24)
@@ -215,8 +247,12 @@ class WebUIServer:
         # avvio e l'altro: e' la condizione perche' un collegamento salvato
         # sulla tavoletta continui a funzionare domani.
         self.token_fisso = bool(token)
+        # Il banco di prova esiste solo quando il lettore e' simulato. Finche'
+        # e' `None` la rotta non viene nemmeno registrata: nessuna postazione
+        # vera deve poter far comparire un campione che non esiste.
+        self.banco = banco
         self.static_dir = Path(static_dir or STATIC_DIR)
-        self.events = EventBus()
+        self.events = EventBus(diario=self.diario)
         self.workflow = workflow or Workflow(self.config, backend, config_path=config_path)
         self.dispatcher = RFIDRPCDispatcher(backend) if _is_service(backend) else None
         self._radio_lock = threading.Lock()
@@ -340,8 +376,16 @@ class WebUIServer:
         aggiornarsi.
         """
         f = self.workflow
-        return {
-            "descrivi": (lambda _d: f.descrivi(), False),
+        operazioni: dict[str, tuple[Callable[..., Any], bool]] = {
+            # Il flag del banco lo aggiunge il server: `Workflow` non deve
+            # sapere se sotto c'e' un lettore vero o simulato.
+            "descrivi": (
+                lambda _d: {**f.descrivi(), "banco_di_prova": self.banco is not None},
+                False,
+            ),
+            # Il diario dell'interfaccia: mai radio, cosi' resta raggiungibile
+            # anche mentre il lettore e' impegnato in un sigillo.
+            "traccia": (lambda d: self.traccia(d), False),
             "indirizzi": (lambda _d: self.indirizzi(), False),
             "riprendi_workflow": (lambda _d: f.riprendi_workflow(), False),
             "operatore": (lambda d: f.imposta_operatore(d.get("nome", "")), False),
@@ -375,8 +419,26 @@ class WebUIServer:
                 False,
             ),
             "stato_spedizione": (lambda _d: f.stato_spedizione(), False),
+            "spedizioni_aperte": (lambda d: f.spedizioni_aperte(d.get("limite", 20)), False),
+            "riapri_spedizione": (
+                lambda d: f.riapri_spedizione(d.get("shipment_id")),
+                False,
+            ),
             "annulla_spedizione": (lambda _d: f.annulla_spedizione(), False),
+            # Riempimento: la scatola aperta sulle antenne di lettura.
+            "avvia_riempimento": (
+                lambda d: self._avvia_riempimento(d.get("destinazione", "")),
+                True,
+            ),
+            "sorveglia_scatola": (lambda _d: self._sorveglia_scatola(), True),
+            "togli_dalla_scatola": (
+                lambda d: f.togli_dalla_scatola(d.get("epc", "")),
+                False,
+            ),
+            "chiudi_riempimento": (lambda _d: f.chiudi_riempimento(), False),
             "sigilla": (lambda _d: self._sigilla(), True),
+            "distinta_stampabile": (lambda _d: f.distinta_stampabile(), False),
+            "leggi_qr_distinta": (lambda d: f.leggi_qr_distinta(d.get("scansioni", [])), False),
             "invia_distinta_pec": (lambda _d: f.invia_distinta_pec(), False),
             "aggiorna_ricevute_pec": (lambda _d: f.aggiorna_ricevute_pec(), False),
             "conferma_invio": (
@@ -389,6 +451,14 @@ class WebUIServer:
             "importa_distinta": (lambda d: self._importa_distinta(d), False),
             "stato_ricezione": (lambda _d: f.stato_ricezione(), False),
             "leggi_volume": (lambda _d: self._leggi_volume(), True),
+            "stato_riscontro": (lambda _d: f.stato_riscontro(), False),
+            "importa_riscontro": (lambda d: self._importa_riscontro(d), False),
+            "riepilogo_transito": (
+                lambda d: f.riepilogo_transito(
+                    d.get("destinazione", ""), d.get("dal", ""), d.get("al", "")
+                ),
+                False,
+            ),
             "conferma_ricezione": (
                 lambda d: f.conferma_ricezione(d.get("motivo_non_conformita", "")),
                 False,
@@ -399,14 +469,36 @@ class WebUIServer:
             "salute": (lambda _d: f.salute(), True),
             "potenze": (lambda d: f.imposta_potenze(d), True),
             "gen2": (lambda d: f.imposta_gen2(d), True),
-            "diagnostica_antenna": (lambda d: f.diagnostica_antenna(d.get("antenna", 1)), True),
+            "gen2_consigliato": (lambda _d: f.gen2_consigliato(), True),
+            "prova_lettura": (lambda d: f.prova_lettura(d.get("cicli", 5)), True),
+            "diagnostica_antenna": (
+                lambda d: f.diagnostica_antenna(
+                    d.get("antenna", 1),
+                    banda=d.get("banda"),
+                    da_khz=d.get("da_khz"),
+                    a_khz=d.get("a_khz"),
+                    passo_khz=d.get("passo_khz", 1000),
+                    consenti_cambio_regione=bool(d.get("consenti_cambio_regione", False)),
+                ),
+                True,
+            ),
             "profila_tag": (lambda _d: self._profila(), True),
+            "applica_profilo": (lambda d: f.applica_profilo(d), False),
+            "registro_misure": (lambda d: f.registro_misure(d.get("limite", 40)), False),
+            "inventario_campagna": (lambda d: self._inventario_campagna(d), True),
             "rileva_controllo": (
                 lambda d: f.rileva_controllo(d.get("posizione", "dentro")),
                 True,
             ),
             "campagna": (lambda d: self._campagna(d), True),
-            "cerca_paziente": (lambda d: f.cerca_paziente(d.get("query", "")), False),
+            "cerca_paziente": (
+                lambda d: f.cerca_paziente(
+                    d.get("query", ""),
+                    offset=int(d.get("offset", 0) or 0),
+                    ordine=str(d.get("ordine", "recenti")),
+                ),
+                False,
+            ),
             "storico_paziente": (lambda d: f.storico_paziente(d.get("patient_id")), False),
             "traccia_contenitore": (lambda d: f.traccia_contenitore(d.get("epc", "")), False),
             "registro": (lambda d: f.registro(d.get("limite", 100)), False),
@@ -422,6 +514,12 @@ class WebUIServer:
             "avanzate": (lambda d: f.imposta_avanzate(d), True),
             "salva_impostazioni": (lambda d: f.salva_impostazioni(d), False),
         }
+        if self.banco is not None:
+            # Muovere un tag nel campo simulato cambia cio' che il lettore
+            # vede: e' un'operazione radio a tutti gli effetti, e va serializzata
+            # con le altre.
+            operazioni["simulazione"] = (lambda d: self._simulazione(d), True)
+        return operazioni
 
     # -- operazioni che pubblicano eventi -----------------------------------
     def _connetti(self) -> dict[str, Any]:
@@ -453,6 +551,35 @@ class WebUIServer:
                 "totale": esito["totale"],
             },
         )
+        return esito
+
+    def _avvia_riempimento(self, destinazione: str) -> dict[str, Any]:
+        esito = self.workflow.avvia_riempimento(destinazione)
+        self.events.publish(
+            "riempimento",
+            {
+                "fase": "avvio",
+                "shipment_id": esito.get("shipment_id"),
+                "destinazione": esito.get("destinazione", ""),
+            },
+        )
+        return esito
+
+    def _sorveglia_scatola(self) -> dict[str, Any]:
+        """Un giro di letture, con gli eventi che muovono la scena.
+
+        Ogni ingresso e ogni uscita esce di qui nel momento in cui accade: la
+        pagina fa il bip su questo, non su un timer. Un giro che non cambia
+        niente non pubblica niente — il silenzio e' informazione anche lui.
+        """
+        esito = self.workflow.sorveglia_scatola()
+        for evento in esito.get("eventi", []):
+            self.events.publish("riempimento", {"fase": "tag", **evento})
+        if esito.get("eventi"):
+            self.events.publish(
+                "riempimento",
+                {"fase": "conteggio", "quanti": esito.get("quanti", 0)},
+            )
         return esito
 
     def _sigilla(self) -> dict[str, Any]:
@@ -520,6 +647,44 @@ class WebUIServer:
         self.events.publish("campagna", {"fase": "fine", "configurazioni": len(esito.get("risultati", []))})
         return esito
 
+    def _inventario_campagna(self, dati: Mapping[str, Any]) -> dict[str, Any]:
+        """Fotografia iniziale: pubblica l'avanzamento dei circa venti cicli."""
+        cicli = int(dati.get("cicli", 20))
+        self.events.publish("campagna", {"fase": "inventario_avvio", "totale": cicli})
+
+        def avanzamento(indice: int, totale: int, trovati: int) -> None:
+            self.events.publish(
+                "campagna",
+                {
+                    "fase": "inventario_ciclo",
+                    "indice": indice,
+                    "totale": totale,
+                    "trovati": trovati,
+                },
+            )
+
+        esito = self.workflow.inventario_campagna(cicli, on_progress=avanzamento)
+        self.events.publish(
+            "campagna",
+            {"fase": "inventario_fine", "trovati": len(esito.get("tag", []))},
+        )
+        return esito
+
+    def _importa_riscontro(self, dati: Mapping[str, Any]) -> dict[str, Any]:
+        import base64
+        import binascii
+
+        try:
+            contenuto = base64.b64decode(str(dati.get("contenuto_base64", "")), validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise WorkflowError(f"file non leggibile: {exc}") from exc
+        esito = self.workflow.importa_riscontro(contenuto)
+        self.events.publish(
+            "arrivo",
+            {"shipment_id": esito.get("shipment_id"), "ok": bool(esito.get("ok"))},
+        )
+        return esito
+
     def _importa_distinta(self, dati: Mapping[str, Any]) -> dict[str, Any]:
         import base64
         import binascii
@@ -530,6 +695,28 @@ class WebUIServer:
         except (binascii.Error, ValueError) as exc:
             raise WorkflowError(f"file non leggibile: {exc}") from exc
         return self.workflow.importa_distinta(contenuto)
+
+    def _simulazione(self, dati: Mapping[str, Any]) -> dict[str, Any]:
+        """Il banco di prova: appoggia e togli campioni dal campo simulato.
+
+        E' l'unico modo di provare cio' che accade *mentre* qualcosa cambia —
+        il riempimento della scatola, la sorveglianza del piatto — senza avere
+        in mano trenta contenitori e un lettore acceso.
+        """
+        azione = str(dati.get("azione", "elenco")).strip().lower()
+        epc = str(dati.get("epc", "")).strip().upper()
+        try:
+            if azione == "metti":
+                return self.banco.metti(epc)
+            if azione == "togli":
+                return self.banco.togli(epc)
+            if azione == "svuota":
+                return self.banco.svuota()
+            if azione == "elenco":
+                return self.banco.elenco()
+        except KeyError as exc:
+            raise WorkflowError(str(exc).strip("'")) from exc
+        raise WorkflowError(f"azione sconosciuta per il banco di prova: {azione}")
 
     def _leggi_volume(self) -> dict[str, Any]:
         self.events.publish("ricezione", {"fase": "lettura"})
@@ -553,34 +740,78 @@ class WebUIServer:
             return HTTPStatus.NOT_FOUND, {"errore": f"operazione sconosciuta: {nome}"}
         funzione, radio = voce
         if not radio:
-            return self._esegui(funzione, dati)
+            return self._esegui(nome, funzione, dati)
         try:
             self._acquire(nome)
         except _Busy as exc:
+            # Vale la pena registrarlo: un 409 dice che l'operatore ha premuto
+            # mentre la radio era occupata, ed e' un fatto sul flusso, non un
+            # guasto.
+            self.diario.scrivi(
+                "api", nome, {"stato": int(HTTPStatus.CONFLICT), "occupato_da": str(exc)}
+            )
             return HTTPStatus.CONFLICT, {
                 "errore": f"il lettore sta gia' eseguendo: {exc}",
                 "occupato": True,
             }
         try:
-            return self._esegui(funzione, dati)
+            return self._esegui(nome, funzione, dati)
         finally:
             self._release()
 
-    @staticmethod
     def _esegui(
-        funzione: Callable[..., Any], dati: Mapping[str, Any]
+        self, nome: str, funzione: Callable[..., Any], dati: Mapping[str, Any]
     ) -> tuple[int, dict[str, Any]]:
+        avvio = time.perf_counter()
         try:
-            return HTTPStatus.OK, funzione(dati)
+            stato, risposta = HTTPStatus.OK, funzione(dati)
         except WorkflowError as exc:
             # Errore previsto: e' un messaggio pensato per l'operatore.
-            return HTTPStatus.BAD_REQUEST, {"errore": str(exc)}
+            stato, risposta = HTTPStatus.BAD_REQUEST, {"errore": str(exc)}
         except Exception as exc:  # noqa: BLE001
             log.exception("Operazione non riuscita")
-            return HTTPStatus.INTERNAL_SERVER_ERROR, {
+            stato, risposta = HTTPStatus.INTERNAL_SERVER_ERROR, {
                 "errore": f"{type(exc).__name__}: {exc}",
                 "imprevisto": True,
             }
+        if nome not in _API_SILENZIOSE:
+            self.diario.scrivi(
+                "api",
+                nome,
+                {
+                    "stato": int(stato),
+                    "richiesta": _ripulisci(dati),
+                    "risposta": _ripulisci(risposta),
+                },
+                durata_ms=(time.perf_counter() - avvio) * 1000,
+            )
+        return stato, risposta
+
+    def traccia(self, dati: Mapping[str, Any]) -> dict[str, Any]:
+        """Accoglie un lotto di eventi dal browser e li mette nel diario.
+
+        Non tocca la radio, quindi resta viva **durante** un sigillo lungo: e'
+        proprio allora che serve sapere cosa ha premuto l'operatore. Il
+        contenuto arriva dalla pagina e non viene interpretato: qui si annota,
+        non si obbedisce.
+        """
+        if not self.diario_interfaccia:
+            return {"registrati": 0, "diario": False}
+        eventi = dati.get("eventi")
+        if not isinstance(eventi, (list, tuple)):
+            raise WorkflowError("«eventi» deve essere un elenco")
+        if len(eventi) > _MAX_EVENTI_UI:
+            raise WorkflowError(
+                f"troppi eventi in un solo lotto: al massimo {_MAX_EVENTI_UI}"
+            )
+        scritti = 0
+        for evento in eventi:
+            if not isinstance(evento, Mapping):
+                continue
+            nome = str(evento.get("nome", "")).strip()[:80] or "senza-nome"
+            self.diario.scrivi("ui", nome, _senza_segreti(evento))
+            scritti += 1
+        return {"registrati": scritti, "diario": bool(self.diario.attivo)}
 
     def rpc(self, richiesta: Any) -> Any:
         """Inoltra al dispatcher del servizio, senza reinterpretare niente."""
@@ -629,6 +860,13 @@ class WebUIServer:
             ) from exc
         # La porta effettiva puo' differire se si chiede 0.
         self.port = self._httpd.server_address[1]
+        self.diario.nota(
+            "sessione_avviata",
+            host=self.host,
+            porta=self.port,
+            token_fisso=self.token_fisso,
+            backend=type(self.backend).__name__,
+        )
 
     def serve_forever(self) -> None:
         self.apri()
@@ -663,6 +901,63 @@ class WebUIServer:
         if self._unsubscribe is not None:
             self._unsubscribe()
         self.workflow.chiudi()
+        self.diario.nota("sessione_chiusa")
+        self.diario.chiudi()
+
+
+def _riservato(nome: Any) -> bool:
+    minuscola = str(nome).lower()
+    return any(segreto in minuscola for segreto in _CHIAVI_SEGRETE)
+
+
+def _ripulisci(valore: Any, profondita: int = 0) -> Any:
+    """Toglie i segreti da una struttura diretta al diario.
+
+    Vale per richiesta e risposta di ogni operazione: `conferma_invio` porta il
+    PIN del responsabile, `avanzate` la password di accesso ai tag. Il resto
+    passa intatto — il diario serve proprio a rileggere cosa e' stato chiesto.
+    """
+    if profondita > 8:
+        return valore
+    if isinstance(valore, Mapping):
+        return {
+            str(chiave): (
+                "(non registrato)"
+                if _riservato(chiave)
+                else _ripulisci(contenuto, profondita + 1)
+            )
+            for chiave, contenuto in valore.items()
+        }
+    if isinstance(valore, (list, tuple)):
+        return [_ripulisci(voce, profondita + 1) for voce in valore]
+    return valore
+
+
+def _senza_segreti(evento: Mapping[str, Any]) -> dict[str, Any]:
+    """L'evento del browser ripulito di cio' che non deve essere conservato.
+
+    Sapere *che* un PIN e' stato digitato serve a ricostruire il flusso; sapere
+    quale, no. La pagina gia' non guarda i campi password, ma il diario non
+    deve dipendere dalla buona educazione del browser: la regola vale anche se
+    qualcuno chiama la rotta a mano.
+
+    Un evento su un campo riservato si riconosce dal nome della chiave
+    (`pin`, `password`, …) oppure dall'identificativo del campo, perche' la
+    pagina manda `{"id": "pin-deroga", "valore": "…"}` e li' la chiave e'
+    soltanto «valore».
+    """
+    identita_riservata = _riservato(evento.get("id", "")) or _riservato(
+        evento.get("name", "")
+    )
+    ripulito: dict[str, Any] = {}
+    for chiave, valore in evento.items():
+        if chiave == "nome":
+            continue
+        if _riservato(chiave) or (identita_riservata and chiave in ("valore", "testo")):
+            ripulito[str(chiave)] = "(non registrato)"
+        else:
+            ripulito[str(chiave)] = valore
+    return ripulito
 
 
 def _is_service(backend: Any) -> bool:
@@ -802,8 +1097,29 @@ def _make_handler(server: WebUIServer) -> type[BaseHTTPRequestHandler]:
                 self._json(HTTPStatus.OK, server.interrompi())
                 return
 
-            if parti.path == "/api/distinta":
-                self._scarica_distinta()
+            # I tre file che escono da qui. Il corpo lo produce il flusso, il
+            # server aggiunge solo l'involucro HTTP.
+            scarichi = {
+                "/api/distinta": (
+                    server.workflow.esporta_distinta,
+                    "application/octet-stream",
+                ),
+                "/api/riscontro": (
+                    server.workflow.esporta_riscontro,
+                    "application/octet-stream",
+                ),
+                "/api/riepilogo": (
+                    lambda: server.workflow.esporta_riepilogo(
+                        corpo.get("destinazione", ""),
+                        corpo.get("dal", ""),
+                        corpo.get("al", ""),
+                    ),
+                    "text/csv; charset=utf-8",
+                ),
+            }
+            if parti.path in scarichi:
+                produci, tipo = scarichi[parti.path]
+                self._scarica(produci, tipo)
                 return
 
             if not parti.path.startswith("/api/"):
@@ -818,19 +1134,19 @@ def _make_handler(server: WebUIServer) -> type[BaseHTTPRequestHandler]:
             self._json(stato, dati)
 
         # -- flussi -----------------------------------------------------------
-        def _scarica_distinta(self) -> None:
-            """La distinta cifrata come allegato scaricabile."""
+        def _scarica(self, produci: Callable[[], tuple[bytes, str]], tipo: str) -> None:
+            """Un file come allegato: la distinta, il verbale, il riepilogo."""
             try:
-                blob, nome = server.workflow.esporta_distinta()
+                blob, nome = produci()
             except WorkflowError as exc:
                 self._json(HTTPStatus.BAD_REQUEST, {"errore": str(exc)})
                 return
             except Exception as exc:  # noqa: BLE001
-                log.exception("Esportazione della distinta non riuscita")
+                log.exception("Produzione del file da scaricare non riuscita")
                 self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"errore": str(exc)})
                 return
             self.send_response(HTTPStatus.OK)
-            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Type", tipo)
             self.send_header("Content-Disposition", f'attachment; filename="{nome}"')
             self.send_header("Content-Length", str(len(blob)))
             self.end_headers()

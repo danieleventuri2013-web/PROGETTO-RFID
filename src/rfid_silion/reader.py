@@ -583,7 +583,7 @@ class SIM7200Reader:
         self,
         antenna: int,
         *,
-        band: int = 0x01,
+        band: int = 0x08,
         frequencies_khz: list[int] | None = None,
         timeout_ms: int = 30000,
     ) -> list[dict]:
@@ -594,7 +594,9 @@ class SIM7200Reader:
         VSWR < 7 come soglia di accettabilita': oltre, l'antenna e' disadattata,
         danneggiata, mal collegata o assente.
 
-        `frequencies_khz=None` misura tutte le frequenze della banda corrente.
+        `frequencies_khz=None` misura tutte le frequenze della banda indicata.
+        Il valore predefinito e' CE_LOW/EU (0x08): sui moduli certificati per
+        l'Europa il firmware rifiuta le altre bande con lo stato 0x010B.
         La potenza di prova non e' impostabile: il modulo usa sempre 20 dBm, e il
         campo esiste solo per compatibilita'. Il test puo' durare decine di
         secondi, da cui il timeout generoso.

@@ -27,6 +27,25 @@ const stato = {
   ultimoContenitore: null,
   etichettaCorrente: null,
   impostazioni: null,
+  campagnaTag: [],
+  /** Contenitori scritti e non ancora in una spedizione. */
+  residuo: 0,
+  /** Riempimento in corso: l'ultimo riepilogo ricevuto dal server. */
+  riempimento: null,
+  /** Le parti del QR lette finora, in attesa che siano tutte. */
+  scansioni: [],
+  distintaQr: null,
+  transito: null,
+  /** Le curve di adattamento accumulate nel grafico. */
+  curve: [],
+  /** L'ultima prova di lettura, per il confronto prima/dopo. */
+  prova: null,
+  provaContinua: null,
+  proposta: null,
+  /** L'archivio: quanti se ne vedono, quanti ce ne sono, con che ordine. */
+  archivio: { mostrati: 0, totale: 0, ordine: "recenti", attesa: null },
+  /** Timer della sorveglianza della scatola. */
+  vigilanza: null,
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -38,6 +57,15 @@ const plurale = (n, uno, molti) => (n === 1 ? uno : molti);
 
 function aggiornaWorkflowBar() {
   const parti = [];
+  // Il residuo viene per primo ed e' sempre presente, anche a zero: e' il
+  // numero che impedisce di finire la giornata con un campione scritto e mai
+  // partito, e serve proprio quando nessun altro flusso e' aperto.
+  const residuo = stato.residuo ?? 0;
+  parti.push(
+    residuo === 0
+      ? "Nulla in attesa di spedizione"
+      : `${residuo} ${plurale(residuo, "campione scritto", "campioni scritti")} da spedire`
+  );
   if (stato.accettazione?.accession_id) {
     parti.push(
       "Accettazione " + stato.accettazione.accession_id + ": " +
@@ -56,9 +84,18 @@ function aggiornaWorkflowBar() {
       (stato.distinta.stato || "aperta")
     );
   }
-  $("#workflow-stato").textContent = parti.length
-    ? parti.join(" · ")
-    : "Nessun flusso da riprendere";
+  $("#workflow-stato").textContent = parti.join(" · ");
+  $("#workflow-bar").dataset.residuo = residuo > 0 ? "1" : "";
+}
+
+/** Tiene aggiornato il residuo con quello che la risposta porta con se'.
+ *  Cosi' il numero cambia subito dopo una scrittura o una chiusura di scatola,
+ *  senza una seconda chiamata solo per chiederlo. */
+function annotaResiduo(risposta) {
+  if (risposta && typeof risposta.residuo_da_spedire === "number") {
+    stato.residuo = risposta.residuo_da_spedire;
+  }
+  return risposta;
 }
 
 /* ==========================================================================
@@ -85,8 +122,126 @@ async function chiama(operazione, dati = {}) {
 
 function sbarra() {
   fermaSorveglianza();
+  fermaVigilanza();
+  fermaProvaContinua();
   $("#sbarramento").hidden = false;
 }
+
+/* ==========================================================================
+   Diario di prototipazione (lato pagina)
+
+   Finche' il flusso di lavoro cambia ancora, serve poter rileggere una
+   sessione intera: cosa e' stato premuto, cosa e' stato digitato, in che
+   ordine, e cosa rispondeva la radio nel frattempo. Il server registra gia'
+   le proprie chiamate; qui si aggiunge quello che il server non puo' vedere.
+
+   Tre regole:
+   * si accoda e si spedisce a lotti — un giro di rete per clic renderebbe
+     l'interfaccia piu' lenta proprio al banco;
+   * i campi password non si guardano mai, nemmeno per sapere che sono stati
+     compilati;
+   * se il diario non funziona, non se ne accorge nessuno: la registrazione
+     non deve mai fermare il lavoro.
+   ========================================================================== */
+const Traccia = {
+  coda: [],
+  timer: null,
+  attiva: true,
+  /** Oltre questo numero si spedisce subito invece di aspettare il timer. */
+  soglia: 40,
+
+  nota(nome, dati = {}) {
+    if (!this.attiva || !TOKEN) return;
+    this.coda.push({
+      nome,
+      quando: new Date().toISOString(),
+      schermata: schermataAttiva(),
+      ...dati,
+    });
+    if (this.coda.length >= this.soglia) this.invia();
+    else if (!this.timer) this.timer = setTimeout(() => this.invia(), 2000);
+  },
+
+  invia(conBeacon = false) {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    if (!this.coda.length) return;
+    const lotto = this.coda.splice(0, 200);
+    const corpo = JSON.stringify({ eventi: lotto });
+    // Alla chiusura della pagina `fetch` viene interrotta: `sendBeacon` e'
+    // l'unico modo di non perdere l'ultimo pezzo di sessione, ed e' anche
+    // l'unico che non puo' portare intestazioni — per questo il token va
+    // nell'indirizzo, come gia' fa il flusso eventi.
+    if (conBeacon && navigator.sendBeacon) {
+      navigator.sendBeacon(
+        `/api/traccia?t=${encodeURIComponent(TOKEN)}`,
+        new Blob([corpo], { type: "application/json" })
+      );
+      return;
+    }
+    fetch("/api/traccia", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-RFID-Token": TOKEN },
+      body: corpo,
+      keepalive: true,
+    }).catch(() => {
+      // Il diario non e' il lavoro: se il server non risponde si smette di
+      // insistere invece di riempire la console di errori.
+      this.attiva = false;
+    });
+  },
+
+  /** Valore di un campo, o perche' non lo si registra. */
+  valore(campo) {
+    if (campo.type === "password") return "(non registrata)";
+    if (campo.type === "checkbox" || campo.type === "radio") return campo.checked;
+    const testo = String(campo.value ?? "");
+    return testo.length > 200 ? `${testo.slice(0, 200)}…` : testo;
+  },
+
+  collega() {
+    if (!TOKEN) return;
+
+    // Un solo ascoltatore delegato per tipo: gli elementi dell'interfaccia
+    // nascono e muoiono di continuo (righe della coda, schede dei campioni) e
+    // agganciarne uno per nodo li perderebbe tutti.
+    document.addEventListener(
+      "click",
+      (evento) => {
+        const comando = evento.target.closest("button, a, .rail__voce, label.bottone");
+        if (!comando) return;
+        this.nota("clic", {
+          id: comando.id || "",
+          testo: (comando.textContent || "").trim().slice(0, 60),
+          disabilitato: Boolean(comando.disabled),
+        });
+      },
+      true
+    );
+
+    document.addEventListener("change", (evento) => {
+      const campo = evento.target;
+      if (!campo.matches?.("input, select, textarea")) return;
+      this.nota("campo", {
+        id: campo.id || campo.name || "",
+        valore: this.valore(campo),
+      });
+    });
+
+    document.addEventListener("submit", (evento) => {
+      this.nota("modulo", { id: evento.target.id || "" });
+    });
+
+    // La chiusura della scheda e il passaggio in secondo piano sono i due
+    // momenti in cui si perderebbe la coda.
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") this.invia(true);
+    });
+    window.addEventListener("pagehide", () => this.invia(true));
+  },
+};
 
 /** Scarica un file prodotto dal server (la distinta cifrata). */
 async function scarica(percorso, nomeSuggerito) {
@@ -120,6 +275,7 @@ function avvisa(testo, tipo = "ok", durata = 5000) {
   nodo.textContent = testo;
   $("#avvisi").append(nodo);
   setTimeout(() => nodo.remove(), durata);
+  Traccia.nota("avviso", { tipo, testo });
 }
 
 /* ==========================================================================
@@ -194,7 +350,8 @@ function schermataAttiva() {
   return $(".schermata--attiva")?.id.replace("schermata-", "") || "";
 }
 
-function mostra(nome) {
+function mostra(nome, scheda) {
+  Traccia.nota("schermata", { da: schermataAttiva(), a: nome, scheda: scheda || "" });
   $$(".schermata").forEach((sezione) => {
     sezione.classList.toggle("schermata--attiva", sezione.id === `schermata-${nome}`);
   });
@@ -202,13 +359,42 @@ function mostra(nome) {
     if (voce.dataset.schermata === nome) voce.setAttribute("aria-current", "page");
     else voce.removeAttribute("aria-current");
   });
-  // La sorveglianza del piatto costa una lettura radio: si tiene accesa solo
-  // dove serve davvero.
+  // Le due sorveglianze costano una lettura radio ciascuna: si tengono accese
+  // solo dove servono, e mai insieme — userebbero lo stesso lettore.
   if (nome === "accettazione") avviaSorveglianza();
   else fermaSorveglianza();
+  if (nome === "sigillo" && stato.riempimento) avviaVigilanza();
+  else fermaVigilanza();
   // Le impostazioni si rileggono ogni volta: possono essere cambiate altrove,
   // e mostrare valori vecchi qui significherebbe farli riscrivere per sbaglio.
-  if (nome === "impostazioni") caricaImpostazioni();
+  if (nome === "impostazioni") {
+    caricaImpostazioni();
+    if (scheda) mostraScheda(scheda);
+  }
+  // L'archivio si riempie da solo: e' un elenco da sfogliare, non un modulo da
+  // compilare prima di vedere qualcosa. Si ricarica ogni volta perche' nel
+  // frattempo si sono accettati altri pazienti.
+  if (nome === "archivio") elencaPazienti({ azzera: true });
+}
+
+/** Le due metà delle impostazioni: la configurazione si fa una volta e si
+ *  dimentica, le misure si fanno col lettore in mano. Tenerle su una schermata
+ *  sola significherebbe undici riquadri in fila e quello che serve in fondo. */
+function mostraScheda(nome) {
+  $$(".scheda").forEach((riquadro) => {
+    riquadro.classList.toggle("scheda--attiva", riquadro.id === `scheda-${nome}`);
+  });
+  $$(".schede__voce").forEach((voce) => {
+    voce.setAttribute("aria-selected", voce.dataset.scheda === nome ? "true" : "false");
+  });
+  Traccia.nota("scheda", { nome });
+  // La prova di lettura dal vivo costa una lettura radio ogni giro: si spegne
+  // appena si guarda altro.
+  if (nome !== "misure") fermaProvaContinua();
+}
+
+function schedaAttiva() {
+  return $(".scheda--attiva")?.id.replace("scheda-", "") || "configurazione";
 }
 
 /* ==========================================================================
@@ -272,29 +458,98 @@ function riempiCodebook() {
   }
 }
 
+/* -- I reperti -------------------------------------------------------------
+   Quattro campioni presi allo stesso paziente nella stessa seduta hanno lo
+   stesso nome sopra, ma descrizione, materiale, fissativo, sede e avvertenze
+   possono essere tutti diversi. Il primo reperto è il modulo che si vede
+   aprendo la schermata; gli altri si aggiungono solo quando servono, così il
+   caso normale — un campione, uno o più vasetti uguali — non paga niente.
+   -------------------------------------------------------------------------- */
+function primoReperto() {
+  return {
+    descrizione: $("#descrizione").value.trim(),
+    material_code: Number($("#materiale").value || 0),
+    fixative_code: Number($("#fissativo").value || 0),
+    site_code: Number($("#sede").value || 0),
+    avvertenze: $$("#modulo-accettazione > .avvertenze input:checked").map((c) => c.value),
+  };
+}
+
+function repertiAggiuntivi() {
+  return $$("#reperti-extra .reperto").map((riquadro) => ({
+    descrizione: riquadro.querySelector('[data-campo="descrizione"]').value.trim(),
+    material_code: Number(riquadro.querySelector('[data-campo="material_code"]').value || 0),
+    fixative_code: Number(riquadro.querySelector('[data-campo="fixative_code"]').value || 0),
+    site_code: Number(riquadro.querySelector('[data-campo="site_code"]').value || 0),
+    avvertenze: Array.from(
+      riquadro.querySelectorAll("[data-avvertenza]:checked")
+    ).map((c) => c.value),
+  }));
+}
+
+function aggiungiReperto() {
+  const modello = $("#modello-reperto").content.cloneNode(true);
+  const riquadro = modello.querySelector(".reperto");
+  // I codebook si riempiono adesso: sono gli stessi del primo reperto e
+  // arrivano dal server, non si duplicano nel markup.
+  for (const [selettore, codici] of [
+    ['[data-campo="material_code"]', stato.descrizione?.codebook?.materiali],
+    ['[data-campo="fixative_code"]', stato.descrizione?.codebook?.fissativi],
+    ['[data-campo="site_code"]', stato.descrizione?.codebook?.sedi],
+  ]) {
+    const scelta = riquadro.querySelector(selettore);
+    for (const voce of codici || []) {
+      const opzione = document.createElement("option");
+      opzione.value = voce.codice;
+      opzione.textContent = voce.nome;
+      scelta.append(opzione);
+    }
+  }
+  riquadro.querySelector(".reperto__togli").addEventListener("click", () => {
+    riquadro.remove();
+    numeraReperti();
+  });
+  $("#reperti-extra").append(riquadro);
+  numeraReperti();
+  riquadro.querySelector('[data-campo="descrizione"]').focus();
+}
+
+/** «Campione 2», «Campione 3»: con quattro vasetti dello stesso paziente serve
+ *  sapere quale si sta compilando. */
+function numeraReperti() {
+  const extra = $$("#reperti-extra .reperto");
+  extra.forEach((riquadro, indice) => {
+    riquadro.querySelector(".reperto__titolo").textContent = `Campione ${indice + 2}`;
+  });
+  // Finché il campione è uno solo l'etichetta resta quella di sempre: numerare
+  // un elenco di uno è rumore.
+  $("#etichetta-descrizione").textContent = extra.length
+    ? "Campione 1 — descrizione del reperto"
+    : "Descrizione del reperto";
+}
+
 async function registra(evento) {
   evento.preventDefault();
   $("#errore-accettazione").textContent = "";
-  const avvertenze = $$(".avvertenze input:checked").map((casella) => casella.value);
+  const reperti = [primoReperto(), ...repertiAggiuntivi()];
   const dati = {
     codice_fiscale: $("#cf").value.trim().toUpperCase(),
     cognome: $("#cognome").value.trim(),
     nome: $("#nome").value.trim(),
     sesso: $("#sesso").value,
+    data_nascita: $("#data-nascita").value,
+    data_prelievo: $("#data-prelievo").value,
+    ora_prelievo: $("#ora-prelievo").value,
     reparto: $("#reparto").value.trim(),
     medico: $("#medico").value.trim(),
-    descrizione: $("#descrizione").value.trim(),
-    material_code: Number($("#materiale").value || 0),
-    fixative_code: Number($("#fissativo").value || 0),
-    site_code: Number($("#sede").value || 0),
-    contenitori: Number($("#contenitori").value || 1),
-    avvertenze,
+    reperti,
   };
   try {
-    stato.accettazione = await chiama("registra", dati);
+    stato.accettazione = annotaResiduo(await chiama("registra", dati));
     $("#pannello-anagrafica").classList.add("pannello--nascosto");
     $("#pannello-postazione").classList.remove("pannello--nascosto");
     dipingiAccettazione();
+    dipingiNotaPaziente(stato.accettazione.paziente_gia_noto);
     aggiornaWorkflowBar();
     avviaSorveglianza();
     $("#scrivi").focus();
@@ -302,6 +557,32 @@ async function registra(evento) {
     $("#errore-accettazione").textContent = errore.message;
     $("#cf").dataset.invalido = /fiscale/i.test(errore.message) ? "1" : "";
   }
+}
+
+/** La data del prelievo parte da oggi: è così nella quasi totalità dei casi,
+ *  e chi ha in mano un campione di ieri la corregge. L'ora invece resta vuota
+ *  finché non la si legge dall'etichetta: una mezzanotte inventata sarebbe
+ *  peggio di un campo in bianco. */
+function preimpostaDate() {
+  const oggi = new Date();
+  $("#data-prelievo").value = new Date(oggi.getTime() - oggi.getTimezoneOffset() * 60000)
+    .toISOString()
+    .slice(0, 10);
+}
+
+/** «Di questo paziente ce ne sono già altri»: informazione, non allarme.
+ *  Compare solo quando c'è davvero qualcosa da dire. */
+function dipingiNotaPaziente(nota) {
+  const riquadro = $("#nota-paziente");
+  const quanti = nota?.contenitori || 0;
+  riquadro.hidden = quanti === 0;
+  if (!quanti) return;
+  const accettazioni = (nota.accettazioni || []).join(", ");
+  riquadro.textContent =
+    `Di questo paziente ${plurale(quanti, "risulta già", "risultano già")} ` +
+    `${quanti} ${plurale(quanti, "contenitore registrato", "contenitori registrati")} oggi` +
+    (accettazioni ? ` (${plurale(nota.accettazioni.length, "accettazione", "accettazioni")} ${accettazioni})` : "") +
+    ". Se è lo stesso campione, controlla prima di scrivere.";
 }
 
 /** I pallini dell'avanzamento. Si aggiornano subito dopo ogni scrittura. */
@@ -322,6 +603,13 @@ function dipingiSerie() {
     nota.className = "hex";
     nota.textContent = voce.epc ? voce.epc.slice(0, 12) + "…" : "da scrivere";
     riga.append(numero, nota);
+    if (voce.descrizione) {
+      const quale = document.createElement("small");
+      quale.className = "serie__reperto";
+      quale.textContent = voce.descrizione;
+      riga.append(quale);
+      riga.title = voce.descrizione;
+    }
     elenco.append(riga);
   }
 
@@ -341,7 +629,7 @@ function dipingiCartella() {
   if (prossimo) {
     Scena.contatore(prossimo.index, prossimo.total);
     $("#cartella-etichetta").textContent = `${prossimo.index} / ${prossimo.total}`;
-    dipingiCampione(prossimo.campione);
+    dipingiCampione(prossimo.campione, prossimo.descrizione);
   } else {
     Scena.contatore(dati.scritti, dati.totale);
     $("#cartella-etichetta").textContent = `${dati.scritti} / ${dati.totale}`;
@@ -361,17 +649,30 @@ function dipingiAccettazione() {
   $("#nuova-accettazione").disabled = Boolean(stato.accettazione.prossimo);
 }
 
-async function nuovaAccettazione() {
+async function nuovaAccettazione({ automatica = false } = {}) {
+  const conclusa = stato.accettazione?.accession_id;
   try {
     await chiama("nuova_accettazione");
     fermaSorveglianza();
     stato.accettazione = null;
     $("#modulo-accettazione").reset();
-    $("#contenitori").value = 1;
+    $("#reperti-extra").innerHTML = "";
+    numeraReperti();
+    preimpostaDate();
+    $("#nota-paziente").hidden = true;
     dipingiAccettazione();
     aggiornaWorkflowBar();
     await caricaCoda();
-    $("#cf").focus();
+    // Sulla tavoletta il fuoco farebbe salire la tastiera di sistema su un
+    // campo che nessuno ha ancora chiesto di compilare.
+    if (!tavoletta()) $("#cf").focus();
+    if (automatica && conclusa) {
+      avvisa(
+        `Accettazione ${conclusa} completata. Pronto per il campione successivo.`,
+        "ok",
+        6000
+      );
+    }
   } catch (errore) {
     avvisa(errore.message, "errore", 9000);
   }
@@ -414,13 +715,28 @@ function avanza() {
   $("#riepilogo").hidden = true;
   $("#etichetta").hidden = true;
   $("#passi-scrittura").innerHTML = "";
+  // Ultimo contenitore andato via dal piatto: l'accettazione è chiusa e la
+  // postazione torna da sola al modulo, pronta per il campione successivo. I
+  // campioni arrivano uno alla volta e in ordine sparso: chiedere «Nuova
+  // accettazione» dopo ognuno sarebbe una cerimonia per ogni provetta.
+  // A deciderlo non è un cronometro, è la lettura che ha visto il contenitore
+  // lasciare l'antenna.
+  if (stato.accettazione && !stato.accettazione.prossimo) {
+    nuovaAccettazione({ automatica: true });
+    return;
+  }
   dipingiCartella();
 }
 
-function dipingiCampione(campione) {
+function dipingiCampione(campione, descrizione = "") {
   if (!campione) return;
   $("#cartella-paziente").textContent = campione.paziente || "—";
   $("#cartella-cf").textContent = campione.codice_fiscale || "";
+  // Con quattro reperti dello stesso paziente il nome non basta a dire quale
+  // vasetto si ha in mano: la descrizione sì.
+  const nota = $("#cartella-reperto");
+  nota.textContent = descrizione || "";
+  nota.hidden = !descrizione;
 
   const dati = $("#cartella-dati");
   dati.innerHTML = "";
@@ -524,11 +840,11 @@ async function scrivi() {
   if (!stato.accettazione.conteggio_confermato) {
     const totale = stato.accettazione.totale;
     const conferma = await domanda(
-      "Conferma il numero di contenitori",
-      `Stai per scrivere <strong>${totale}</strong> ${totale === 1 ? "contenitore" : "contenitori"} per questo paziente.
-       Il numero finisce dentro ogni tag e dopo la prima scrittura non si corregge:
-       si possono solo annullare i tag già scritti.
-       <br><br>Hai contato i contenitori fisici?`,
+      "Conferma i campioni di questo paziente",
+      `Stai per scrivere <strong>${totale}</strong> ${plurale(totale, "campione", "campioni")} per questo paziente.
+       Il totale finisce dentro ogni tag come <span class="hex">n/${totale}</span> e dopo la
+       prima scrittura non si corregge: si possono solo annullare i tag già scritti.
+       <br><br>Sono tutti qui davanti a te?`,
       "Sì, sono " + totale
     );
     if (!conferma) return;
@@ -550,7 +866,7 @@ async function scrivi() {
   dipingiStatoLettore("scrittura", "attivo");
 
   try {
-    stato.accettazione = await chiama("scrivi");
+    stato.accettazione = annotaResiduo(await chiama("scrivi"));
     const esito = stato.accettazione.scrittura;
     if (esito.ok) {
       Scena.stato("verificato");
@@ -604,35 +920,6 @@ function chiudiPassi(esito) {
 }
 
 /* -- Correzioni ----------------------------------------------------------- */
-async function cambiaConteggio() {
-  const attuale = stato.accettazione?.totale ?? 1;
-  const nuovo = prompt(
-    "Quanti contenitori ci sono davvero?\n\n" +
-      "I tag già scritti conservano il vecchio totale: verranno elencati qui sotto.",
-    String(attuale)
-  );
-  if (nuovo === null) return;
-  try {
-    stato.accettazione = await chiama("correggi_conteggio", { totale: Number(nuovo) });
-    dipingiAccettazione();
-    const superati = stato.accettazione.tag_con_totale_superato || [];
-    if (superati.length) {
-      avvisa(
-        `Attenzione: ${superati.length} ${plurale(superati.length, "tag già scritto riporta", "tag già scritti riportano")} il vecchio totale (${superati.join(", ")})`,
-        "attesa",
-        12000
-      );
-    } else {
-      avvisa(
-        `Ora ${plurale(stato.accettazione.totale, "il contenitore è", "i contenitori sono")} ${stato.accettazione.totale}`,
-        "ok"
-      );
-    }
-  } catch (errore) {
-    avvisa(errore.message, "errore", 9000);
-  }
-}
-
 async function annullaContenitore() {
   const prossimo = stato.accettazione?.prossimo;
   if (!prossimo) return;
@@ -798,7 +1085,11 @@ async function stampaEtichetta(evento) {
 async function caricaCoda() {
   try {
     stato.coda = await chiama("coda_spedizione");
+    // La coda e' il residuo visto dall'altro lato: lo stesso numero, gia'
+    // calcolato. Aggiornarlo qui evita una chiamata in piu' a ogni giro.
+    stato.residuo = stato.coda.totale ?? stato.residuo;
     dipingiCoda();
+    aggiornaWorkflowBar();
   } catch (errore) {
     $("#errore-spedizione").textContent = errore.message;
   }
@@ -1038,6 +1329,345 @@ async function aggiornaRicevutePec() {
  *  I punti sono anonimi di proposito: non si sa dove stia fisicamente ogni
  *  contenitore dentro la scatola, e disegnarlo in un posto preciso
  *  suggerirebbe una precisione che la radio non dà. Contano quanti sono. */
+/* ==========================================================================
+   Il segnale acustico
+
+   Durante il riempimento l'operatore guarda le mani e la scatola, non lo
+   schermo: la conferma che il campione è entrato deve arrivare all'orecchio.
+   Due toni distinti e brevissimi, generati sul momento — nessun file da
+   scaricare, che in un laboratorio senza rete non arriverebbe comunque.
+
+   I browser non lasciano suonare niente finché l'utente non ha toccato la
+   pagina: il contesto audio si sblocca sul clic di «Apri la scatola», che è un
+   gesto vero e non un espediente.
+   ========================================================================== */
+const Suono = {
+  contesto: null,
+  attivo: true,
+
+  sblocca() {
+    if (this.contesto) return;
+    try {
+      this.contesto = new (window.AudioContext || window.webkitAudioContext)();
+    } catch (errore) {
+      // Nessun audio disponibile: la conferma visiva resta, e basta a lavorare.
+      this.attivo = false;
+    }
+  },
+
+  nota(frequenza, durata, ritardo = 0, volume = 0.12) {
+    if (!this.attivo || !this.contesto) return;
+    const oscillatore = this.contesto.createOscillator();
+    const guadagno = this.contesto.createGain();
+    const inizio = this.contesto.currentTime + ritardo;
+    oscillatore.type = "sine";
+    oscillatore.frequency.value = frequenza;
+    // Attacco e rilascio dolci: un'onda tagliata di netto fa un clic che a
+    // trenta campioni per scatola diventa fastidioso.
+    guadagno.gain.setValueAtTime(0, inizio);
+    guadagno.gain.linearRampToValueAtTime(volume, inizio + 0.01);
+    guadagno.gain.linearRampToValueAtTime(0, inizio + durata);
+    oscillatore.connect(guadagno).connect(this.contesto.destination);
+    oscillatore.start(inizio);
+    oscillatore.stop(inizio + durata + 0.02);
+  },
+
+  /** Campione riconosciuto: un colpo breve e alto. */
+  ok() {
+    this.nota(1320, 0.09);
+  },
+
+  /** Anomalia: due colpi bassi, che non si confondono col precedente. */
+  errore() {
+    this.nota(320, 0.16, 0);
+    this.nota(240, 0.22, 0.2);
+  },
+
+  /** Campione uscito dalla scatola: un colpo che scende. */
+  uscito() {
+    this.nota(880, 0.1, 0, 0.08);
+    this.nota(660, 0.12, 0.1, 0.08);
+  },
+};
+
+/* ==========================================================================
+   Riempimento della scatola
+
+   Il gesto dell'operatore è mettere il campione dentro. Non c'è nessun pulsante
+   che dica «l'ho messo»: la postazione se ne accorge leggendo, e ogni riga di
+   questo elenco corrisponde a una lettura vera. Le righe arrivano dagli eventi
+   del server, mai da un timer.
+   ========================================================================== */
+async function apriScatola() {
+  const destinazione = $("#destinazione").value;
+  $("#errore-spedizione").textContent = "";
+  // Il clic che serve ai browser per lasciar suonare qualcosa.
+  Suono.sblocca();
+  try {
+    const esito = annotaResiduo(await chiama("avvia_riempimento", { destinazione }));
+    stato.spedizione = esito;
+    stato.riempimento = esito.riempimento;
+    $("#pannello-riempimento").classList.remove("pannello--nascosto");
+    $("#pannello-sigillo").classList.add("pannello--nascosto");
+    $("#riempimento-destinazione").textContent = esito.destinazione || destinazione;
+    $("#riempimento-scatola").textContent = esito.shipment_id ?? "—";
+    dipingiRiempimento(stato.riempimento);
+    aggiornaWorkflowBar();
+    avviaVigilanza();
+  } catch (errore) {
+    $("#errore-spedizione").textContent = errore.message;
+  }
+}
+
+function avviaVigilanza() {
+  if (stato.vigilanza || !stato.collegato) return;
+  stato.vigilanza = setInterval(guardaScatola, stato.intervalloSorveglianza);
+  guardaScatola();
+}
+
+function fermaVigilanza() {
+  if (!stato.vigilanza) return;
+  clearInterval(stato.vigilanza);
+  stato.vigilanza = null;
+}
+
+async function guardaScatola() {
+  if (stato.occupato) return;
+  try {
+    const giro = annotaResiduo(await chiama("sorveglia_scatola"));
+    stato.riempimento = giro;
+    for (const evento of giro.eventi || []) annunciaTag(evento);
+    dipingiRiempimento(giro);
+    aggiornaWorkflowBar();
+    if (giro.errore) {
+      $("#riempimento-stato").textContent = `Lettura non riuscita: ${giro.errore}`;
+    }
+  } catch (errore) {
+    if (errore.occupato) return;
+    fermaVigilanza();
+    $("#riempimento-stato").textContent = errore.message;
+    dipingiStatoLettore("errore", "errore");
+  }
+}
+
+/** Il momento in cui un campione entra: suono, riga, e nient'altro. */
+function annunciaTag(evento) {
+  Traccia.nota("riempimento", {
+    esito: evento.esito,
+    epc: evento.epc,
+    etichetta: evento.etichetta,
+  });
+  if (evento.esito === "entrato") {
+    Suono.ok();
+    $("#riempimento-stato").textContent =
+      `${evento.paziente || "campione"} — ${evento.etichetta} riconosciuto.`;
+  } else if (evento.esito === "uscito") {
+    Suono.uscito();
+    $("#riempimento-stato").textContent =
+      `${evento.paziente || "un campione"} non è più nella scatola.`;
+  } else if (evento.esito === "scatola") {
+    $("#riempimento-scatola").textContent = evento.epc.slice(0, 12) + "…";
+  } else if (evento.anomalia) {
+    Suono.errore();
+    $("#riempimento-stato").textContent = motivoAnomalia(evento);
+    avvisa(motivoAnomalia(evento), "errore", 9000);
+  }
+}
+
+function motivoAnomalia(evento) {
+  if (evento.esito === "non_inizializzato") {
+    return evento.paziente
+      ? `${evento.paziente}: il tag risulta assegnato ma non ancora scritto.`
+      : "Campione non inizializzato: questo contenitore non è stato preparato.";
+  }
+  if (evento.esito === "altra_spedizione") {
+    return `${evento.paziente || "Questo contenitore"}: ${evento.dettaglio}`;
+  }
+  if (evento.esito === "annullato") {
+    return `${evento.paziente || "Questo contenitore"} risulta annullato.`;
+  }
+  return evento.dettaglio || "Tag non atteso nella scatola.";
+}
+
+function dipingiRiempimento(dati) {
+  if (!dati) return;
+  const dentro = dati.dentro || [];
+  $("#riempimento-quanti").textContent = dentro.length;
+  $("#riempimento-vuoto").hidden = dentro.length > 0;
+  $("#chiudi-scatola").disabled = dentro.length === 0;
+  $("#riempimento-residuo").textContent = stato.residuo ?? "—";
+
+  const elenco = $("#riempimento-dentro");
+  const gia = new Set(
+    Array.from(elenco.children).map((nodo) => nodo.dataset.epc)
+  );
+  elenco.innerHTML = "";
+  dentro.forEach((voce, indice) => {
+    const riga = document.createElement("li");
+    riga.className = "dentro__voce";
+    riga.dataset.epc = voce.epc;
+    // Solo le righe che prima non c'erano si accendono: ridipingere l'elenco
+    // non è un evento, e far lampeggiare tutto a ogni giro renderebbe il segno
+    // insignificante.
+    if (!gia.has(voce.epc)) riga.dataset.nuovo = "1";
+
+    const numero = document.createElement("span");
+    numero.className = "dentro__numero";
+    numero.textContent = indice + 1;
+
+    const chi = document.createElement("div");
+    chi.className = "dentro__chi";
+    const paziente = document.createElement("span");
+    paziente.className = "dentro__paziente";
+    paziente.textContent = voce.paziente || "paziente non noto";
+    const campione = document.createElement("span");
+    campione.className = "dentro__campione";
+    campione.textContent = [voce.etichetta, voce.descrizione].filter(Boolean).join(" · ");
+    chi.append(paziente, campione);
+
+    const togli = document.createElement("button");
+    togli.className = "bottone bottone--sobrio";
+    togli.type = "button";
+    togli.textContent = "Non è nella scatola";
+    togli.addEventListener("click", () => togliDallaScatola(voce));
+
+    riga.append(numero, chi, togli);
+    elenco.append(riga);
+  });
+
+  dipingiAnomalie(dati.anomalie || [], dati.esclusi || []);
+}
+
+function dipingiAnomalie(anomalie, esclusi) {
+  const voci = [...anomalie, ...esclusi];
+  $("#riempimento-anomalie").hidden = voci.length === 0;
+  const elenco = $("#anomalie-elenco");
+  elenco.innerHTML = "";
+  for (const voce of voci) {
+    const riga = document.createElement("li");
+    riga.className = "anomalie__voce";
+    const testo = document.createElement("div");
+    const titolo = document.createElement("strong");
+    titolo.textContent = voce.paziente || voce.epc.slice(0, 12) + "…";
+    const motivo = document.createElement("span");
+    motivo.className = "anomalie__motivo";
+    motivo.textContent =
+      voce.esito === "escluso" ? voce.dettaglio : motivoAnomalia(voce);
+    testo.append(titolo, motivo);
+    riga.append(testo);
+    elenco.append(riga);
+  }
+}
+
+async function togliDallaScatola(voce) {
+  const conferma = await domanda(
+    "Toglilo dalla scatola",
+    `<strong>${voce.paziente || voce.epc}</strong> ${voce.etichetta ? "(" + voce.etichetta + ")" : ""}
+     risulta letto ma tu dici che non è dentro la scatola.
+     <br><br>Torna disponibile per un'altra spedizione. Se è sul tavolo accanto
+     alle antenne, spostalo: finché resta lì il lettore continuerà a vederlo.`,
+    "Toglilo"
+  );
+  if (!conferma) return;
+  try {
+    stato.riempimento = annotaResiduo(
+      await chiama("togli_dalla_scatola", { epc: voce.epc })
+    );
+    dipingiRiempimento(stato.riempimento);
+    aggiornaWorkflowBar();
+  } catch (errore) {
+    avvisa(errore.message, "errore", 9000);
+  }
+}
+
+async function chiudiScatola() {
+  fermaVigilanza();
+  try {
+    stato.spedizione = annotaResiduo(await chiama("chiudi_riempimento"));
+    stato.riempimento = null;
+    $("#pannello-riempimento").classList.add("pannello--nascosto");
+    dipingiSpedizione();
+    aggiornaWorkflowBar();
+    avvisa(
+      `Scatola composta: ${stato.spedizione.attesi} ` +
+        plurale(stato.spedizione.attesi, "campione", "campioni") +
+        ". Chiudi il coperchio e certifica.",
+      "ok",
+      9000
+    );
+    $("#sigilla").focus();
+  } catch (errore) {
+    avvisa(errore.message, "errore", 9000);
+    avviaVigilanza();
+  }
+}
+
+async function annullaScatola() {
+  const conferma = await domanda(
+    "Annullare la scatola?",
+    `I campioni già riconosciuti tornano disponibili per un'altra spedizione.
+     Nessun tag viene toccato: restano scritti e restano validi.`,
+    "Annulla la scatola"
+  );
+  if (!conferma) return;
+  fermaVigilanza();
+  try {
+    await chiama("annulla_spedizione");
+    stato.riempimento = null;
+    stato.spedizione = annotaResiduo(await chiama("stato_spedizione"));
+    $("#pannello-riempimento").classList.add("pannello--nascosto");
+    dipingiSpedizione();
+    await caricaCoda();
+    aggiornaWorkflowBar();
+  } catch (errore) {
+    avvisa(errore.message, "errore", 9000);
+  }
+}
+
+/** Le scatole rimaste indietro: sigillate ma con la distinta ancora da mandare. */
+async function caricaInSospeso() {
+  try {
+    const elenco = await chiama("spedizioni_aperte");
+    const rimaste = (elenco.spedizioni || []).filter(
+      (voce) => voce.shipment_id !== elenco.attiva && voce.da_fare
+    );
+    $("#in-sospeso").hidden = rimaste.length === 0;
+    const lista = $("#in-sospeso-elenco");
+    lista.innerHTML = "";
+    for (const voce of rimaste) {
+      const riga = document.createElement("li");
+      riga.className = "in-sospeso__voce";
+      const testo = document.createElement("span");
+      testo.textContent =
+        `Scatola ${voce.shipment_id} → ${voce.destinazione} · ` +
+        `${voce.pezzi} ${plurale(voce.pezzi, "campione", "campioni")} · ${voce.da_fare}`;
+      const apri = document.createElement("button");
+      apri.className = "bottone bottone--sobrio";
+      apri.type = "button";
+      apri.textContent = "Riprendila";
+      apri.addEventListener("click", () => riprendiSpedizione(voce.shipment_id));
+      riga.append(testo, apri);
+      lista.append(riga);
+    }
+  } catch (errore) {
+    $("#in-sospeso").hidden = true;
+  }
+}
+
+async function riprendiSpedizione(shipment_id) {
+  try {
+    fermaVigilanza();
+    stato.riempimento = null;
+    $("#pannello-riempimento").classList.add("pannello--nascosto");
+    stato.spedizione = annotaResiduo(await chiama("riapri_spedizione", { shipment_id }));
+    dipingiSpedizione();
+    aggiornaWorkflowBar();
+    await caricaInSospeso();
+  } catch (errore) {
+    avvisa(errore.message, "errore", 9000);
+  }
+}
+
 function accendiPunti(trovati, definitivo = false) {
   const punti = $("#volume-punti").children;
   for (let indice = 0; indice < punti.length; indice += 1) {
@@ -1082,7 +1712,7 @@ async function sigilla() {
   $("#verdetto-esito").textContent = "Lettura in corso…";
 
   try {
-    const esito = await chiama("sigilla");
+    const esito = annotaResiduo(await chiama("sigilla"));
     stato.spedizione = esito;
     dipingiSpedizione();
     aggiornaWorkflowBar();
@@ -1176,9 +1806,11 @@ function dipingiSigillo(esito) {
     ? `Errore durante il sigillo: ${sigillo.error}`
     : "Le passate variano una condizione per volta, così i fallimenti non si assomigliano.";
 
-  // La distinta si esporta solo se il sigillo e' completo: mandarne una che
-  // dichiara contenitori non verificati sposterebbe il problema a destinazione.
+  // La distinta si esporta — e si stampa — solo se il sigillo e' completo:
+  // mandarne una che dichiara contenitori non verificati sposterebbe il
+  // problema a destinazione, dove nessuno puo' piu' controllare.
   $("#esporta").disabled = !completo;
+  $("#stampa-distinta").disabled = !completo;
   if (completo) avvisa("Contenuto certificato: puoi esportare la distinta", "ok", 8000);
   else
     avvisa(
@@ -1189,10 +1821,218 @@ function dipingiSigillo(esito) {
     );
 }
 
+/* ==========================================================================
+   Il foglio della distinta
+
+   È il documento che accompagna la scatola, e i due laboratori non condividono
+   nessun archivio: quello che non è scritto lì, a destinazione non esiste. La
+   tabella è la copia autorevole; il QR serve solo a non ridigitare trenta righe
+   all'arrivo.
+   ========================================================================== */
+async function stampaDistinta() {
+  try {
+    const foglio = await chiama("distinta_stampabile");
+    dipingiFoglio(foglio);
+    $("#foglio").hidden = false;
+    // Il fuoco sul pulsante di stampa: da tastiera si finisce con un Invio.
+    $("#foglio-stampa").focus();
+  } catch (errore) {
+    avvisa(errore.message, "errore", 9000);
+  }
+}
+
+function dipingiFoglio(foglio) {
+  $("#foglio-mittente").textContent =
+    foglio.mittente.nome || foglio.mittente.insegna || "—";
+  $("#foglio-destinatario").textContent = foglio.destinatario.nome || "—";
+
+  const dati = $("#foglio-dati");
+  dati.innerHTML = "";
+  const sigillo = foglio.sigillo || {};
+  const righe = [
+    ["spedizione", `n. ${foglio.shipment_id}`],
+    ["identificativo", foglio.identificativo],
+    ["campioni", foglio.totale],
+    ["stampata il", dataOra(foglio.stampata_il)],
+    ["operatore", foglio.operatore || "—"],
+    [
+      "sigillo",
+      sigillo.ok
+        ? `verificato: ${sigillo.trovati}/${sigillo.attesi} in ${sigillo.passate} passate`
+        : "NON verificato",
+    ],
+    ["prova di chiusura", sigillo.prova_chiusura || "—"],
+  ];
+  if (foglio.destinatario.citta) righe.push(["destinazione", foglio.destinatario.citta]);
+  for (const [chiave, valore] of righe) {
+    const dt = document.createElement("dt");
+    dt.textContent = chiave;
+    const dd = document.createElement("dd");
+    dd.textContent = valore;
+    dati.append(dt, dd);
+  }
+
+  // Tredici colonne piene non stanno su un A4 in verticale: un EPC da 24
+  // caratteri finirebbe incolonnato uno per riga. Ogni campione occupa quindi
+  // **due righe**: sopra chi è, sotto cosa è. Nessun dato viene lasciato
+  // fuori — è il documento che il destinatario riceve, e quello che non c'è
+  // scritto lì per lui non esiste.
+  const intestazioni = $("#foglio-intestazioni");
+  intestazioni.innerHTML = "";
+  for (const titolo of ["#", "Codice fiscale", "Paziente", "S", "Nato il", "Prelievo", "Cont."]) {
+    const th = document.createElement("th");
+    th.textContent = titolo;
+    intestazioni.append(th);
+  }
+
+  const corpo = $("#foglio-righe");
+  corpo.innerHTML = "";
+  foglio.righe.forEach((riga, indice) => {
+    const prima = document.createElement("tr");
+    prima.className = "foglio__riga";
+    const celle = [
+      [indice + 1, "foglio__numero"],
+      [riga.codice_fiscale, "hex"],
+      [riga.paziente, "foglio__paziente"],
+      [riga.sesso, ""],
+      [riga.data_nascita, ""],
+      [[riga.data_prelievo, riga.ora_prelievo].filter(Boolean).join(" "), ""],
+      [riga.etichetta, ""],
+    ];
+    for (const [valore, classe] of celle) {
+      const td = document.createElement("td");
+      if (classe) td.className = classe;
+      td.textContent = valore ?? "";
+      prima.append(td);
+    }
+
+    const seconda = document.createElement("tr");
+    seconda.className = "foglio__dettaglio";
+    const vuota = document.createElement("td");
+    seconda.append(vuota);
+    const dettaglio = document.createElement("td");
+    dettaglio.colSpan = 6;
+    const campione = document.createElement("span");
+    campione.className = "foglio__campione";
+    campione.textContent = riga.descrizione || "campione non descritto";
+    const codici = document.createElement("span");
+    codici.className = "foglio__codifiche";
+    codici.textContent = [riga.materiale, riga.fissativo, riga.sede]
+      .filter(Boolean)
+      .join(" · ");
+    const epc = document.createElement("span");
+    epc.className = "hex foglio__epc";
+    epc.textContent = riga.epc;
+    dettaglio.append(campione, codici, epc);
+    seconda.append(dettaglio);
+
+    corpo.append(prima, seconda);
+  });
+
+  const codici = $("#foglio-codici");
+  codici.innerHTML = "";
+  for (const codice of foglio.codici) {
+    const riquadro = document.createElement("figure");
+    riquadro.className = "foglio__codice";
+    // Il server produce l'SVG: qui si inserisce come markup perché è un
+    // disegno, non testo dell'utente, e viene dal nostro stesso processo.
+    riquadro.innerHTML = codice.svg;
+    const didascalia = document.createElement("figcaption");
+    didascalia.textContent =
+      codice.parti > 1 ? `codice ${codice.parte} di ${codice.parti}` : "leggi qui";
+    riquadro.append(didascalia);
+    codici.append(riquadro);
+  }
+
+  $("#foglio-nota").textContent =
+    foglio.codici.length > 1
+      ? `Il codice è diviso in ${foglio.codici.length} parti: all'arrivo vanno lette tutte.`
+      : "Il codice contiene le stesse righe della tabella: all'arrivo si legge invece di ridigitare.";
+}
+
+/* -- Ricezione: leggere il QR invece del file ----------------------------- */
+async function leggiScansione(testo) {
+  const pulito = String(testo || "").replace(/[\r\n\t]+$/, "");
+  if (!pulito) return;
+  stato.scansioni = stato.scansioni || [];
+  stato.scansioni.push(pulito);
+  $("#errore-scansione").textContent = "";
+
+  try {
+    const letta = await chiama("leggi_qr_distinta", { scansioni: stato.scansioni });
+    stato.scansioni = [];
+    dipingiParti([]);
+    $("#scansione-nota").textContent =
+      `Distinta letta: ${letta.attesi} ${plurale(letta.attesi, "campione", "campioni")}` +
+      (letta.firma_verificata ? ", firma verificata." : ", senza firma.");
+    stato.distintaQr = letta;
+    dipingiDistintaLetta(letta);
+    avvisa(`Distinta letta dal QR: ${letta.attesi} campioni attesi`, "ok", 8000);
+  } catch (errore) {
+    // «Manca la parte 2 su 2» non è un errore: è il codice successivo da
+    // leggere, e va detto come un'istruzione invece che come un guasto.
+    if (/manca(no)? (la parte|le parti)/i.test(errore.message)) {
+      dipingiParti(stato.scansioni);
+      $("#scansione-nota").textContent = errore.message;
+      return;
+    }
+    stato.scansioni = [];
+    dipingiParti([]);
+    $("#errore-scansione").textContent = errore.message;
+  }
+}
+
+function dipingiParti(scansioni) {
+  const elenco = $("#scansione-parti");
+  elenco.innerHTML = "";
+  scansioni.forEach((_, indice) => {
+    const voce = document.createElement("li");
+    voce.className = "scansione__parte";
+    voce.textContent = `parte ${indice + 1} letta`;
+    elenco.append(voce);
+  });
+}
+
+/** L'elenco atteso ricostruito dal QR, con nomi e campioni. */
+function dipingiDistintaLetta(letta) {
+  const riquadro = $("#distinta");
+  riquadro.hidden = false;
+  riquadro.innerHTML = "";
+  const righe = [
+    ["origine", "codice QR sul foglio"],
+    ["identificativo", letta.identificativo],
+    ["campioni attesi", letta.attesi],
+    [
+      "firma",
+      letta.firma_verificata === true
+        ? "verificata"
+        : letta.firma_verificata === false
+        ? "NON verificata"
+        : "assente",
+    ],
+  ];
+  for (const [chiave, valore] of righe) {
+    const dt = document.createElement("dt");
+    dt.textContent = chiave;
+    const dd = document.createElement("dd");
+    dd.textContent = valore;
+    riquadro.append(dt, dd);
+  }
+  dipingiElencoArrivo(
+    "#contenitore-atteso",
+    "#elenco-atteso",
+    (letta.righe || []).map((riga) => ({
+      etichetta: riga.etichetta,
+      paziente: riga.paziente,
+      epc: riga.epc,
+    }))
+  );
+}
+
 async function esportaDistinta() {
   try {
     await scarica("/api/distinta", "distinta.rfidman");
-    stato.spedizione = await chiama("stato_spedizione");
+    stato.spedizione = annotaResiduo(await chiama("stato_spedizione"));
     dipingiSpedizione();
     aggiornaWorkflowBar();
     avvisa(
@@ -1427,6 +2267,197 @@ function dipingiRicezione(esito) {
   else avvisa("La scatola non corrisponde alla distinta", "errore", 12000);
 }
 
+/* ==========================================================================
+   Il verbale di riscontro: come è andata, detto da chi ha aperto la scatola
+
+   Finché questo non torna indietro, il mittente sa una cosa sola: di aver
+   spedito. Le ricevute PEC provano che il documento è arrivato, non che le
+   provette ci siano.
+   ========================================================================== */
+async function esportaRiscontro() {
+  try {
+    await scarica("/api/riscontro", "riscontro.rfidric");
+    avvisa(
+      "Verbale esportato. Va rimandato al laboratorio mittente: senza, per loro " +
+        "questa scatola resta «partita e mai confermata».",
+      "ok",
+      12000
+    );
+  } catch (errore) {
+    avvisa(errore.message, "errore", 9000);
+  }
+}
+
+async function importaRiscontro(evento) {
+  const file = evento.target.files?.[0];
+  if (!file) return;
+  $("#esito-riscontro").textContent = "";
+  try {
+    const contenuto = await file.arrayBuffer();
+    const esito = await chiama("importa_riscontro", {
+      contenuto_base64: base64Da(contenuto),
+    });
+    const testo = esito.ok
+      ? `Spedizione ${esito.shipment_id}: arrivata intera (${esito.arrivati}/${esito.attesi}).`
+      : `Spedizione ${esito.shipment_id}: ${esito.mancanti} ` +
+        `${plurale(esito.mancanti, "campione non arrivato", "campioni non arrivati")}.`;
+    $("#esito-riscontro").textContent = testo;
+    avvisa(testo, esito.ok ? "ok" : "errore", 12000);
+    if (!esito.ok && esito.mancanti_descritti?.length) {
+      for (const voce of esito.mancanti_descritti) {
+        avvisa(`Non arrivato: ${voce.paziente || voce.epc} (${voce.etichetta})`, "errore", 15000);
+      }
+    }
+    await generaTransito();
+  } catch (errore) {
+    $("#esito-riscontro").textContent = errore.message;
+  } finally {
+    evento.target.value = "";
+  }
+}
+
+/** Un ArrayBuffer in base64, senza librerie. */
+function base64Da(buffer) {
+  const byte = new Uint8Array(buffer);
+  let testo = "";
+  // A pezzi: `String.fromCharCode(...)` su un file intero supera il limite di
+  // argomenti e solleva un errore che sembra un problema del file.
+  for (let indice = 0; indice < byte.length; indice += 8192) {
+    testo += String.fromCharCode.apply(null, byte.subarray(indice, indice + 8192));
+  }
+  return btoa(testo);
+}
+
+/* -- Il riepilogo del materiale transitato -------------------------------- */
+async function generaTransito() {
+  const dati = {
+    destinazione: $("#transito-controparte").value,
+    dal: $("#transito-dal").value,
+    al: $("#transito-al").value,
+  };
+  try {
+    const riepilogo = await chiama("riepilogo_transito", dati);
+    stato.transito = riepilogo;
+    dipingiTransito(riepilogo);
+    $("#scarica-transito").disabled = riepilogo.spedizioni.length === 0;
+  } catch (errore) {
+    avvisa(errore.message, "errore", 9000);
+  }
+}
+
+function dipingiTransito(riepilogo) {
+  $("#transito").hidden = false;
+  const totali = riepilogo.totali;
+
+  const verdetto = $("#transito-verdetto");
+  if (!riepilogo.spedizioni.length) {
+    verdetto.dataset.esito = "attesa";
+    verdetto.textContent = "Nessuna spedizione nel periodo scelto.";
+  } else if (riepilogo.tutto_a_buon_fine) {
+    verdetto.dataset.esito = "completo";
+    verdetto.textContent =
+      `Tutto a buon fine: ${totali.spedizioni} ` +
+      `${plurale(totali.spedizioni, "spedizione", "spedizioni")}, ${totali.pezzi} ` +
+      `${plurale(totali.pezzi, "campione", "campioni")}, tutti arrivati e confermati.`;
+  } else if (totali.mancanti) {
+    verdetto.dataset.esito = "incompleto";
+    verdetto.textContent =
+      `${totali.mancanti} ${plurale(totali.mancanti, "campione non è arrivato", "campioni non sono arrivati")}. ` +
+      "Il riepilogo non può dirsi chiuso.";
+  } else {
+    // «Non partita» e «partita ma senza verbale» sono due cose diverse, e
+    // l'operatore deve sapere quale delle due lo riguarda: la prima si
+    // risolve consegnando al corriere, la seconda telefonando all'altro
+    // laboratorio.
+    const ferme = riepilogo.spedizioni.filter((v) => v.esito === "non partita").length;
+    const inViaggio = totali.non_confermate - ferme;
+    const parti = [];
+    if (inViaggio) {
+      parti.push(
+        `${inViaggio} ${plurale(inViaggio, "spedizione partita", "spedizioni partite")} ` +
+          `senza verbale di riscontro: nessuno ha ancora detto che ${plurale(inViaggio, "è arrivata", "sono arrivate")}`
+      );
+    }
+    if (ferme) {
+      parti.push(
+        `${ferme} ${plurale(ferme, "spedizione", "spedizioni")} ` +
+          `${plurale(ferme, "sigillata ma non ancora partita", "sigillate ma non ancora partite")}`
+      );
+    }
+    verdetto.dataset.esito = "attesa";
+    verdetto.textContent = parti.join(" · ") + ".";
+  }
+
+  const elenco = $("#transito-totali");
+  elenco.innerHTML = "";
+  for (const [chiave, valore] of [
+    ["spedizioni", totali.spedizioni],
+    ["campioni", totali.pezzi],
+    ["pazienti", totali.pazienti],
+    ["confermate", totali.confermate],
+    ["senza verbale", totali.non_confermate],
+    ["non arrivati", totali.mancanti],
+  ]) {
+    const dt = document.createElement("dt");
+    dt.textContent = chiave;
+    const dd = document.createElement("dd");
+    dd.textContent = valore;
+    elenco.append(dt, dd);
+  }
+
+  const corpo = $("#transito-tabella").querySelector("tbody");
+  corpo.innerHTML = "";
+  for (const voce of riepilogo.spedizioni) {
+    const riga = document.createElement("tr");
+    const arrivo = voce.arrivo;
+    const celle = [
+      [`n. ${voce.shipment_id} → ${voce.destinazione}`, ""],
+      [data(voce.partita || voce.sigillata || voce.data), ""],
+      [voce.pezzi, ""],
+      [voce.pazienti, ""],
+      [voce.sigillo_ok === null ? "—" : voce.sigillo_ok ? "ok" : "no", ""],
+      [arrivo ? `${arrivo.arrivati}/${arrivo.attesi} il ${data(arrivo.quando)}` : "—", ""],
+      [voce.esito, voce.esito],
+    ];
+    for (const [valore, esito] of celle) {
+      const td = document.createElement("td");
+      if (esito) td.dataset.esito = esito;
+      td.textContent = valore;
+      riga.append(td);
+    }
+    corpo.append(riga);
+  }
+}
+
+async function scaricaTransito() {
+  try {
+    const risposta = await fetch("/api/riepilogo", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-RFID-Token": TOKEN },
+      body: JSON.stringify({
+        destinazione: $("#transito-controparte").value,
+        dal: $("#transito-dal").value,
+        al: $("#transito-al").value,
+      }),
+    });
+    if (!risposta.ok) {
+      const corpo = await risposta.json().catch(() => ({}));
+      throw new Error(corpo.errore || `errore ${risposta.status}`);
+    }
+    const intestazione = risposta.headers.get("Content-Disposition") || "";
+    const trovato = /filename="([^"]+)"/.exec(intestazione);
+    const blob = await risposta.blob();
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = trovato ? trovato[1] : "transito.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+  } catch (errore) {
+    avvisa(errore.message, "errore", 9000);
+  }
+}
+
 async function confermaRicezione() {
   try {
     const risposta = await chiama("conferma_ricezione", {
@@ -1435,8 +2466,17 @@ async function confermaRicezione() {
     stato.distinta = risposta;
     $("#conferma-ricezione").disabled = true;
     $("#leggi-volume").disabled = true;
+    // Adesso c'è qualcosa da certificare: prima no, e un verbale su una
+    // scatola mai controllata sarebbe peggio di nessun verbale.
+    $("#esporta-riscontro").disabled = false;
     aggiornaWorkflowBar();
     avvisa("Ricezione registrata nella catena di custodia", "ok", 9000);
+    avvisa(
+      "Esporta il verbale e mandalo al mittente: senza, per loro questa scatola " +
+        "resta «partita e mai confermata».",
+      "ok",
+      15000
+    );
   } catch (errore) {
     avvisa(errore.message, "errore", 10000);
     if (/motivazione/i.test(errore.message)) $("#motivo-ricezione").focus();
@@ -1446,6 +2486,9 @@ async function confermaRicezione() {
 function ripristinaRicezione(distinta) {
   if (!distinta?.inbound_id) return;
   stato.distinta = distinta;
+  // Una ricezione già confermata prima di un riavvio ha ancora il suo verbale
+  // da mandare: il pulsante deve tornare disponibile da solo.
+  $("#esporta-riscontro").disabled = distinta.stato !== "received";
   const elenco = $("#distinta");
   elenco.hidden = false;
   elenco.innerHTML = "";
@@ -1614,13 +2657,75 @@ async function applicaGen2() {
 /* -- Il grafico del return loss ------------------------------------------- */
 const BANDA_EU_KHZ = [865000, 868000];
 
+/* ==========================================================================
+   Adattamento delle antenne
+
+   Il VSWR misurato a 866 MHz dice se l'antenna è adattata *lì*. Non dice se
+   quell'antenna è cattiva o è buona ma accordata altrove — e sono due problemi
+   diversi: il primo si risolve cambiando antenna, il secondo chiedendo al
+   fornitore la stessa antenna tarata per l'Europa. Per distinguerli bisogna
+   vedere dove sta il minimo, e quindi guardare più in largo.
+
+   Le curve si accumulano invece di sostituirsi: è il confronto a dire qualcosa.
+   ========================================================================== */
+const COLORI_CURVA = [
+  "var(--ematossilina)",
+  "var(--conferma)",
+  "var(--attesa)",
+  "var(--eosina)",
+  "var(--ematossilina-debole)",
+];
+
 async function misuraAntenna() {
   const antenna = Number($("#antenna-diagnosi").value || 1);
+  const scelta = $("#intervallo-diagnosi").value;
+  const dati = { antenna };
+  let etichetta = "banda configurata";
+  if (scelta !== "banda") {
+    const [da, a] = scelta.split(",").map(Number);
+    dati.da_khz = da * 1000;
+    dati.a_khz = a * 1000;
+    // Un passo che dia una sessantina di punti: abbastanza per vedere la forma
+    // della curva senza far durare la misura più di quanto serve.
+    dati.passo_khz = Math.max(200, Math.round(((a - da) * 1000) / 60 / 100) * 100);
+    etichetta = `${da}–${a} MHz`;
+  }
+
   $("#misura-antenna").disabled = true;
-  $("#rl-nota").textContent = "Misura in corso: il modulo spazza la banda, può volerci mezzo minuto.";
+  $("#rl-nota").textContent =
+    "Misura in corso: il modulo spazza le frequenze, può volerci mezzo minuto.";
   try {
-    const esito = await chiama("diagnostica_antenna", { antenna });
-    disegnaReturnLoss(esito.data);
+    let esito = await chiama("diagnostica_antenna", dati);
+
+    // Il firmware certificato per una regione rifiuta le altre. Non è un
+    // guasto: è una domanda da fare all'operatore.
+    if (esito.rifiutata) {
+      const conferma = await domanda(
+        "Il modulo rifiuta questa banda",
+        `Il lettore è impostato sulla regione
+         <span class="hex">0x${esito.regione_attuale.toString(16).toUpperCase()}</span>
+         e non accetta di misurare sulla
+         <span class="hex">0x${esito.banda_chiesta.toString(16).toUpperCase()}</span>.
+         <br><br>Posso <strong>commutarlo per il tempo della misura</strong> e
+         rimetterlo a posto subito dopo. In quei secondi il modulo trasmette
+         fuori dalla banda ETSI: ha senso su un banco di prototipazione e in
+         nessun altro posto.`,
+        "Commuta e misura"
+      );
+      if (!conferma) {
+        $("#rl-nota").textContent = esito.messaggio;
+        return;
+      }
+      esito = await chiama("diagnostica_antenna", {
+        ...dati,
+        consenti_cambio_regione: true,
+      });
+    }
+
+    aggiungiCurva(esito, `antenna ${antenna} · ${etichetta}`);
+    if (esito.regione_commutata) {
+      avvisa("Misura fatta a regione commutata. La regione è stata rimessa a posto.", "attesa", 9000);
+    }
   } catch (errore) {
     $("#rl-nota").textContent = errore.message;
     $("#verdetto-vswr").hidden = true;
@@ -1629,26 +2734,64 @@ async function misuraAntenna() {
   }
 }
 
-function disegnaReturnLoss(dati) {
-  const misure = (dati.measurements || []).slice().sort((a, b) => a.frequency_khz - b.frequency_khz);
-  const soglia = dati.threshold ?? 7;
+function aggiungiCurva(esito, etichetta) {
+  const misure = (esito.data?.measurements || [])
+    .slice()
+    .sort((a, b) => a.frequency_khz - b.frequency_khz);
   if (!misure.length) {
     $("#rl-nota").textContent = "Il modulo non ha restituito misure.";
     return;
   }
+  stato.curve = stato.curve || [];
+  stato.curve.push({
+    etichetta,
+    misure,
+    soglia: esito.data?.threshold ?? 7,
+    risonanza: esito.data?.risonanza,
+    inBanda: esito.data?.in_banda_eu,
+  });
+  disegnaCurve();
+}
+
+function svuotaCurve() {
+  stato.curve = [];
+  disegnaCurve();
+}
+
+function disegnaCurve() {
+  const curve = stato.curve || [];
+  const legenda = $("#rl-legenda");
+  legenda.innerHTML = "";
+  const gruppo = $("#rl-curve");
+  gruppo.innerHTML = "";
+  const griglia = $("#rl-griglia");
+  griglia.innerHTML = "";
+  const assi = $("#rl-assi");
+  assi.innerHTML = "";
+
+  if (!curve.length) {
+    $("#rl-banda").setAttribute("width", 0);
+    $("#rl-soglia").setAttribute("d", "");
+    $("#verdetto-vswr").hidden = true;
+    $("#risonanza-nota").textContent = "";
+    $("#rl-nota").textContent =
+      "Nessuna misura ancora fatta. La zona evidenziata è la banda ETSI 865–868 MHz.";
+    return;
+  }
 
   // Le etichette degli assi stanno FUORI dall'area di disegno: dentro
-  // finirebbero sopra la curva proprio dove la curva conta di piu', cioe' al
-  // bordo basso della banda.
+  // finirebbero sopra la curva proprio dove conta di più.
   const L = 60, R = 620, T = 44, B = 250;
-  const fMin = Math.min(...misure.map((m) => m.frequency_khz));
-  const fMax = Math.max(...misure.map((m) => m.frequency_khz));
-  const vMax = Math.max(soglia * 1.3, ...misure.map((m) => m.vswr));
+  const tutte = curve.flatMap((c) => c.misure);
+  const soglia = curve[0].soglia;
+  const fMin = Math.min(...tutte.map((m) => m.frequency_khz));
+  const fMax = Math.max(...tutte.map((m) => m.frequency_khz));
+  const vMax = Math.max(soglia * 1.3, ...tutte.map((m) => m.vswr));
   const x = (khz) => L + ((khz - fMin) / Math.max(1, fMax - fMin)) * (R - L);
   const y = (vswr) => B - ((vswr - 1) / Math.max(0.001, vMax - 1)) * (B - T);
 
-  // La banda ETSI, se rientra nell'intervallo misurato: è dove il sistema deve
-  // funzionare per legge, e il resto della curva è contesto.
+  // La banda ETSI, se rientra: è dove il sistema deve funzionare per legge, e
+  // il resto della curva è contesto che serve a capire, non a scegliere.
   const banda = $("#rl-banda");
   const b0 = Math.max(fMin, BANDA_EU_KHZ[0]);
   const b1 = Math.min(fMax, BANDA_EU_KHZ[1]);
@@ -1661,10 +2804,6 @@ function disegnaReturnLoss(dati) {
     banda.setAttribute("width", 0);
   }
 
-  const griglia = $("#rl-griglia");
-  griglia.innerHTML = "";
-  const assi = $("#rl-assi");
-  assi.innerHTML = "";
   for (let vswr = 1; vswr <= vMax; vswr += Math.max(1, Math.round((vMax - 1) / 5))) {
     const linea = document.createElementNS("http://www.w3.org/2000/svg", "line");
     linea.setAttribute("x1", L); linea.setAttribute("x2", R);
@@ -1676,44 +2815,92 @@ function disegnaReturnLoss(dati) {
   assi.append(testoSvg(R, B + 22, `${(fMax / 1000).toFixed(0)} MHz`, "end"));
   assi.append(testoSvg(L - 10, T - 12, "VSWR", "end"));
   if (b1 > b0) {
-    // Centrata sulla banda, ma trattenuta dentro il grafico: quando la banda
-    // sta sul bordo la scritta uscirebbe dal disegno.
     const centro = Math.min(R - 34, Math.max(L + 34, (x(b0) + x(b1)) / 2));
     assi.append(testoSvg(centro, T - 12, "banda ETSI", "middle"));
   }
-
   $("#rl-soglia").setAttribute("d", `M${L} ${y(soglia)} H${R}`);
-  $("#rl-curva").setAttribute(
-    "d",
-    misure.map((m, i) => `${i ? "L" : "M"}${x(m.frequency_khz)} ${y(m.vswr)}`).join(" ")
-  );
 
-  const punti = $("#rl-punti");
-  punti.innerHTML = "";
-  for (const misura of misure) {
-    const punto = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-    punto.setAttribute("cx", x(misura.frequency_khz));
-    punto.setAttribute("cy", y(misura.vswr));
-    punto.setAttribute("r", 3);
-    if (!misura.ok) punto.dataset.oltre = "1";
-    punti.append(punto);
+  curve.forEach((curva, indice) => {
+    const colore = COLORI_CURVA[indice % COLORI_CURVA.length];
+    const tracciato = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    tracciato.setAttribute("class", "grafico__curva");
+    // Stile inline e non attributo: una regola CSS batterebbe
+    // l'attributo di presentazione e le curve uscirebbero tutte uguali.
+    tracciato.style.stroke = colore;
+    tracciato.setAttribute(
+      "d",
+      curva.misure.map((m, i) => `${i ? "L" : "M"}${x(m.frequency_khz)} ${y(m.vswr)}`).join(" ")
+    );
+    gruppo.append(tracciato);
+
+    for (const misura of curva.misure) {
+      const punto = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+      punto.setAttribute("cx", x(misura.frequency_khz));
+      punto.setAttribute("cy", y(misura.vswr));
+      punto.setAttribute("r", curva.misure.length > 30 ? 1.5 : 3);
+      punto.style.fill = colore;
+      if (!misura.ok) punto.dataset.oltre = "1";
+      gruppo.append(punto);
+    }
+
+    const voce = document.createElement("li");
+    voce.className = "legenda__voce";
+    const segno = document.createElement("span");
+    segno.className = "legenda__segno";
+    segno.style.background = colore;
+    const testo = document.createElement("span");
+    const dentro = curva.inBanda;
+    testo.textContent =
+      curva.etichetta +
+      (dentro ? ` — in banda EU VSWR ${dentro.vswr_peggiore.toFixed(1)}` : "");
+    voce.append(segno, testo);
+    legenda.append(voce);
+  });
+
+  raccontaCurve(curve, soglia);
+}
+
+/** La frase che si porta al fornitore. Il VSWR peggiore da solo non dice se
+ *  l'antenna è sbagliata o accordata altrove: quello lo dice dove sta il minimo. */
+function raccontaCurve(curve, soglia) {
+  const ultima = curve[curve.length - 1];
+  const dentro = ultima.inBanda;
+  const pastiglia = $("#verdetto-vswr");
+  if (dentro) {
+    pastiglia.hidden = false;
+    pastiglia.className = `pastiglia ${dentro.ok ? "pastiglia--ok" : "pastiglia--allarme"}`;
+    pastiglia.textContent = `in banda EU: VSWR ${dentro.vswr_peggiore.toFixed(1)}`;
+    $("#rl-nota").textContent =
+      `Nella banda ETSI 865–868 MHz il VSWR peggiore è ${dentro.vswr_peggiore.toFixed(2)} ` +
+      `(soglia ${soglia}).`;
+  } else {
+    pastiglia.hidden = true;
+    $("#rl-nota").textContent =
+      "Questa misura non copre la banda ETSI: serve a vedere dove l'antenna è accordata.";
   }
 
-  // Il verdetto che conta è quello **dentro la banda EU**: un'antenna ottima a
-  // 915 MHz e disadattata a 866 non serve a niente qui.
-  const inBanda = misure.filter(
-    (m) => m.frequency_khz >= BANDA_EU_KHZ[0] && m.frequency_khz <= BANDA_EU_KHZ[1]
-  );
-  const riferimento = inBanda.length ? inBanda : misure;
-  const peggiore = Math.max(...riferimento.map((m) => m.vswr));
-  const pastiglia = $("#verdetto-vswr");
-  pastiglia.hidden = false;
-  pastiglia.className = `pastiglia ${peggiore < soglia ? "pastiglia--ok" : "pastiglia--allarme"}`;
-  pastiglia.textContent = `VSWR peggiore ${peggiore.toFixed(1)}`;
-  $("#rl-nota").textContent = inBanda.length
-    ? `Nella banda ETSI 865–868 MHz il VSWR peggiore è ${peggiore.toFixed(2)} (soglia ${soglia}). ` +
-      `Return loss minimo ${Math.min(...riferimento.map((m) => m.return_loss_db)).toFixed(1)} dB.`
-    : `La misura non copre la banda ETSI: verdetto sull'intero intervallo, VSWR peggiore ${peggiore.toFixed(2)}.`;
+  const r = ultima.risonanza;
+  if (!r) {
+    $("#risonanza-nota").textContent = "";
+    return;
+  }
+  const mhz = (r.frequency_khz / 1000).toFixed(1);
+  const scarto = (r.scarto_da_eu_khz / 1000).toFixed(1);
+  if (r.al_bordo) {
+    // Il minimo sul bordo della spazzata non è una risonanza: la risonanza
+    // vera sta fuori. Dirlo lo stesso significherebbe portare al fornitore un
+    // numero che non esiste.
+    $("#risonanza-nota").textContent =
+      `Il punto migliore misurato è ${mhz} MHz, ma sta al bordo dell'intervallo: ` +
+      "la risonanza vera è più in là. Allarga la spazzata per trovarla.";
+    return;
+  }
+  $("#risonanza-nota").textContent =
+    `Minimo a ${mhz} MHz (VSWR ${r.vswr.toFixed(2)}), ` +
+    (Math.abs(r.scarto_da_eu_khz) < 2000
+      ? "cioè dentro la banda europea: questa antenna è accordata dove serve."
+      : `${Math.abs(scarto)} MHz ${r.scarto_da_eu_khz > 0 ? "sopra" : "sotto"} il centro ` +
+        "della banda europea. È il numero da mettere nella richiesta al fornitore.");
 }
 
 function testoSvg(x, y, testo, ancora) {
@@ -1726,6 +2913,328 @@ function testoSvg(x, y, testo, ancora) {
 }
 
 /* -- Profilazione --------------------------------------------------------- */
+/* ==========================================================================
+   Parametri Gen2: il ritorno che è sempre mancato
+
+   I flussi operativi impostano già il Gen2 da soli — il sigillo cambia sessione
+   e modalità a ogni passata, la campagna ha la sua griglia. Questi comandi
+   servono a sperimentare, e sperimentare senza misurare non è sperimentare.
+   ========================================================================== */
+async function gen2Consigliato() {
+  $("#esito-gen2").textContent = "";
+  try {
+    const esito = await chiama("gen2_consigliato");
+    // I campi seguono quello che è stato applicato: lasciarli su «non toccare»
+    // mentre il modulo è cambiato racconterebbe una cosa falsa.
+    const applicati = esito.data?.applied || {};
+    $("#gen2-session").value = applicati.session ?? "";
+    $("#gen2-target").value = applicati.target ?? "";
+    $("#gen2-q").value = "";
+    $("#gen2-rf").value = applicati.rf_mode ?? "";
+    $("#gen2-target-dyn").checked = Boolean(applicati.target_dynamic);
+    $("#gen2-q-dyn").checked = Boolean(applicati.q_dynamic);
+
+    dipingiGen2Riletti(esito.riletti, esito.motivi);
+    if (esito.rf_sostituita) {
+      avvisa(esito.avviso, "errore", 15000);
+      $("#esito-gen2").textContent = esito.avviso;
+    } else {
+      $("#esito-gen2").textContent = "Valori consigliati applicati e riletti dal modulo.";
+    }
+  } catch (errore) {
+    $("#esito-gen2").textContent = errore.message;
+  }
+}
+
+/** I valori che il modulo dice di avere davvero, in italiano.
+ *
+ *  Le chiavi del contratto sono sei ma le cose da sapere sono quattro: se il
+ *  target alterna, il target fisso non vuol dire niente, e lo stesso vale per Q
+ *  quando è automatico. Mostrarle comunque farebbe leggere «target 0» accanto a
+ *  «target alternato sì», che è una contraddizione solo apparente e costa un
+ *  minuto a ogni lettura. */
+function dipingiGen2Riletti(riletti, motivi) {
+  const elenco = $("#gen2-riletti");
+  elenco.innerHTML = "";
+  const blocco = $("#gen2-riletti-blocco");
+  blocco.hidden = true;
+  if (!riletti || !Object.keys(riletti).length) return;
+
+  const righe = [];
+  if (riletti.session != null) {
+    righe.push(["sessione", `S${riletti.session}`, motivi?.session]);
+  }
+  if (riletti.target_dynamic) {
+    righe.push(["target", "A↔B alternato", motivi?.target]);
+  } else if (riletti.target != null) {
+    righe.push(["target", riletti.target === 0 ? "A" : "B", motivi?.target]);
+  }
+  if (riletti.q_dynamic) {
+    righe.push(["Q", "automatico", motivi?.q]);
+  } else if (riletti.q != null) {
+    righe.push(["Q", String(riletti.q), motivi?.q]);
+  }
+  if (riletti.rf_mode != null) {
+    const esadecimale = `0x${riletti.rf_mode.toString(16).toUpperCase()}`;
+    const nome =
+      riletti.rf_mode === 0x71
+        ? " — massima sensibilità"
+        : riletti.rf_mode === 0x6b
+        ? " — predefinita"
+        : "";
+    righe.push(["modalità RF", esadecimale + nome, motivi?.rf_mode]);
+  }
+
+  for (const [chiave, valore, motivo] of righe) {
+    const dt = document.createElement("dt");
+    dt.textContent = chiave;
+    const dd = document.createElement("dd");
+    dd.textContent = valore;
+    if (motivo) dd.title = motivo;
+    elenco.append(dt, dd);
+  }
+  blocco.hidden = righe.length === 0;
+}
+
+/** Un tasso di lettura con una cifra decimale su cinque cifre intere promette
+ *  una precisione che la misura non ha — e sul banco simulato, dove non c'è
+ *  latenza radio, il numero arriva a cinque cifre. */
+function tasso(valore) {
+  const n = Number(valore);
+  if (!Number.isFinite(n)) return "—";
+  return n >= 100 ? Math.round(n).toLocaleString("it-IT") : n.toFixed(1);
+}
+
+/* -- La prova di lettura --------------------------------------------------- */
+async function provaLettura() {
+  try {
+    const esito = await chiama("prova_lettura", { cicli: 5 });
+    dipingiProva(esito);
+    return esito;
+  } catch (errore) {
+    if (!errore.occupato) $("#esito-prova").textContent = errore.message;
+    return null;
+  }
+}
+
+function dipingiProva(esito) {
+  // La misura precedente scende a sinistra: da solo «14 letture al secondo»
+  // non vuol dire niente, vale il confronto.
+  if (stato.prova) {
+    $("#prova-prima").hidden = false;
+    $("#prova-rate-prima").textContent = tasso(stato.prova.letture_al_secondo);
+    $("#prova-dettaglio-prima").textContent = riassuntoProva(stato.prova);
+  }
+  stato.prova = esito;
+  $("#prova-rate").textContent = tasso(esito.letture_al_secondo);
+  $("#prova-dettaglio").textContent = riassuntoProva(esito);
+  $("#esito-prova").textContent = esito.errori
+    ? `${esito.errori} ${plurale(esito.errori, "ciclo fallito", "cicli falliti")}`
+    : "";
+
+  const tabella = $("#tabella-prova");
+  tabella.hidden = esito.dettaglio.length === 0;
+  const corpo = tabella.querySelector("tbody");
+  corpo.innerHTML = "";
+  for (const voce of esito.dettaglio) {
+    const riga = document.createElement("tr");
+    for (const [valore, classe] of [
+      [voce.epc, "hex"],
+      [voce.letture, ""],
+      [`${Math.round(voce.tasso * 100)}%`, ""],
+      [voce.antenne.join(" ") || "—", ""],
+      [voce.rssi ?? "—", ""],
+    ]) {
+      const td = document.createElement("td");
+      if (classe) td.className = classe;
+      td.textContent = valore;
+      riga.append(td);
+    }
+    corpo.append(riga);
+  }
+}
+
+function riassuntoProva(esito) {
+  return (
+    `${esito.tag} ${plurale(esito.tag, "tag", "tag")} · ` +
+    `${esito.letture} letture in ${esito.cicli} cicli` +
+    (esito.rssi ? ` · RSSI ${esito.rssi.mediano} dBm` : "")
+  );
+}
+
+function alternaProvaContinua() {
+  if (stato.provaContinua) {
+    fermaProvaContinua();
+    return;
+  }
+  stato.provaContinua = setInterval(provaLettura, 1200);
+  $("#prova-continua").textContent = "Ferma la misura";
+  $("#prova-continua").dataset.attivo = "1";
+  provaLettura();
+}
+
+function fermaProvaContinua() {
+  if (!stato.provaContinua) return;
+  clearInterval(stato.provaContinua);
+  stato.provaContinua = null;
+  $("#prova-continua").textContent = "Misura in continuo";
+  $("#prova-continua").dataset.attivo = "";
+}
+
+/* ==========================================================================
+   Salute del lettore
+
+   «È il cavo, è il rumore o è il tag?» — i contatori separano le tre cose, e
+   distinguerle cambia dove si va a cercare.
+   ========================================================================== */
+async function controllaSalute() {
+  $("#salute-dati").innerHTML = "";
+  $("#salute-avvisi").innerHTML = "";
+  try {
+    const esito = await chiama("salute");
+    dipingiSalute(esito);
+  } catch (errore) {
+    $("#verdetto-salute").hidden = false;
+    $("#verdetto-salute").className = "pastiglia pastiglia--allarme";
+    $("#verdetto-salute").textContent = "non raggiungibile";
+    const voce = document.createElement("li");
+    voce.textContent = errore.message;
+    $("#salute-avvisi").append(voce);
+  }
+}
+
+function dipingiSalute(esito) {
+  const dati = esito.data || {};
+  const contatori = dati.counters || {};
+  const collegate = dati.antennas_connected || [];
+  const configurate = [
+    ...(stato.descrizione?.antenne?.lettura || []),
+    ...(stato.descrizione?.antenne?.scrittura || []),
+  ];
+  const mancanti = [...new Set(configurate)].filter((a) => !collegate.includes(a));
+
+  const pastiglia = $("#verdetto-salute");
+  pastiglia.hidden = false;
+  const bene = dati.ok && !mancanti.length;
+  pastiglia.className = `pastiglia ${bene ? "pastiglia--ok" : "pastiglia--allarme"}`;
+  pastiglia.textContent = bene ? "tutto a posto" : "da guardare";
+
+  const elenco = $("#salute-dati");
+  elenco.innerHTML = "";
+  const firmware = dati.firmware_info || {};
+  const righe = [
+    ["trasporto", (dati.transport || {}).description || JSON.stringify(dati.transport || {})],
+    ["avviato", dati.booted ? "sì" : "no — manca il boot del firmware"],
+    ["firmware", firmware.version || firmware.model || "—"],
+    ["antenne collegate", collegate.join(", ") || "nessuna"],
+    ["antenne in configurazione", [...new Set(configurate)].join(", ") || "—"],
+    ["comandi inviati", contatori.commands_sent ?? "—"],
+    ["timeout (collegamento)", contatori.timeouts ?? "—"],
+    ["errori di frame (rumore, cavo)", contatori.frame_errors ?? "—"],
+    ["status rifiutati (comando)", contatori.status_errors ?? "—"],
+    ["nessun tag in campo (non è un guasto)", contatori.no_tag_events ?? "—"],
+  ];
+  for (const [chiave, valore] of righe) {
+    const dt = document.createElement("dt");
+    dt.textContent = chiave;
+    const dd = document.createElement("dd");
+    dd.textContent = valore;
+    elenco.append(dt, dd);
+  }
+
+  const avvisi = $("#salute-avvisi");
+  avvisi.innerHTML = "";
+  const dire = [];
+  if (mancanti.length) {
+    dire.push(
+      `${plurale(mancanti.length, "L'antenna", "Le antenne")} ${mancanti.join(", ")} ` +
+        `${plurale(mancanti.length, "è configurata ma non risulta collegata", "sono configurate ma non risultano collegate")}: ` +
+        "è la causa più comune di «non legge»."
+    );
+  }
+  if (contatori.timeouts) {
+    dire.push("Ci sono stati timeout: il lettore non ha risposto. Guarda cavo, porta e alimentazione.");
+  }
+  if (contatori.frame_errors) {
+    dire.push("Ci sono errori di frame: il lettore ha risposto male. Rumore elettrico, o un cavo troppo lungo o schermato male.");
+  }
+  if (contatori.status_errors) {
+    dire.push("Ci sono status rifiutati: il lettore ha capito e ha detto di no. Comando non supportato, o parametro fuori intervallo.");
+  }
+  if (contatori.last_error) {
+    dire.push(`Ultimo errore (${contatori.last_error_at || "—"}): ${contatori.last_error}`);
+  }
+  for (const testo of dire) {
+    const voce = document.createElement("li");
+    voce.textContent = testo;
+    avvisi.append(voce);
+  }
+}
+
+/* ==========================================================================
+   Misure già fatte
+
+   Nessun archivio nuovo: adattamento, profilazione e campagna finiscono già nel
+   diario. Mancava soltanto rileggerle in forma di scheda.
+   ========================================================================== */
+async function aggiornaMisure() {
+  try {
+    const esito = await chiama("registro_misure", { limite: 40 });
+    const elenco = $("#elenco-misure");
+    elenco.innerHTML = "";
+    if (!esito.misure.length) {
+      $("#esito-misure").textContent =
+        "Nessuna misura nel diario. Si registrano da sole appena se ne fa una.";
+      return;
+    }
+    $("#esito-misure").textContent = `${esito.misure.length} misure, dalla più recente.`;
+    for (const misura of esito.misure) {
+      const voce = document.createElement("li");
+      voce.className = "misure__voce";
+      voce.dataset.genere = misura.genere;
+      const testa = document.createElement("div");
+      testa.className = "misure__testa";
+      const genere = document.createElement("b");
+      genere.textContent = misura.genere;
+      const quando = document.createElement("span");
+      quando.className = "tenue";
+      quando.textContent = dataOra(misura.quando);
+      testa.append(genere, quando);
+      const corpo = document.createElement("span");
+      corpo.className = "misure__corpo";
+      corpo.textContent = descriviMisura(misura);
+      voce.append(testa, corpo);
+      elenco.append(voce);
+    }
+  } catch (errore) {
+    $("#esito-misure").textContent = errore.message;
+  }
+}
+
+function descriviMisura(m) {
+  if (m.genere === "adattamento") {
+    const r = m.risonanza;
+    return (
+      `antenna ${m.antenna ?? "?"} · ${(m.da_khz / 1000).toFixed(0)}–${(m.a_khz / 1000).toFixed(0)} MHz · ` +
+      `${m.punti} punti · VSWR peggiore ${Number(m.vswr_peggiore).toFixed(2)}` +
+      (r ? ` · minimo a ${(r.frequency_khz / 1000).toFixed(1)} MHz` : "")
+    );
+  }
+  if (m.genere === "profilazione") {
+    return `${m.user_bytes} byte di USER memory · tier ${m.tier} · ${m.adatto ? "utilizzabile" : "NON utilizzabile"}`;
+  }
+  if (m.genere === "campagna") {
+    return `${m.configurazioni} configurazioni provate` + (m.consigliata ? ` · consigliata: ${m.consigliata}` : "");
+  }
+  if (m.genere === "prova di lettura") {
+    return `${m.tag} tag · ${tasso(m.letture_al_secondo)} letture/s`;
+  }
+  if (m.genere === "salute") {
+    return `antenne collegate: ${(m.antenne || []).join(", ") || "nessuna"}`;
+  }
+  return "";
+}
+
 async function profila() {
   $("#profila").disabled = true;
   $("#esito-profilo").textContent = "Misura in corso…";
@@ -1760,6 +3269,7 @@ async function profila() {
       li.textContent = testo;
       avvisi.append(li);
     }
+    dipingiProposta(esito.proposta, profilo);
     avvisa(esito.riassunto, profilo.suitable ? "ok" : "attesa", 12000);
   } catch (errore) {
     $("#esito-profilo").textContent = errore.message;
@@ -1768,44 +3278,236 @@ async function profila() {
   }
 }
 
-/* -- Campagna ------------------------------------------------------------- */
-async function rilevaControllo(posizione) {
-  try {
-    const esito = await chiama("rileva_controllo", { posizione });
-    $("#conta-dentro").textContent = esito.dentro;
-    $("#conta-fuori").textContent = esito.fuori;
-    // Zero tag di controllo fuori non è «niente da segnalare»: è una campagna
-    // che sceglierà la potenza massima, cioè quella che legge il tavolo accanto.
-    $("#conta-fuori").className = esito.fuori ? "pastiglia pastiglia--ok" : "pastiglia pastiglia--attesa";
-    $("#conta-dentro").className = esito.dentro ? "pastiglia pastiglia--ok" : "pastiglia";
-    $("#avvia-campagna").disabled = esito.dentro === 0;
-    avvisa(
-      `${esito.epcs.length} ${plurale(esito.epcs.length, "tag rilevato", "tag rilevati")} ${posizione}`,
-      "ok"
+/** Cosa cambierebbe questa misura in configurazione.
+ *
+ *  Non cambia niente da sola: una modalità ridotta che si attiva in silenzio
+ *  farebbe decadere una difesa senza che nessuno l'abbia decisa, e mesi dopo
+ *  nessuno saprebbe più perché. */
+function dipingiProposta(proposta, profilo) {
+  const riquadro = $("#profilo-proposta");
+  stato.proposta = null;
+  if (!proposta || !proposta.cambia) {
+    riquadro.hidden = true;
+    return;
+  }
+  stato.proposta = { ...proposta, profilo };
+  riquadro.hidden = false;
+  const ridotta = proposta.modalita_scrittura === "solo_epc";
+  riquadro.dataset.tipo = ridotta ? "ridotta" : "normale";
+  $("#proposta-titolo").textContent = ridotta
+    ? "Questo tag non può portare il campione"
+    : "Cosa cambierebbe in configurazione";
+
+  const dati = $("#proposta-dati");
+  dati.innerHTML = "";
+  const righe = [];
+  if (proposta.modalita_scrittura !== proposta.modalita_attuale) {
+    righe.push([
+      "modalità di scrittura",
+      `${nomeModalita(proposta.modalita_attuale)} → ${nomeModalita(proposta.modalita_scrittura)}`,
+    ]);
+  }
+  if (proposta.user_memory_bytes !== proposta.user_memory_attuale) {
+    righe.push([
+      "USER memory",
+      `${proposta.user_memory_attuale} → ${proposta.user_memory_bytes} byte` +
+        (proposta.in_aumento ? " (in aumento: va deciso)" : ""),
+    ]);
+  }
+  for (const [chiave, valore] of righe) {
+    const dt = document.createElement("dt");
+    dt.textContent = chiave;
+    const dd = document.createElement("dd");
+    dd.textContent = valore;
+    dati.append(dt, dd);
+  }
+
+  const motivi = $("#proposta-motivi");
+  motivi.innerHTML = "";
+  for (const testo of proposta.motivi || []) {
+    const li = document.createElement("li");
+    li.textContent = testo;
+    motivi.append(li);
+  }
+  if (proposta.in_aumento) {
+    const li = document.createElement("li");
+    li.textContent =
+      "La soglia sale: deve reggere il tag peggiore del lotto, quindi un tag " +
+      "più piccolo già scritto diventerebbe illeggibile. Alzarla ha senso solo " +
+      "se questo è il primo tag di una serie nuova.";
+    motivi.append(li);
+  }
+  $("#esito-proposta").textContent = "";
+}
+
+function nomeModalita(modalita) {
+  return modalita === "solo_epc" ? "solo EPC" : "pseudonimo + campione cifrato";
+}
+
+async function applicaProfilo() {
+  const proposta = stato.proposta;
+  if (!proposta) return;
+  const ridotta = proposta.modalita_scrittura === "solo_epc";
+  if (ridotta) {
+    const conferma = await domanda(
+      "Passare alla scrittura del solo EPC?",
+      `Su questi tag il campione cifrato non ci sta. In modalità
+       <strong>solo EPC</strong> il contenitore resta identificato dal suo
+       pseudonimo, e cosa contiene lo dice <strong>la distinta stampata</strong>.
+       <br><br>Si perde il legame fra campione e numero di serie del chip, cioè
+       la difesa contro un tag copiato. Restano il registro degli EPC, che è
+       perpetuo, e la firma sulla distinta.
+       <br><br>La scelta resta scritta in configurazione finché non la si cambia.`,
+      "Sì, lavora in solo EPC"
     );
-    if (posizione === "dentro" && esito.fuori === 0) {
-      avvisa(
-        "Senza tag di controllo fuori dal contenitore la campagna sceglierà sempre la potenza massima",
-        "attesa",
-        12000
-      );
-    }
+    if (!conferma) return;
+  }
+  try {
+    const esito = await chiama("applica_profilo", {
+      modalita_scrittura: proposta.modalita_scrittura,
+      user_memory_bytes: proposta.user_memory_bytes,
+      tid_serializzato: Boolean(proposta.profilo?.tid?.serialized),
+      chip: proposta.profilo?.tid?.manufacturer || "",
+      epc: proposta.profilo?.epc || "",
+      // Alzare la soglia renderebbe illeggibile un tag più piccolo già
+      // scritto: si fa solo se l'operatore ha appena confermato di volerlo.
+      forza: Boolean(proposta.in_aumento),
+    });
+    $("#esito-proposta").textContent = esito.motivo;
+    if (stato.descrizione) stato.descrizione.modalita_scrittura = esito.modalita_scrittura;
+    dipingiModalita(esito.modalita_scrittura);
+    // Il riquadro si chiude solo se qualcosa è davvero cambiato: sparire dopo
+    // un «non ho scritto niente» farebbe credere il contrario.
+    if (esito.scritto) $("#profilo-proposta").hidden = true;
+    avvisa(
+      esito.scritto
+        ? `Configurazione aggiornata: ${nomeModalita(esito.modalita_scrittura)}, ` +
+            `${esito.user_memory_bytes} byte di USER memory.`
+        : `Niente da cambiare: ${esito.motivo}`,
+      esito.scritto ? "ok" : "attesa",
+      12000
+    );
   } catch (errore) {
-    avvisa(errore.message, "errore", 9000);
+    $("#esito-proposta").textContent = errore.message;
   }
 }
 
+/** La fascia che ricorda che si sta lavorando in modalità ridotta. Non deve
+ *  essere una cosa che si scopre leggendo il codice. */
+function dipingiModalita(modalita) {
+  const fascia = $("#modalita-ridotta");
+  const ridotta = modalita === "solo_epc";
+  fascia.hidden = !ridotta;
+  if (ridotta) {
+    fascia.textContent =
+      "Modalità ridotta: sui tag si scrive solo l'EPC. I dati del paziente " +
+      "viaggiano sulla distinta stampata, e il legame anti-clonazione con il " +
+      "chip non c'è.";
+  }
+}
+
+/* -- Campagna ------------------------------------------------------------- */
+async function inventariaCampagna() {
+  const bottone = $("#inventaria-campagna");
+  bottone.disabled = true;
+  $("#avvia-campagna").disabled = true;
+  $("#selezione-campagna").hidden = true;
+  $("#avanzamento-inventario").textContent = "0 / 20";
+  try {
+    const esito = await chiama("inventario_campagna", { cicli: 20 });
+    stato.campagnaTag = esito.tag || [];
+    disegnaClassificazioneCampagna(stato.campagnaTag);
+    $("#avanzamento-inventario").textContent = `${esito.cicli} / ${esito.cicli}`;
+    avvisa(
+      `${stato.campagnaTag.length} ${plurale(stato.campagnaTag.length, "tag rilevato", "tag rilevati")} in ${esito.cicli} letture`,
+      stato.campagnaTag.length ? "ok" : "attesa",
+      10000
+    );
+  } catch (errore) {
+    avvisa(errore.message, "errore", 9000);
+  } finally {
+    bottone.disabled = false;
+  }
+}
+
+function disegnaClassificazioneCampagna(tag) {
+  const corpo = $("#tabella-tag-campagna tbody");
+  corpo.innerHTML = "";
+  for (const voce of tag) {
+    const tr = document.createElement("tr");
+    tr.dataset.epc = voce.epc;
+
+    const epc = document.createElement("td");
+    epc.className = "epc-campagna";
+    epc.textContent = voce.epc;
+    const letture = document.createElement("td");
+    letture.textContent = `${voce.letture}/${voce.cicli} (${Math.round(voce.tasso * 100)}%)`;
+    const antenne = document.createElement("td");
+    antenne.textContent = (voce.antenne || []).join(", ") || "—";
+    const posizione = document.createElement("td");
+    const select = document.createElement("select");
+    select.className = "classifica-tag";
+    select.setAttribute("aria-label", `Posizione del tag ${voce.epc}`);
+    for (const [valore, testo] of [
+      ["", "Da classificare"],
+      ["dentro", "Dentro"],
+      ["fuori", "Fuori"],
+    ]) {
+      const opzione = document.createElement("option");
+      opzione.value = valore;
+      opzione.textContent = testo;
+      select.append(opzione);
+    }
+    select.addEventListener("change", aggiornaClassificazioneCampagna);
+    posizione.append(select);
+    tr.append(epc, letture, antenne, posizione);
+    corpo.append(tr);
+  }
+  $("#selezione-campagna").hidden = tag.length === 0;
+  aggiornaClassificazioneCampagna();
+}
+
+function classificazioneCampagna() {
+  const gruppi = { dentro: [], fuori: [], mancanti: 0 };
+  for (const riga of $$("#tabella-tag-campagna tbody tr")) {
+    const posizione = riga.querySelector("select").value;
+    if (posizione === "dentro" || posizione === "fuori") {
+      gruppi[posizione].push(riga.dataset.epc);
+    } else {
+      gruppi.mancanti += 1;
+    }
+  }
+  return gruppi;
+}
+
+function aggiornaClassificazioneCampagna() {
+  const gruppi = classificazioneCampagna();
+  $("#conta-dentro").textContent = `${gruppi.dentro.length} dentro`;
+  $("#conta-fuori").textContent = `${gruppi.fuori.length} fuori`;
+  $("#conta-dentro").className = `pastiglia ${gruppi.dentro.length ? "pastiglia--ok" : "pastiglia--attesa"}`;
+  $("#conta-fuori").className = `pastiglia ${gruppi.fuori.length ? "pastiglia--ok" : "pastiglia--attesa"}`;
+  $("#avvia-campagna").disabled = !(
+    gruppi.dentro.length && gruppi.fuori.length && gruppi.mancanti === 0
+  );
+}
+
 async function avviaCampagna() {
+  const gruppi = classificazioneCampagna();
   $("#avvia-campagna").disabled = true;
   $("#avanzamento-campagna").hidden = false;
   $("#consigliata").hidden = true;
   try {
-    const report = await chiama("campagna", { cicli: 10, potenze_dbm: [15, 20, 25, 30] });
+    const report = await chiama("campagna", {
+      cicli: 10,
+      potenze_dbm: [15, 20, 25, 30],
+      dentro: gruppi.dentro,
+      fuori: gruppi.fuori,
+    });
     dipingiCampagna(report);
   } catch (errore) {
     avvisa(errore.message, "errore", 12000);
   } finally {
-    $("#avvia-campagna").disabled = false;
+    aggiornaClassificazioneCampagna();
     $("#avanzamento-campagna").hidden = true;
   }
 }
@@ -1922,30 +3624,80 @@ function data(iso) {
 /* ==========================================================================
    Archivio pazienti
    ========================================================================== */
-async function cercaPaziente() {
+/** L'elenco dei pazienti, filtrato o no.
+ *
+ *  Ricerca vuota vuol dire **tutti**: l'archivio si sfoglia. Chi cerca un caso
+ *  di tre mesi fa spesso non ricorda il cognome, ricorda che c'era — e una
+ *  tabella vuota davanti a un archivio pieno lo manda a indovinare.
+ *
+ *  `azzera` riparte dalla prima pagina; senza, accoda la successiva. */
+async function elencaPazienti({ azzera = true } = {}) {
   const query = $("#cerca-paziente").value.trim();
-  if (!query) {
-    esito("#esito-ricerca", "Scrivi cosa cercare.", "");
-    return;
-  }
+  const offset = azzera ? 0 : stato.archivio.mostrati;
+  $("#altri-pazienti").disabled = true;
   try {
-    const risposta = await chiama("cerca_paziente", { query });
+    const risposta = await chiama("cerca_paziente", {
+      query,
+      offset,
+      ordine: stato.archivio.ordine,
+    });
+    if (azzera) svuotaPazienti();
     dipingiRisultati(risposta.risultati);
-    esito(
-      "#esito-ricerca",
-      risposta.risultati.length
-        ? `${risposta.risultati.length} ${plurale(risposta.risultati.length, "paziente", "pazienti")}`
-        : "Nessun paziente trovato.",
-      risposta.risultati.length ? "ok" : ""
-    );
+    stato.archivio.mostrati = offset + risposta.risultati.length;
+    stato.archivio.totale = risposta.totale;
+    raccontaArchivio(risposta);
   } catch (errore) {
     esito("#esito-ricerca", errore.message, "errore");
+  } finally {
+    $("#altri-pazienti").disabled = false;
   }
+}
+
+/** Quanti se ne vedono e quanti ce ne sono. Sono due numeri diversi: «50
+ *  pazienti» e «50 dei 1284 in archivio» si leggono uguale e non lo sono. */
+function raccontaArchivio(risposta) {
+  const mostrati = stato.archivio.mostrati;
+  const totale = risposta.totale;
+  let testo;
+  if (!totale) {
+    testo = risposta.filtrato
+      ? "Nessun paziente trovato."
+      : "L'archivio è vuoto: qui compariranno i pazienti man mano che si accettano.";
+  } else if (mostrati >= totale) {
+    testo = risposta.filtrato
+      ? `${totale} ${plurale(totale, "paziente trovato", "pazienti trovati")}.`
+      : `${totale} ${plurale(totale, "paziente", "pazienti")} in archivio, tutti in elenco.`;
+  } else {
+    testo =
+      `${mostrati} di ${totale} ${plurale(totale, "paziente", "pazienti")}` +
+      (risposta.filtrato ? " trovati." : " in archivio.");
+  }
+  esito("#esito-ricerca", testo, totale ? "ok" : "");
+
+  const altri = Math.max(0, totale - mostrati);
+  const bottone = $("#altri-pazienti");
+  bottone.hidden = altri === 0;
+  bottone.textContent = `Mostra altri ${Math.min(altri, 50)}`;
+}
+
+function svuotaPazienti() {
+  $("#tabella-pazienti").querySelector("tbody").innerHTML = "";
+  stato.archivio.mostrati = 0;
+  $("#pannello-storico").classList.add("pannello--nascosto");
+}
+
+/** Due domande diverse: «cosa è passato di qui ultimamente» e «trovami questo
+ *  cognome che non so scrivere». La prima vuole le date, la seconda l'alfabeto. */
+function cambiaOrdineArchivio(ordine) {
+  stato.archivio.ordine = ordine;
+  $$(".ordine__voce").forEach((voce) =>
+    voce.setAttribute("aria-selected", voce.dataset.ordine === ordine ? "true" : "false")
+  );
+  elencaPazienti({ azzera: true });
 }
 
 function dipingiRisultati(righe) {
   const corpo = $("#tabella-pazienti").querySelector("tbody");
-  corpo.innerHTML = "";
   for (const riga of righe) {
     const tr = document.createElement("tr");
     for (const [testo, classe] of [
@@ -1969,7 +3721,6 @@ function dipingiRisultati(righe) {
     tr.append(azione);
     corpo.append(tr);
   }
-  if (!righe.length) $("#pannello-storico").classList.add("pannello--nascosto");
 }
 
 async function apriStorico(patientId) {
@@ -2129,6 +3880,26 @@ function dipingiDestinatari() {
     scelta.append(opzione);
   }
   if ([...scelta.options].some((o) => o.value === precedente)) scelta.value = precedente;
+
+  // Lo stesso elenco serve al riepilogo del transito, con in più «tutti»:
+  // là la domanda può essere anche «cosa è passato in tutto, quest'anno».
+  const controparte = $("#transito-controparte");
+  if (controparte) {
+    const scelto = controparte.value;
+    controparte.innerHTML = "";
+    const tutti = document.createElement("option");
+    tutti.value = "";
+    tutti.textContent = "— tutte le destinazioni —";
+    controparte.append(tutti);
+    for (const voce of elenco) {
+      const opzione = document.createElement("option");
+      opzione.value = voce.nome;
+      opzione.textContent = voce.codice ? `${voce.nome} (${voce.codice})` : voce.nome;
+      controparte.append(opzione);
+    }
+    if ([...controparte.options].some((o) => o.value === scelto)) controparte.value = scelto;
+  }
+
   $("#prepara").disabled = elenco.length === 0;
   $("#destinazione-nota").textContent = elenco.length
     ? "Si aggiungono in Impostazioni → Laboratori destinatari."
@@ -2632,6 +4403,16 @@ function ascoltaEventi() {
     $("#verdetto-esito").textContent = `Passata ${dati.passata} — lettura in corso…`;
   });
 
+  // Il riempimento: ogni ingresso arriva di qui nel momento in cui accade. La
+  // pagina interroga comunque il server (le serve il riepilogo), ma è questo
+  // che permette a una seconda schermata aperta di restare allineata.
+  flusso.addEventListener("riempimento", (messaggio) => {
+    const dati = JSON.parse(messaggio.data).data;
+    if (dati.fase === "conteggio") {
+      $("#riempimento-quanti").textContent = dati.quanti;
+    }
+  });
+
   flusso.addEventListener("ricezione", (messaggio) => {
     const dati = JSON.parse(messaggio.data).data;
     if (dati.fase === "lettura") $("#ricezione-esito").textContent = "Lettura della scatola in corso…";
@@ -2640,6 +4421,12 @@ function ascoltaEventi() {
   // La campagna dura minuti: senza avanzamento sembrerebbe bloccata.
   flusso.addEventListener("campagna", (messaggio) => {
     const dati = JSON.parse(messaggio.data).data;
+    if (dati.fase === "inventario_ciclo") {
+      const pastiglia = $("#avanzamento-inventario");
+      pastiglia.textContent = `${dati.indice} / ${dati.totale} · ${dati.trovati} tag`;
+      pastiglia.className = "pastiglia pastiglia--radio";
+      return;
+    }
     if (dati.fase !== "configurazione") return;
     const pastiglia = $("#avanzamento-campagna");
     pastiglia.hidden = false;
@@ -2673,6 +4460,8 @@ async function avvia() {
   applicaPostazione(postazioneRichiesta(), { ricorda: false });
   collegaManifesto();
   Scena.collega($("#scena"));
+  Traccia.collega();
+  Scena.osserva((nome, testo) => Traccia.nota("scena", { stato: nome, testo }));
 
   // Indirizzo senza token: inutile provare, si dice subito.
   if (!TOKEN) {
@@ -2687,17 +4476,43 @@ async function avvia() {
   $("#salta").addEventListener("click", annullaContenitore);
   $("#etichetta").addEventListener("click", () => mostraEtichetta(stato.ultimoContenitore));
   $("#dialogo-etichetta").addEventListener("close", stampaEtichetta);
-  $("#cambia-conteggio").addEventListener("click", cambiaConteggio);
+  $("#aggiungi-reperto").addEventListener("click", aggiungiReperto);
   $("#annulla-accettazione").addEventListener("click", annullaAccettazione);
-  $("#nuova-accettazione").addEventListener("click", nuovaAccettazione);
-  $("#cerca").addEventListener("click", cercaPaziente);
+  $("#nuova-accettazione").addEventListener("click", () => nuovaAccettazione());
+  $("#cerca").addEventListener("click", () => elencaPazienti({ azzera: true }));
   $("#cerca-paziente").addEventListener("keydown", (evento) => {
     if (evento.key === "Enter") {
       evento.preventDefault();
-      cercaPaziente();
+      elencaPazienti({ azzera: true });
     }
   });
+  // Il campo di ricerca filtra mentre si scrive, ma non a ogni tasto: sono
+  // interrogazioni all'archivio, e con una tastiera veloce ne partirebbero
+  // dieci per un cognome. Svuotarlo rimette tutti, senza dover premere niente.
+  $("#cerca-paziente").addEventListener("input", () => {
+    clearTimeout(stato.archivio.attesa);
+    stato.archivio.attesa = setTimeout(() => elencaPazienti({ azzera: true }), 250);
+  });
+  $("#altri-pazienti").addEventListener("click", () => elencaPazienti({ azzera: false }));
+  $$(".ordine__voce").forEach((voce) =>
+    voce.addEventListener("click", () => cambiaOrdineArchivio(voce.dataset.ordine))
+  );
+  // Registrati una volta sola: erano dentro `mostra()`, e a ogni cambio di
+  // schermata se ne aggiungeva un altro.
+  $$(".schede__voce").forEach((voce) =>
+    voce.addEventListener("click", () => mostraScheda(voce.dataset.scheda))
+  );
   $("#vai-al-sigillo").addEventListener("click", () => mostra("sigillo"));
+  $("#apri-scatola").addEventListener("click", apriScatola);
+  $("#chiudi-scatola").addEventListener("click", chiudiScatola);
+  $("#annulla-scatola").addEventListener("click", annullaScatola);
+  $("#suono-attivo").addEventListener("change", (evento) => {
+    Suono.attivo = evento.target.checked;
+    if (Suono.attivo) {
+      Suono.sblocca();
+      Suono.ok();
+    }
+  });
   $("#prepara").addEventListener("click", preparaSpedizione);
   $("#aggiorna-coda").addEventListener("click", caricaCoda);
   $("#seleziona-coda").addEventListener("click", selezionaTuttaCoda);
@@ -2708,10 +4523,22 @@ async function avvia() {
   $("#file-distinta").addEventListener("change", apriDistinta);
   $("#leggi-volume").addEventListener("click", leggiVolume);
   $("#conferma-ricezione").addEventListener("click", confermaRicezione);
+  $("#esporta-riscontro").addEventListener("click", esportaRiscontro);
+  $("#file-riscontro").addEventListener("change", importaRiscontro);
+  $("#genera-transito").addEventListener("click", generaTransito);
+  $("#scarica-transito").addEventListener("click", scaricaTransito);
   $("#applica-potenze").addEventListener("click", applicaPotenze);
   $("#applica-gen2").addEventListener("click", applicaGen2);
   $("#misura-antenna").addEventListener("click", misuraAntenna);
+  $("#svuota-curve").addEventListener("click", svuotaCurve);
+  $("#gen2-consigliato").addEventListener("click", gen2Consigliato);
+  $("#prova-lettura").addEventListener("click", provaLettura);
+  $("#prova-continua").addEventListener("click", alternaProvaContinua);
+  $("#controlla-salute").addEventListener("click", controllaSalute);
+  $("#aggiorna-misure").addEventListener("click", aggiornaMisure);
+  $("#applica-profilo").addEventListener("click", applicaProfilo);
   $("#profila").addEventListener("click", profila);
+  $("#inventaria-campagna").addEventListener("click", inventariaCampagna);
   $("#avvia-campagna").addEventListener("click", avviaCampagna);
   $("#aggiorna-registro").addEventListener("click", aggiornaRegistro);
   $("#aggiorna-porte").addEventListener("click", aggiornaPorte);
@@ -2734,10 +4561,19 @@ async function avvia() {
         radio.value === "tavoletta" ? "Misure da tavoletta." : "Misure da banco.";
     })
   );
-  $$(".ricetta [data-posizione]").forEach((bottone) =>
-    bottone.addEventListener("click", () => rilevaControllo(bottone.dataset.posizione))
-  );
   $("#sigilla").addEventListener("click", sigilla);
+  $("#stampa-distinta").addEventListener("click", stampaDistinta);
+  $("#foglio-stampa").addEventListener("click", () => window.print());
+  $("#foglio-chiudi").addEventListener("click", () => ($("#foglio").hidden = true));
+  // Il lettore di codici a barre digita in fretta e chiude con Invio: qui
+  // significa «ho finito di leggere questo codice».
+  $("#scansione-qr").addEventListener("keydown", (evento) => {
+    if (evento.key !== "Enter") return;
+    evento.preventDefault();
+    const testo = evento.target.value;
+    evento.target.value = "";
+    leggiScansione(testo);
+  });
   $("#esporta").addEventListener("click", esportaDistinta);
   $("#interrompi").addEventListener("click", () =>
     fetch("/api/interrompi", {
@@ -2789,15 +4625,10 @@ async function avvia() {
   $$(".rail__voce").forEach((voce) =>
     voce.addEventListener("click", () => {
       mostra(voce.dataset.schermata);
-      if (voce.dataset.schermata === "sigillo") caricaCoda();
-    })
-  );
-
-  $$(".conteggio__passo").forEach((bottone) =>
-    bottone.addEventListener("click", () => {
-      const campo = $("#contenitori");
-      const nuovo = Number(campo.value || 1) + Number(bottone.dataset.delta);
-      campo.value = Math.min(255, Math.max(1, nuovo));
+      if (voce.dataset.schermata === "sigillo") {
+        caricaCoda();
+        caricaInSospeso();
+      }
     })
   );
 
@@ -2823,10 +4654,9 @@ async function avvia() {
       1: "accettazione",
       2: "sigillo",
       3: "ricezione",
-      4: "strumenti",
-      5: "archivio",
-      6: "registro",
-      7: "impostazioni",
+      4: "archivio",
+      5: "registro",
+      6: "impostazioni",
     };
     if (scorciatoie[evento.key]) mostra(scorciatoie[evento.key]);
   });
@@ -2834,6 +4664,10 @@ async function avvia() {
   try {
     stato.descrizione = await chiama("descrivi");
     stato.intervalloSorveglianza = stato.descrizione.watch_interval_ms || 900;
+    // Se il diario dell'interfaccia è spento si smette di accodare: quello
+    // della radio resta acceso comunque, sono due metà separate.
+    if (stato.descrizione.diario?.interfaccia === false) Traccia.attiva = false;
+    dipingiModalita(stato.descrizione.modalita_scrittura);
     dipingiTestata();
     dipingiDestinatari();
     Scena.antennaAttiva(stato.descrizione.antenne.scrittura[0]);
@@ -2841,6 +4675,7 @@ async function avvia() {
     if (lettura[0]) $("#volume-a1").textContent = lettura[0];
     if (lettura[1]) $("#volume-a2").textContent = lettura[1];
     riempiCodebook();
+    preimpostaDate();
     costruisciAntenne();
     if (stato.descrizione.tema && stato.descrizione.tema !== "sistema" && !localStorage.getItem("tema")) {
       applicaTema(stato.descrizione.tema === "chiaro" ? "chiaro" : "scuro");
@@ -2853,6 +4688,16 @@ async function avvia() {
     dipingiSpedizione();
     ripristinaRicezione(stato.distinta);
     await caricaCoda();
+    await caricaInSospeso();
+    // Una scatola lasciata aperta da un riavvio si riprende da dove stava: il
+    // contenuto è nell'archivio, e la sorveglianza riparte da quello.
+    if (stato.spedizione?.shipment_id && stato.spedizione.stato === "open") {
+      $("#riempimento-destinazione").textContent = stato.spedizione.destinazione || "—";
+      $("#riempimento-scatola").textContent = stato.spedizione.shipment_id;
+      $("#pannello-riempimento").classList.remove("pannello--nascosto");
+      stato.riempimento = { dentro: [], anomalie: [], esclusi: [] };
+      dipingiRiempimento(stato.riempimento);
+    }
     aggiornaWorkflowBar();
   } catch (errore) {
     avvisa(`Impossibile leggere la configurazione: ${errore.message}`, "errore", 15000);

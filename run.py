@@ -18,6 +18,9 @@ Uso diretto:
   python run.py tag-profile -> misura TID e USER memory di un tag
   python run.py lims       -> accettazione e ricezione campioni
   python run.py campaign   -> campagna di misura: tara potenza e parametri radio
+  python run.py diario     -> rilegge il diario di prototipazione (nessun hardware)
+  python run.py webui --simulato [file] -> interfaccia su lettore simulato
+  python run.py webui --config <file>   -> con un'altra configurazione
 
 Funziona su Windows / Linux / macOS.
 """
@@ -135,16 +138,72 @@ def run_lims() -> int:
     return lims_gui.main()
 
 
+def _config_indicata(argomenti: list[str]) -> Path | None:
+    """`--config <file>`, se c'e'."""
+    for forma in ("--config", "-c"):
+        if forma in argomenti:
+            posizione = argomenti.index(forma)
+            if posizione + 1 < len(argomenti):
+                return Path(argomenti[posizione + 1])
+    for voce in argomenti:
+        if voce.startswith("--config="):
+            return Path(voce.split("=", 1)[1])
+    return None
+
+
+def _banco_di_prova(argomenti: list[str], cfg: dict):
+    """Il banco simulato, se l'avvio lo chiede con `--simulato`.
+
+    `--simulato` da solo monta tag vergini, come quelli che arrivano dal
+    fornitore. `--simulato <file>` monta invece cio' che la radio ha visto in
+    una sessione vera (un diario) o cio' che descrive uno scenario scritto a
+    mano: e' la ragione per cui il diario esiste.
+    """
+    if "--simulato" not in argomenti:
+        return None
+    from rfid_silion.scenario import BancoSimulato, carica_scenario, scenario_vuoto
+
+    posizione = argomenti.index("--simulato")
+    seguente = argomenti[posizione + 1] if posizione + 1 < len(argomenti) else ""
+    lims_cfg = cfg.get("lims", {}) or {}
+    if seguente and not seguente.startswith("-"):
+        scenario = carica_scenario(seguente)
+    else:
+        scenario = scenario_vuoto(
+            user_byte=int(lims_cfg.get("user_memory_bytes", 86))
+        )
+    antenne = sorted(
+        {int(voce["id"]) for voce in cfg.get("antennas", []) if "id" in voce}
+    ) or [1, 2, 3]
+    banco = BancoSimulato(scenario, antenne=antenne)
+    print(
+        "\n"
+        "  ============================================================\n"
+        "   BANCO DI PROVA — nessun lettore collegato.\n"
+        f"   Scenario: {scenario.origine}\n"
+        f"   Tag: {len(scenario.tag)}, di cui {len(scenario.nel_campo)} nel campo.\n"
+        "\n"
+        "   In Strumenti compare il riquadro «Banco di prova»: da li' si\n"
+        "   appoggiano e si tolgono i campioni dall'antenna.\n"
+        "  ============================================================\n",
+        flush=True,
+    )
+    return banco
+
+
 def run_webui() -> int:
     """Interfaccia operativa nel browser, servita solo in locale."""
     import webbrowser
 
     from app import gui
     from rfid_silion.diagnostics import setup_logging
+    from rfid_silion.diario import BackendTracciato, diario_da_config
     from rfid_silion.service import RFIDService
     from webui.server import PortaOccupataError, WebUIServer
 
-    cfg_path = SRC / "app" / "config.yaml"
+    # Un file di configurazione diverso serve soprattutto al banco simulato:
+    # provare il flusso senza toccare l'archivio del laboratorio.
+    cfg_path = _config_indicata(sys.argv[2:]) or SRC / "app" / "config.yaml"
     cfg = gui.load_config(str(cfg_path))
     log_cfg = cfg.get("logging", {})
     setup_logging(
@@ -154,10 +213,18 @@ def run_webui() -> int:
         force_debug="--debug" in sys.argv[2:],
     )
 
+    diario = diario_da_config(cfg)
+    banco = _banco_di_prova(sys.argv[2:], cfg)
+    # Il diario avvolge il backend, non lo sostituisce: sotto resta lo stesso
+    # servizio (o il banco simulato), e chi interroga il contratto non si
+    # accorge di niente.
+    sotto = banco.backend if banco is not None else RFIDService(cfg)
+    backend = BackendTracciato(sotto, diario)
+
     web_cfg = cfg.get("webui", {}) or {}
     server = WebUIServer(
         cfg,
-        RFIDService(cfg),
+        backend,
         host=str(web_cfg.get("host", "127.0.0.1")),
         port=int(web_cfg.get("port", 8770)),
         # Token fisso opzionale: rende l'indirizzo stabile fra un avvio e
@@ -165,6 +232,8 @@ def run_webui() -> int:
         # invece di copiare l'indirizzo dal terminale ogni volta.
         token=str(web_cfg.get("token") or "") or None,
         config_path=cfg_path,
+        diario=diario,
+        banco=banco,
     )
     # Si prende la porta prima di annunciare l'indirizzo: se l'interfaccia e'
     # gia' aperta altrove, stampare un secondo indirizzo che non funzionera'
@@ -255,6 +324,9 @@ def run_webui() -> int:
     except OSError as exc:
         print(f"   [avviso] indirizzo non salvato su file: {exc}\n", flush=True)
 
+    if diario.percorso is not None:
+        print(f"   (il diario di questa sessione e' in {diario.percorso})\n", flush=True)
+
     if web_cfg.get("open_browser", True) and "--no-browser" not in sys.argv[2:]:
         webbrowser.open(server.url)
     try:
@@ -265,6 +337,13 @@ def run_webui() -> int:
         server.shutdown()
         percorso_url.unlink(missing_ok=True)
     return 0
+
+
+def run_diario() -> int:
+    """Rilegge il diario di prototipazione dell'ultima sessione."""
+    from app import diario_cli
+
+    return diario_cli.main(sys.argv[2:])
 
 
 def run_service() -> int:
@@ -323,7 +402,9 @@ def run_tests() -> int:
         test_client,
         test_config_misura,
         test_dense_inventory,
+        test_diario,
         test_extended_protocol,
+        test_flusso_continuo,
         test_gen2_config,
         test_lims_campaign,
         test_lims_codec,
@@ -333,15 +414,20 @@ def run_tests() -> int:
         test_lims_labels,
         test_lims_manifest,
         test_lims_profiler,
+        test_lims_qr,
         test_lims_reuse,
+        test_lims_riempimento,
+        test_lims_riscontro,
         test_lims_sealing,
         test_lims_tagio,
         test_lock,
         test_protocol,
         test_reader,
         test_rpc,
+        test_scenario,
         test_select_embedded,
         test_service,
+        test_strumenti,
         test_transports,
         test_webui,
     )
@@ -366,11 +452,18 @@ def run_tests() -> int:
         test_lims_labels,
         test_lims_manifest,
         test_lims_profiler,
+        test_lims_qr,
         test_lims_reuse,
+        test_lims_riempimento,
+        test_lims_riscontro,
         test_lims_sealing,
         test_lims_tagio,
         test_config_misura,
         test_webui,
+        test_diario,
+        test_scenario,
+        test_strumenti,
+        test_flusso_continuo,
     ):
         # Un modulo ripetuto per distrazione gonfierebbe il totale dei test
         # superati senza che nulla segnali l'errore.
@@ -394,6 +487,7 @@ ACTIONS = {
     "8": ("Tracciabilita' campioni — GUI Tkinter (collaudo)", run_lims),
     "9": ("Campagna di misura della lettura", run_campaign),
     "10": ("GUI di controllo Tkinter (collaudo)", run_gui),
+    "11": ("Diario di prototipazione (rilegge l'ultima sessione)", run_diario),
 }
 
 
@@ -424,6 +518,7 @@ def main() -> int:
         "tag_profile": run_tag_profile,
         "lims": run_lims,
         "campaign": run_campaign,
+        "diario": run_diario,
     }
     if len(sys.argv) > 1 and sys.argv[1].lower() in direct:
         return direct[sys.argv[1].lower()]()

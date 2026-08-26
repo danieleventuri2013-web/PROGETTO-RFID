@@ -8,10 +8,12 @@ la profilazione stessa.
 
 **Due decisioni non ovvie.**
 
-1. *Si scrive il tag peggiore, non l'ultimo.* La soglia deve reggere il tag
-   meno capiente del lotto: se il primo tag misura 64 byte e il secondo 128,
-   scrivere 128 renderebbe illeggibile il primo. Percio' il valore scende
-   liberamente e **non sale** senza `--forza`, che riparte da zero.
+1. *Si scrive il tag peggiore dello stesso chip, non l'ultimo.* La soglia deve
+   reggere il tag meno capiente del lotto: se il primo tag misura 64 byte e il
+   secondo 128, scrivere 128 renderebbe illeggibile il primo. Percio' il valore
+   scende liberamente e **non sale** senza `--forza`. Un modello di chip diverso
+   apre invece una nuova serie: mescolare il minimo del vecchio modello con i
+   dati identificativi del nuovo produrrebbe una configurazione incoerente.
 
 2. *Il file si modifica riga per riga, non si riscrive.* `config.yaml` e' pieno
    di commenti che spiegano ogni parametro: `yaml.safe_dump` li cancellerebbe
@@ -29,12 +31,22 @@ from pathlib import Path
 
 import yaml
 
-__all__ = ["Misura", "Esito", "aggiorna_testo", "scrivi_misura"]
+__all__ = ["CHIAVE_MODALITA", "Esito", "Misura", "aggiorna_testo", "scrivi_misura"]
 
 #: La chiave che il codice legge davvero.
 CHIAVE = "user_memory_bytes"
 #: La chiave che registra da dove viene quel numero.
 REGISTRO = "tag_misurato"
+#: Cosa si riesce a scrivere su questi tag. La profilazione la misura, quindi
+#: la scrive qui invece di lasciarla al ricordo di chi ha letto il report.
+CHIAVE_MODALITA = "modalita_scrittura"
+
+_COMMENTO_MODALITA = (
+    "# Cosa si scrive sul tag: «payload» (pseudonimo + campione cifrato) oppure",
+    "# «solo_epc» per i chip senza USER memory utilizzabile. In «solo_epc» i dati",
+    "# del paziente viaggiano sulla distinta stampata e si perde il legame",
+    "# anti-clonazione fra campione e numero di serie del chip.",
+)
 
 _COMMENTO = (
     "# Scritto da `python run.py tag-profile`: cosa e' stato misurato, su quanti",
@@ -67,17 +79,25 @@ class Esito:
 
 def scrivi_misura(
     percorso: str | Path,
-    misura: Misura,
+    misura: Misura | None,
     *,
     forza: bool = False,
     adesso: dt.datetime | None = None,
+    modalita_scrittura: str | None = None,
 ) -> Esito:
-    """Aggiorna il file di configurazione. Scrittura in due tempi."""
+    """Aggiorna il file di configurazione. Scrittura in due tempi.
+
+    `misura=None` con `modalita_scrittura` cambia solo la modalita': serve
+    quando l'operatore decide di lavorare in sola identita' senza che sia
+    arrivata una misura nuova.
+    """
     percorso = Path(percorso)
     with open(percorso, "r", encoding="utf-8", newline="") as f:
         testo = f.read()
 
-    nuovo, esito = aggiorna_testo(testo, misura, forza=forza, adesso=adesso)
+    nuovo, esito = aggiorna_testo(
+        testo, misura, forza=forza, adesso=adesso, modalita_scrittura=modalita_scrittura
+    )
     if not esito.scritto:
         return esito
 
@@ -92,13 +112,40 @@ def scrivi_misura(
 
 def aggiorna_testo(
     testo: str,
-    misura: Misura,
+    misura: Misura | None,
     *,
     forza: bool = False,
     adesso: dt.datetime | None = None,
+    modalita_scrittura: str | None = None,
 ) -> tuple[str, Esito]:
     """Versione pura: testo in, testo fuori. Tutta la logica sta qui."""
+    if misura is None:
+        if modalita_scrittura is None:
+            return testo, Esito(False, "niente da scrivere")
+        nuovo, cambiata = _scrivi_modalita(testo, modalita_scrittura)
+        return nuovo, Esito(
+            scritto=cambiata,
+            motivo=f"modalita' di scrittura impostata a «{modalita_scrittura}»"
+            if cambiata
+            else f"la modalita' era gia' «{modalita_scrittura}»",
+        )
     if misura.user_bytes <= 0:
+        # Zero byte non e' una misura della memoria e non va scritto come
+        # soglia. Ma e' esattamente il caso in cui la **modalita'** conta: un
+        # tag senza USER memory si lavora in sola identita', e perdere quella
+        # riga insieme al resto lascerebbe la configurazione a dire che il
+        # campione ci sta.
+        if modalita_scrittura is not None:
+            nuovo, cambiata = _scrivi_modalita(testo, modalita_scrittura)
+            return nuovo, Esito(
+                scritto=cambiata,
+                motivo=(
+                    f"nessuna USER memory leggibile: la soglia resta com'era e si "
+                    f"lavora in modalita' «{modalita_scrittura}»"
+                )
+                if cambiata
+                else f"la modalita' era gia' «{modalita_scrittura}»",
+            )
         return testo, Esito(False, "misura non valida: nessun byte di USER memory letto")
 
     dati = yaml.safe_load(testo) or {}
@@ -107,15 +154,22 @@ def aggiorna_testo(
     registro = lims.get(REGISTRO) or {}
     provati = int(registro.get("tag_provati") or 0)
     minimo_noto = registro.get("minimo_byte")
+    chip_noto = str(registro.get("chip") or "").strip()
+    chip_misurato = str(misura.chip or "").strip()
+    chip_cambiato = bool(chip_noto and chip_misurato and chip_noto != chip_misurato)
 
-    if forza or not provati or minimo_noto is None:
+    if forza or not provati or minimo_noto is None or chip_cambiato:
         minimo = misura.user_bytes
         provati = 1
-        motivo = (
-            f"misura imposta: la soglia riparte da {minimo} byte su questo tag"
-            if forza
-            else f"prima misura registrata: {minimo} byte"
-        )
+        if forza:
+            motivo = f"misura imposta: la soglia riparte da {minimo} byte su questo tag"
+        elif chip_cambiato:
+            motivo = (
+                f"chip cambiato da {chip_noto} a {chip_misurato}: "
+                f"nuova serie avviata da {minimo} byte"
+            )
+        else:
+            motivo = f"prima misura registrata: {minimo} byte"
     else:
         provati += 1
         minimo = min(int(minimo_noto), misura.user_bytes)
@@ -156,13 +210,51 @@ def aggiorna_testo(
     else:
         righe[riga_registro : _fine_blocco(righe, riga_registro, rientro)] = blocco
 
-    return "".join(righe), Esito(
+    risultato = "".join(righe)
+    if modalita_scrittura is not None:
+        risultato, cambiata = _scrivi_modalita(risultato, modalita_scrittura)
+        if cambiata:
+            motivo += f"; modalita' di scrittura «{modalita_scrittura}»"
+
+    return risultato, Esito(
         scritto=True,
         motivo=motivo,
         prima=None if attuale is None else int(attuale),
         dopo=minimo,
         tag_provati=provati,
     )
+
+
+def _scrivi_modalita(testo: str, modalita: str) -> tuple[str, bool]:
+    """Imposta `lims.modalita_scrittura`, aggiungendo la riga se non c'e'.
+
+    Stessa disciplina del resto del modulo: si tocca una riga sola e tutto il
+    contorno — commenti, ordine, fine riga — resta identico byte per byte.
+    """
+    dati = yaml.safe_load(testo) or {}
+    if (dati.get("lims") or {}).get(CHIAVE_MODALITA) == modalita:
+        return testo, False
+
+    righe = testo.splitlines(keepends=True)
+    fine = _fine_riga(righe)
+    inizio_lims, fine_lims = _sezione(righe, "lims")
+    if inizio_lims is None:
+        return testo, False
+
+    riga, rientro = _riga_chiave(righe, inizio_lims, fine_lims, CHIAVE_MODALITA)
+    if riga is not None:
+        righe[riga] = f"{rientro}{CHIAVE_MODALITA}: {modalita}{fine}"
+        return "".join(righe), True
+
+    # Non c'era: si mette subito sotto `user_memory_bytes`, che e' il valore di
+    # cui parla, con il suo commento. Se manca anche quello, in testa a `lims`.
+    ancora, rientro_ancora = _riga_chiave(righe, inizio_lims, fine_lims, CHIAVE)
+    posizione = (ancora + 1) if ancora is not None else (inizio_lims + 1)
+    rientro = rientro_ancora if ancora is not None else "  "
+    blocco = [f"{rientro}{riga_commento}{fine}" for riga_commento in _COMMENTO_MODALITA]
+    blocco.append(f"{rientro}{CHIAVE_MODALITA}: {modalita}{fine}")
+    righe[posizione:posizione] = blocco
+    return "".join(righe), True
 
 
 # ---------------------------------------------------------------------------

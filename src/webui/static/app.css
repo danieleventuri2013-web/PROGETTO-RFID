@@ -262,6 +262,28 @@ body {
   color: var(--ematossilina-tenue);
 }
 
+/* Con qualcosa di scritto e non ancora spedito la barra si fa notare senza
+   gridare: il colore dell'attesa, non quello dell'allarme. Non è un errore
+   avere campioni in coda a metà giornata — lo diventa alla fine. L'eosina
+   resta riservata all'attività radio. */
+.workflow-bar[data-residuo="1"] {
+  border-color: var(--attesa);
+  background: var(--attesa-velo);
+  color: var(--ematossilina);
+}
+
+/* «Di questo paziente ce ne sono già altri». Informazione, non allarme:
+   due campioni dello stesso paziente sono la normalità. */
+.nota-paziente {
+  margin: 0 0 var(--s4);
+  padding: var(--s3) var(--s4);
+  border-left: 3px solid var(--ematossilina-debole);
+  border-radius: 0 var(--r2) var(--r2) 0;
+  background: var(--superficie-alt);
+  color: var(--ematossilina-tenue);
+  font-size: var(--t-piccolo);
+}
+
 .schermata {
   display: none;
   max-width: 1180px;
@@ -363,58 +385,6 @@ body {
 
 .interruttore input {
   accent-color: var(--attesa);
-}
-
-/* -- Il conteggio: il dato che l'operatore sbaglia piu' spesso ------------- */
-.conteggio {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--s5);
-  margin-top: var(--s5);
-  padding: var(--s4);
-  background: var(--attesa-velo);
-  border: 1px solid var(--attesa);
-  border-radius: var(--r2);
-}
-
-.conteggio__riga {
-  display: flex;
-  align-items: center;
-  gap: var(--s2);
-  margin-top: 6px;
-}
-
-.conteggio__numero {
-  width: 92px;
-  padding: 6px var(--s2);
-  border: 1px solid var(--bordo-forte);
-  border-radius: var(--r2);
-  background: var(--superficie);
-  font-size: 2.25rem;
-  line-height: 1.1;
-  text-align: center;
-}
-
-.conteggio__numero::-webkit-outer-spin-button,
-.conteggio__numero::-webkit-inner-spin-button {
-  appearance: none;
-  margin: 0;
-}
-
-.conteggio__passo {
-  width: 40px;
-  height: 40px;
-  justify-content: center;
-  padding: 0;
-  font-size: var(--t-grande);
-}
-
-.conteggio__avviso {
-  flex: 1 1 320px;
-  margin: 0;
-  font-size: var(--t-piccolo);
-  line-height: 1.55;
 }
 
 .modulo__azioni {
@@ -1448,20 +1418,25 @@ body {
   stroke-dasharray: 6 5;
 }
 
+/* Il colore lo mette chi disegna: le curve sono piu' d'una e vanno
+   distinte. L'eosina resta riservata all'attivita' radio, quindi qui non
+   compare — un grafico fermo non e' un lettore che trasmette. */
 .grafico__curva {
   fill: none;
-  stroke: var(--eosina);
+  stroke: var(--ematossilina);
   stroke-width: 2.5;
   stroke-linejoin: round;
   stroke-linecap: round;
 }
 
-.grafico__punti circle {
-  fill: var(--eosina);
+.grafico__curve circle {
+  fill: var(--ematossilina);
 }
 
-.grafico__punti circle[data-oltre="1"] {
-  fill: var(--allarme);
+/* Sopra la soglia il punto diventa rosso comunque sia colorata la sua curva:
+   e' l'unica cosa che deve saltare all'occhio. */
+.grafico__curve circle[data-oltre="1"] {
+  fill: var(--allarme) !important;
 }
 
 .grafico__assi text {
@@ -1469,6 +1444,78 @@ body {
   font-family: var(--f-strumenti);
   font-size: 11px;
   letter-spacing: 0.06em;
+}
+
+/* La frase che si porta al fornitore. Sta sotto la curva perche' e' la
+   conclusione, e va letta dopo le prove; ha un rilievo maggiore della didascalia
+   perche' e' l'unica riga di questo pannello che finisce in una email. */
+/* Quello che il modulo dice di avere non e' quello che gli hai chiesto: senza
+   uno stacco visibile si legge come una seconda copia del modulo di sopra. */
+.riletti {
+  margin-top: var(--s3);
+  padding: var(--s3);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r1);
+  background: var(--superficie-alt);
+}
+
+.riletti__titolo {
+  margin: 0 0 var(--s2);
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ematossilina-tenue);
+}
+
+/* L'ordine dell'elenco pazienti. Stesso registro delle schede di Impostazioni:
+   sono entrambe scelte di vista, non azioni. */
+.ordine {
+  display: flex;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--bordo);
+  border-radius: var(--r1);
+  background: var(--superficie-alt);
+}
+
+.ordine__voce {
+  padding: 6px var(--s3);
+  border: none;
+  border-radius: calc(var(--r1) - 2px);
+  background: none;
+  color: var(--ematossilina-tenue);
+  font: inherit;
+  font-family: var(--f-strumenti);
+  font-size: var(--t-piccolo);
+  cursor: pointer;
+}
+
+.ordine__voce[aria-selected="true"] {
+  background: var(--superficie);
+  box-shadow: var(--ombra-1);
+  color: var(--ematossilina);
+  font-weight: 600;
+}
+
+.archivio__piede {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--s3);
+}
+
+.grafico__conclusione {
+  margin-top: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-left: 3px solid var(--ematossilina-debole);
+  background: var(--superficie-alt);
+  color: var(--ematossilina);
+  line-height: 1.5;
+}
+
+.grafico__conclusione:empty {
+  display: none;
 }
 
 .grafico figcaption {
@@ -1514,6 +1561,37 @@ body {
 .ricetta .tenue {
   display: block;
   font-size: var(--t-piccolo);
+}
+
+.ricetta__conteggi {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--s2);
+}
+
+.ricetta li.ricetta__selezione {
+  display: block;
+  padding-left: 46px;
+}
+
+.ricetta__selezione .tabella-contenitore {
+  max-width: 100%;
+  overflow-x: auto;
+}
+
+.ricetta li.ricetta__selezione::before {
+  display: none;
+  counter-increment: none;
+}
+
+.tabella--classificazione select {
+  min-width: 150px;
+}
+
+.epc-campagna {
+  font-family: var(--f-strumenti);
+  word-break: break-all;
 }
 
 .consigliata {
@@ -2103,6 +2181,542 @@ body {
 
   .prova {
     max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .ricetta li {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .ricetta li > .bottone,
+  .ricetta li > .pastiglia,
+  .ricetta li > .ricetta__conteggi {
+    grid-column: 2;
+    justify-self: start;
+  }
+
+  .ricetta li.ricetta__selezione {
+    padding-left: 0;
+  }
+}
+
+/* ==========================================================================
+   Riempimento della scatola
+
+   Qui l'operatore non guarda lo schermo: guarda le sue mani e la scatola. Lo
+   schermo deve rispondere alla domanda «è entrato?» con un colpo d'occhio, da
+   un metro di distanza — di qui la cifra grande e la riga che si accende per
+   un istante quando compare. L'eosina resta riservata all'attività radio; il
+   riconoscimento usa il verde della conferma, l'anomalia il rosso scuro
+   dell'allarme, che è più saturo apposta per non somigliargli.
+   ========================================================================== */
+.riempimento {
+  display: grid;
+  grid-template-columns: minmax(220px, 300px) 1fr;
+  gap: var(--s5);
+  align-items: start;
+}
+
+.riempimento__quadro {
+  position: sticky;
+  top: var(--s4);
+  padding: var(--s4);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r3);
+  background: var(--superficie-alt);
+}
+
+.riempimento__cifra {
+  margin: var(--s1) 0 0;
+  font-size: var(--t-eroe);
+  line-height: 1;
+  color: var(--ematossilina);
+}
+
+.riempimento__stato {
+  margin: var(--s2) 0 var(--s4);
+  color: var(--ematossilina-tenue);
+  font-size: var(--t-piccolo);
+  min-height: 2.4em;
+}
+
+.riempimento__dati {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--s1) var(--s3);
+  margin: 0 0 var(--s4);
+  font-size: var(--t-piccolo);
+}
+
+.riempimento__dati dt {
+  color: var(--ematossilina-debole);
+  font-family: var(--f-strumenti);
+  text-transform: lowercase;
+}
+
+.riempimento__dati dd {
+  margin: 0;
+  color: var(--ematossilina);
+}
+
+.riempimento__azioni {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.riempimento__colonna {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+/* -- l'elenco di cosa è entrato ------------------------------------------ */
+.dentro {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: var(--s2);
+}
+
+/* Colonna invertita: l'ultimo entrato sta in alto, dove guarda l'operatore.
+   Con trenta campioni, in fondo alla lista non lo vedrebbe nessuno. */
+.dentro__voce {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--bordo);
+  border-left: 3px solid var(--conferma);
+  border-radius: var(--r2);
+  background: var(--superficie);
+}
+
+.dentro__voce[data-nuovo="1"] {
+  animation: appena-entrato var(--moto-lungo) var(--curva);
+}
+
+@keyframes appena-entrato {
+  from {
+    background: var(--conferma-velo);
+    transform: translateX(-6px);
+  }
+  to {
+    background: var(--superficie);
+    transform: none;
+  }
+}
+
+.dentro__numero {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-medio);
+  color: var(--ematossilina-tenue);
+  min-width: 3ch;
+  text-align: right;
+}
+
+.dentro__chi {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dentro__paziente {
+  font-weight: 600;
+  color: var(--ematossilina);
+}
+
+.dentro__campione {
+  font-size: var(--t-piccolo);
+  color: var(--ematossilina-tenue);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dentro__vuoto {
+  padding: var(--s5);
+  text-align: center;
+  border: 1px dashed var(--bordo-forte);
+  border-radius: var(--r3);
+}
+
+/* -- quello che non doveva esserci ---------------------------------------- */
+.anomalie {
+  padding: var(--s4);
+  border: 1px solid var(--allarme);
+  border-radius: var(--r3);
+  background: var(--allarme-velo);
+}
+
+.anomalie__titolo {
+  margin: 0 0 var(--s3);
+  font-size: var(--t-medio);
+  color: var(--allarme);
+}
+
+.anomalie__elenco {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.anomalie__voce {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--s3);
+  padding: var(--s3);
+  border-radius: var(--r2);
+  background: var(--superficie);
+}
+
+.anomalie__motivo {
+  display: block;
+  font-size: var(--t-piccolo);
+  color: var(--allarme);
+}
+
+/* -- scatole rimaste indietro --------------------------------------------- */
+.in-sospeso {
+  margin: var(--s4) 0;
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--attesa);
+  border-radius: var(--r2);
+  background: var(--attesa-velo);
+}
+
+.in-sospeso__titolo {
+  margin: 0 0 var(--s2);
+  font-size: var(--t-corpo);
+  color: var(--ematossilina);
+}
+
+.in-sospeso__elenco {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.in-sospeso__voce {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex-wrap: wrap;
+  font-size: var(--t-piccolo);
+}
+
+.coda-avanzata {
+  margin-top: var(--s4);
+}
+
+.coda-avanzata > summary {
+  cursor: pointer;
+  color: var(--ematossilina-tenue);
+  font-size: var(--t-piccolo);
+}
+
+.interruttore {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  font-size: var(--t-piccolo);
+  color: var(--ematossilina-tenue);
+}
+
+@media (max-width: 900px) {
+  .riempimento {
+    grid-template-columns: 1fr;
+  }
+
+  .riempimento__quadro {
+    position: static;
+  }
+}
+
+/* Senza animazioni la riga nuova resta comunque distinguibile: il colore la
+   segna invece del movimento. Toglierla del tutto lascerebbe l'operatore
+   senza la conferma visiva che il flusso di lavoro chiede. */
+@media (prefers-reduced-motion: reduce) {
+  .dentro__voce[data-nuovo="1"] {
+    animation: none;
+    background: var(--conferma-velo);
+  }
+}
+
+
+/* ==========================================================================
+   Più reperti nella stessa accettazione
+
+   Quattro campioni presi allo stesso paziente nella stessa seduta hanno lo
+   stesso nome sopra, ma descrizione, materiale, fissativo, sede e avvertenze
+   possono essere tutti diversi. Il caso di un campione solo — che è il più
+   frequente — non deve pagare niente per questo: finché non se ne aggiunge un
+   secondo, qui sotto non c'è nulla da guardare.
+   ========================================================================== */
+.reperti {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s4);
+}
+
+.reperti:empty {
+  display: none;
+}
+
+.reperto {
+  position: relative;
+  margin: 0;
+  padding: var(--s4);
+  border: 1px solid var(--bordo);
+  border-left: 3px solid var(--ematossilina-debole);
+  border-radius: 0 var(--r2) var(--r2) 0;
+  background: var(--superficie-alt);
+}
+
+.reperto__titolo {
+  padding: 0 var(--s2);
+  color: var(--ematossilina-tenue);
+}
+
+.reperto__togli {
+  position: absolute;
+  top: var(--s2);
+  right: var(--s2);
+  min-width: 2rem;
+  padding: 2px var(--s2);
+  line-height: 1;
+}
+
+/* La descrizione del reperto che si sta per scrivere: con quattro vasetti
+   dello stesso paziente è l'unica cosa che dice quale si ha in mano. */
+.cartella__reperto {
+  margin: var(--s2) 0 0;
+  padding-left: var(--s3);
+  border-left: 2px solid var(--ematossilina-debole);
+  color: var(--ematossilina-tenue);
+  font-style: italic;
+}
+
+.serie__reperto {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--ematossilina-debole);
+  font-size: var(--t-micro);
+}
+
+
+/* ==========================================================================
+   Impostazioni in due schede
+
+   La configurazione si fa una volta e si dimentica; le misure si fanno col
+   lettore in mano e si rifanno a ogni cambiamento. Sono due attività diverse:
+   tenerle su una schermata sola significherebbe undici riquadri in fila e
+   quello che serve sempre in fondo.
+   ========================================================================== */
+.schede {
+  display: flex;
+  gap: var(--s1);
+  max-width: 1180px;
+  margin: 0 auto var(--s4);
+  border-bottom: 1px solid var(--bordo);
+}
+
+.schede__voce {
+  padding: var(--s3) var(--s5);
+  border: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: none;
+  color: var(--ematossilina-tenue);
+  font: inherit;
+  font-family: var(--f-strumenti);
+  cursor: pointer;
+}
+
+.schede__voce[aria-selected="true"] {
+  border-bottom-color: var(--ematossilina);
+  color: var(--ematossilina);
+  font-weight: 600;
+}
+
+.scheda {
+  display: none;
+}
+
+.scheda--attiva {
+  display: block;
+}
+
+/* La fascia che ricorda la modalità ridotta. Ambra e non rossa: non è un
+   guasto, è una condizione di lavoro che non va dimenticata. */
+.modalita-ridotta {
+  max-width: 1180px;
+  margin: 0 auto var(--s3);
+  padding: var(--s2) var(--s4);
+  border: 1px solid var(--attesa);
+  border-radius: var(--r2);
+  background: var(--attesa-velo);
+  color: var(--ematossilina);
+  font-size: var(--t-piccolo);
+}
+
+/* Un riquadro di spiegazione che avverte invece di raccontare. */
+.spiega--attenzione {
+  border-left: 3px solid var(--attesa);
+  background: var(--attesa-velo);
+}
+
+/* -- Il grafico a più curve ------------------------------------------------ */
+.legenda {
+  list-style: none;
+  margin: var(--s2) 0 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2) var(--s4);
+  font-size: var(--t-piccolo);
+}
+
+.legenda__voce {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.legenda__segno {
+  width: 18px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+/* -- La prova di lettura --------------------------------------------------- */
+.prova-lettura {
+  margin-top: var(--s5);
+  padding-top: var(--s4);
+  border-top: 1px solid var(--bordo);
+}
+
+.confronto {
+  display: flex;
+  gap: var(--s4);
+  margin: var(--s3) 0;
+}
+
+.confronto__lato {
+  flex: 1;
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r2);
+  background: var(--superficie-alt);
+}
+
+/* La misura precedente resta accanto, ma smorzata: è il termine di paragone,
+   non il dato. Da solo «14 letture al secondo» non vuol dire niente. */
+.confronto__lato--prima {
+  opacity: 0.65;
+}
+
+.confronto__cifra {
+  margin: var(--s1) 0 var(--s2);
+  font-size: var(--t-titolo);
+  line-height: 1;
+  color: var(--ematossilina);
+}
+
+#prova-continua[data-attivo="1"] {
+  border-color: var(--eosina);
+  color: var(--eosina);
+}
+
+/* -- La proposta della profilazione ---------------------------------------- */
+.proposta {
+  margin-top: var(--s4);
+  padding: var(--s4);
+  border: 1px solid var(--bordo-forte);
+  border-radius: var(--r3);
+  background: var(--superficie-alt);
+}
+
+.proposta[data-tipo="ridotta"] {
+  border-color: var(--attesa);
+  background: var(--attesa-velo);
+}
+
+.proposta__titolo {
+  margin: 0 0 var(--s3);
+  font-size: var(--t-medio);
+}
+
+.proposta__motivi {
+  margin: var(--s3) 0;
+  padding-left: var(--s5);
+  color: var(--ematossilina-tenue);
+  font-size: var(--t-piccolo);
+}
+
+.proposta__motivi li {
+  margin-bottom: var(--s1);
+}
+
+/* -- Le misure già fatte --------------------------------------------------- */
+.misure {
+  list-style: none;
+  margin: var(--s3) 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+}
+
+.misure__voce {
+  padding: var(--s2) var(--s4);
+  border: 1px solid var(--bordo);
+  border-left: 3px solid var(--ematossilina-debole);
+  border-radius: 0 var(--r2) var(--r2) 0;
+  background: var(--superficie);
+}
+
+.misure__voce[data-genere="adattamento"] {
+  border-left-color: var(--conferma);
+}
+
+.misure__voce[data-genere="profilazione"] {
+  border-left-color: var(--attesa);
+}
+
+.misure__testa {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--s3);
+  font-size: var(--t-piccolo);
+}
+
+.misure__corpo {
+  display: block;
+  margin-top: 2px;
+  color: var(--ematossilina-tenue);
+  font-size: var(--t-micro);
+}
+
+@media (max-width: 720px) {
+  .confronto {
+    flex-direction: column;
+  }
+
+  .schede {
     overflow-x: auto;
   }
 }
