@@ -256,6 +256,9 @@ class RFIDProcessClient:
     def health(self, check_antennas: bool = True) -> ServiceResponse:
         return self._call_service("rfid.health", {"check_antennas": check_antennas})
 
+    def identify(self) -> ServiceResponse:
+        return self._call_service("rfid.identify")
+
     def snapshot(self) -> dict[str, Any]:
         response = self._call_service("rfid.snapshot")
         if response.ok:

@@ -42,6 +42,8 @@ const stato = {
   prova: null,
   provaContinua: null,
   proposta: null,
+  /** Cosa e' collegato: rilevato al collegamento, guida cosa si puo' offrire. */
+  hardware: null,
   /** L'archivio: quanti se ne vedono, quanti ce ne sono, con che ordine. */
   archivio: { mostrati: 0, totale: 0, ordine: "recenti", attesa: null },
   /** Timer della sorveglianza della scatola. */
@@ -410,6 +412,14 @@ async function collega() {
   dipingiStatoLettore("collegamento…", "attivo");
   try {
     const esito = await chiama("connetti");
+    // Il censimento arriva insieme al collegamento: da questo momento
+    // l'interfaccia sa cosa questo modulo puo' fare e si adegua.
+    if (esito.hardware) {
+      stato.hardware = esito.hardware;
+      if (stato.descrizione) stato.descrizione.hardware = esito.hardware;
+      dipingiHardware(esito.hardware);
+      adattaAllHardware(esito.hardware);
+    }
     stato.collegato = true;
     dipingiStatoLettore("pronto", "pronto");
     $("#collega").textContent = "Scollega";
@@ -2751,6 +2761,7 @@ function aggiungiCurva(esito, etichetta) {
     misure,
     soglia: esito.data?.threshold ?? 7,
     risonanza: esito.data?.risonanza,
+    larghezza: esito.data?.larghezza_banda,
     inBanda: esito.data?.in_banda_eu,
   });
   disegnaCurve();
@@ -2882,9 +2893,29 @@ function raccontaCurve(curve, soglia) {
       "Questa misura non copre la banda ETSI: serve a vedere dove l'antenna è accordata.";
   }
 
+  // La banda utile e' il numero che un fornitore riconosce: il datasheet
+  // SLP1027 dichiara «VSWR <= 1,3 su 902-928 MHz», ed e' con quella riga che
+  // la nostra misura si confronta. Il minimo, su un pannello a banda larga,
+  // e' piatto e la sua posizione esatta la sposta il rumore.
+  const larghezza = ultima.larghezza;
+  const pezzi = [];
+  if (larghezza?.trovata) {
+    const da = (larghezza.da_khz / 1000).toFixed(0);
+    const a = (larghezza.a_khz / 1000).toFixed(0);
+    pezzi.push(
+      `Sotto VSWR ${larghezza.soglia} da ${da} a ${a} MHz` +
+        (larghezza.al_bordo ? " (e continua oltre la spazzata)" : "") +
+        (larghezza.copre_eu
+          ? " — copre tutta la banda ETSI."
+          : " — la banda ETSI resta fuori.")
+    );
+  } else if (larghezza) {
+    pezzi.push(`Mai sotto VSWR ${larghezza.soglia} in tutto l'intervallo misurato.`);
+  }
+
   const r = ultima.risonanza;
   if (!r) {
-    $("#risonanza-nota").textContent = "";
+    $("#risonanza-nota").textContent = pezzi.join(" ");
     return;
   }
   const mhz = (r.frequency_khz / 1000).toFixed(1);
@@ -2893,17 +2924,21 @@ function raccontaCurve(curve, soglia) {
     // Il minimo sul bordo della spazzata non è una risonanza: la risonanza
     // vera sta fuori. Dirlo lo stesso significherebbe portare al fornitore un
     // numero che non esiste.
-    $("#risonanza-nota").textContent =
+    pezzi.push(
       `Il punto migliore misurato è ${mhz} MHz, ma sta al bordo dell'intervallo: ` +
-      "la risonanza vera è più in là. Allarga la spazzata per trovarla.";
+        "il minimo vero è più in là. Allarga la spazzata."
+    );
+    $("#risonanza-nota").textContent = pezzi.join(" ");
     return;
   }
-  $("#risonanza-nota").textContent =
+  pezzi.push(
     `Minimo a ${mhz} MHz (VSWR ${r.vswr.toFixed(2)}), ` +
-    (Math.abs(r.scarto_da_eu_khz) < 2000
-      ? "cioè dentro la banda europea: questa antenna è accordata dove serve."
-      : `${Math.abs(scarto)} MHz ${r.scarto_da_eu_khz > 0 ? "sopra" : "sotto"} il centro ` +
-        "della banda europea. È il numero da mettere nella richiesta al fornitore.");
+      (Math.abs(r.scarto_da_eu_khz) < 2000
+        ? "cioè dentro la banda europea."
+        : `${Math.abs(scarto)} MHz ${r.scarto_da_eu_khz > 0 ? "sopra" : "sotto"} il centro ` +
+          "della banda europea.")
+  );
+  $("#risonanza-nota").textContent = pezzi.join(" ");
 }
 
 function testoSvg(x, y, testo, ancora) {
@@ -3082,6 +3117,108 @@ function fermaProvaContinua() {
   stato.provaContinua = null;
   $("#prova-continua").textContent = "Misura in continuo";
   $("#prova-continua").dataset.attivo = "";
+}
+
+/* ==========================================================================
+   Hardware installato
+
+   Il censimento si fa da solo al collegamento. Sta qui perché è quello che
+   decide cosa gli altri pannelli possono offrire: proporre una spazzata larga
+   a un modulo monoregione significherebbe far cercare all'operatore un guasto
+   che non c'è, quando la risposta è «questo firmware non lo fa».
+   ========================================================================== */
+async function rilevaHardware() {
+  $("#esito-hardware").textContent = "Interrogo il modulo…";
+  $("#rileva-hardware").disabled = true;
+  try {
+    const hardware = await chiama("rileva_hardware");
+    stato.hardware = hardware;
+    if (stato.descrizione) stato.descrizione.hardware = hardware;
+    dipingiHardware(hardware);
+    adattaAllHardware(hardware);
+  } catch (errore) {
+    $("#esito-hardware").textContent = errore.message;
+  } finally {
+    $("#rileva-hardware").disabled = false;
+  }
+}
+
+function dipingiHardware(hardware) {
+  const elenco = $("#hardware-dati");
+  const avvisi = $("#hardware-avvisi");
+  elenco.innerHTML = "";
+  avvisi.innerHTML = "";
+  if (!hardware || !hardware.rilevato) {
+    $("#esito-hardware").textContent =
+      hardware?.motivo === "mai collegato"
+        ? "Non ancora rilevato: si fa da solo appena ci si collega al lettore."
+        : `Censimento non riuscito: ${hardware?.motivo || "motivo sconosciuto"}`;
+    return;
+  }
+  $("#esito-hardware").textContent = "";
+
+  const mancanti = (hardware.antenne_configurate || []).filter(
+    (a) => !(hardware.antenne_collegate || []).includes(a)
+  );
+  const righe = [
+    ["modulo", hardware.modulo || "—"],
+    ["trasporto", hardware.trasporto || "—"],
+    ["numero di serie", hardware.seriale || "—"],
+    ["temperatura", hardware.temperatura_c == null ? "non disponibile" : `${hardware.temperatura_c} °C`],
+    ["banda in uso", hardware.banda_configurata_nome || "—"],
+    ["bande accettate", (hardware.bande_nomi || []).join(" · ") || "—"],
+    ["antenne collegate", (hardware.antenne_collegate || []).join(", ") || "nessuna"],
+    ["antenne in configurazione", (hardware.antenne_configurate || []).join(", ") || "—"],
+  ];
+  for (const [chiave, valore] of righe) {
+    const dt = document.createElement("dt");
+    dt.textContent = chiave;
+    const dd = document.createElement("dd");
+    dd.textContent = valore;
+    elenco.append(dt, dd);
+  }
+
+  const dire = [];
+  if (hardware.multibanda) {
+    dire.push(
+      "Il modulo accetta più bande: la spazzata d'antenna fuori dalla banda EU " +
+        "è possibile su questo esemplare."
+    );
+  } else {
+    dire.push(hardware.motivo_limite);
+  }
+  if (mancanti.length) {
+    dire.push(
+      `${plurale(mancanti.length, "L'antenna", "Le antenne")} ${mancanti.join(", ")} ` +
+        `${plurale(mancanti.length, "è in configurazione ma non risulta collegata", "sono in configurazione ma non risultano collegate")}.`
+    );
+  }
+  for (const [chiave, motivo] of Object.entries(hardware.non_disponibili || {})) {
+    dire.push(`Il modulo non ha risposto a «${chiave}»: ${motivo}`);
+  }
+  for (const testo of dire.filter(Boolean)) {
+    const voce = document.createElement("li");
+    voce.textContent = testo;
+    avvisi.append(voce);
+  }
+}
+
+/** Gli altri pannelli si adeguano a quello che il modulo ha detto di essere. */
+function adattaAllHardware(hardware) {
+  const selettore = $("#intervallo-diagnosi");
+  // Un modulo monoregione non accetta elenchi di frequenze: offrire le
+  // spazzate larghe prometterebbe una misura che il firmware rifiuta.
+  const larga = !hardware?.rilevato || hardware.spazzata_larga;
+  for (const opzione of selettore.options) {
+    if (opzione.value === "banda") continue;
+    opzione.disabled = !larga;
+  }
+  if (!larga && selettore.value !== "banda") selettore.value = "banda";
+  $("#nota-modulo").textContent = larga
+    ? ""
+    : "Questo modulo accetta solo la sua banda: le spazzate larghe sono " +
+      "disattivate, e la risonanza fuori banda va misurata con un analizzatore " +
+      "d'antenna.";
 }
 
 /* ==========================================================================
@@ -4541,6 +4678,7 @@ async function avvia() {
   $("#prova-lettura").addEventListener("click", provaLettura);
   $("#prova-continua").addEventListener("click", alternaProvaContinua);
   $("#controlla-salute").addEventListener("click", controllaSalute);
+  $("#rileva-hardware").addEventListener("click", rilevaHardware);
   $("#aggiorna-misure").addEventListener("click", aggiornaMisure);
   $("#applica-profilo").addEventListener("click", applicaProfilo);
   $("#profila").addEventListener("click", profila);
@@ -4674,6 +4812,9 @@ async function avvia() {
     // della radio resta acceso comunque, sono due metà separate.
     if (stato.descrizione.diario?.interfaccia === false) Traccia.attiva = false;
     dipingiModalita(stato.descrizione.modalita_scrittura);
+    stato.hardware = stato.descrizione.hardware || null;
+    dipingiHardware(stato.hardware);
+    adattaAllHardware(stato.hardware);
     dipingiTestata();
     dipingiDestinatari();
     Scena.antennaAttiva(stato.descrizione.antenne.scrittura[0]);

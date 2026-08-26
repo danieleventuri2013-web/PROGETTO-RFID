@@ -466,6 +466,11 @@ class WebUIServer:
             "etichetta": (lambda d: f.etichetta(d.get("container_id")), False),
             "stampa_etichetta": (lambda d: f.stampa_etichetta(d.get("container_id")), False),
             # -- strumenti e calibrazione --------------------------------
+            # Il censimento e' una lettura, non una misura: non tocca la radio
+            # nel senso che conta (nessuna operazione su tag), ma parla col
+            # modulo, quindi resta serializzato come le altre.
+            "hardware": (lambda _d: f.hardware, False),
+            "rileva_hardware": (lambda _d: f._rileva_hardware(), True),
             "salute": (lambda _d: f.salute(), True),
             "potenze": (lambda d: f.imposta_potenze(d), True),
             "gen2": (lambda d: f.imposta_gen2(d), True),

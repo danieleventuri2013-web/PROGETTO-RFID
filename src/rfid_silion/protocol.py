@@ -79,6 +79,47 @@ def build_packet(cmd: int, data: bytes = b"") -> bytes:
 # `DataLen` copre da "Moduletech" al terminatore incluso in invio, e da
 # "Moduletech" alla fine di SubData in risposta (lo Status non vi rientra, come
 # nel formato comune).
+#: Appendice 2 del protocollo EX10 2024-12: codice di banda -> nome e MHz.
+#: I moduli certificati Cina accettano NA/CN/CE_LOW/full; gli altri solo la
+#: propria. Nota: il manuale scrive CE_LOW come **865-867 MHz**, non 865-868.
+REGIONI = {
+    0x01: ("North America", 902, 928),
+    0x04: ("India", None, None),
+    0x06: ("China 1", 920, 925),
+    0x08: ("CE_LOW (Europa)", 865, 867),
+    0x09: ("Korea", None, None),
+    0x0B: ("Japan (no LBT)", None, None),
+    0x0C: ("CE_HIGH", 916, 919),
+    0x0D: ("Hong Kong", None, None),
+    0x0E: ("Taiwan", None, None),
+    0x0F: ("Malaysia", None, None),
+    0x10: ("Sud Africa", None, None),
+    0x11: ("Brasile", None, None),
+    0x12: ("Thailandia", None, None),
+    0x13: ("Singapore", None, None),
+    0x14: ("Australia", None, None),
+    0x16: ("Uruguay", None, None),
+    0x17: ("Vietnam", None, None),
+    0x18: ("Israele", None, None),
+    0x19: ("Filippine", None, None),
+    0x1A: ("Indonesia", None, None),
+    0x1B: ("Nuova Zelanda", None, None),
+    0x1C: ("Peru", None, None),
+    0x1D: ("Russia", None, None),
+    0x1F: ("Japan 2 (LBT)", None, None),
+    0x20: ("Japan 3 (no LBT, max 24 dBm)", None, None),
+    0xFF: ("Banda intera", 860, 960),
+}
+
+
+def nome_regione(codice: int) -> str:
+    """Il nome di una banda, con i suoi MHz quando il manuale li da'."""
+    nome, da, a = REGIONI.get(int(codice), ("sconosciuta", None, None))
+    if da is None:
+        return f"{nome} (0x{int(codice):02X})"
+    return f"{nome} {da}-{a} MHz (0x{int(codice):02X})"
+
+
 CMD_EXTENDED = 0xAA
 EXTENDED_MARKER = b"Moduletech"
 EXTENDED_TERMINATOR = 0xBB
@@ -276,7 +317,14 @@ CMD_LOCK_TAG = 0x25
 CMD_KILL_TAG = 0x26  # opcode noto, volutamente non implementato: distrugge il tag
 CMD_READ_TAG_DATA = 0x28
 CMD_GET_TAG_BUFFER = 0x29
+CMD_GET_SERIAL_NUMBER = 0x10
 CMD_GET_ANTENNA_PORTS = 0x61
+#: 0x71 - le bande che *questo* modulo accetta. E' il discriminante fra un
+#: modulo certificato Cina (che le accetta tutte, e puo' quindi misurare
+#: l'antenna fuori dalla banda EU) e uno certificato per una singola regione,
+#: che rifiuta le altre. Vedi EX10 2024-12 §2.2 e §8.11.
+CMD_GET_AVAILABLE_REGIONS = 0x71
+CMD_GET_MODULE_TEMPERATURE = 0x72
 CMD_GET_PROTOCOL_CONFIG = 0x6B
 CMD_SET_ANTENNA_PORTS = 0x91
 CMD_SET_READER_CONFIG = 0x95

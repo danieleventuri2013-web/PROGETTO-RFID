@@ -32,6 +32,10 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
+# Solo la tabella dei nomi delle bande: nessun I/O, nessun trasporto. La
+# copia locale divergerebbe dalla fonte alla prima aggiunta di regione.
+from rfid_silion.protocol import nome_regione
+
 from lims.codec import FIXATIVES, MATERIALS, SITES, SpecimenFlags, TagPayload
 from lims.codec import PAYLOAD_FIXED_SIZE
 from lims.crypto import (
@@ -331,6 +335,11 @@ class Workflow:
         )
         self._scrittura = threading.RLock()
         self.keyring = self._carica_portachiavi()
+        #: Cosa e' collegato davvero. Si riempie al primo collegamento
+        #: (`_rileva_hardware`) e da li' in poi guida cosa l'interfaccia
+        #: puo' offrire: prima si sa solo che non si sa.
+        self.hardware: dict[str, Any] = {"rilevato": False, "motivo": "mai collegato"}
+
         self.operatore = ""
 
         # Accettazione in corso
@@ -661,6 +670,7 @@ class Workflow:
         geometria = self.config.get("geometry", {}) or {}
         webui = self.config.get("webui", {}) or {}
         return {
+            "hardware": self.hardware,
             "lab_id": self.lims_cfg.get("lab_id", 0),
             "laboratorio": self.laboratorio(),
             "operatori": [
@@ -767,10 +777,98 @@ class Workflow:
                 (avvio.error or {}).get("message", "avvio del lettore non riuscito")
             )
         configurazione = self.backend.configure(self._reader_settings())
+        # Il censimento si fa **qui**, una volta, appena il modulo risponde:
+        # quali misure siano possibili dipende dall'esemplare, non dal
+        # datasheet, e senza saperlo l'interfaccia proporrebbe procedure che
+        # questo firmware rifiuta. Da qui in poi il resto si adatta.
+        self._rileva_hardware()
         return {
             "avvio": avvio.to_dict(),
             "configurazione_ok": bool(configurazione.ok),
             "configurazione_errore": (configurazione.error or {}).get("message", ""),
+            "hardware": self.hardware,
+        }
+
+    def _rileva_hardware(self) -> dict[str, Any]:
+        """Interroga il modulo e conserva quello che ha risposto.
+
+        Un censimento fallito non e' un collegamento fallito: si lavora anche
+        senza sapere la certificazione, semplicemente senza poter dire quali
+        misure siano disponibili. Meglio ammetterlo che indovinare.
+        """
+        try:
+            risposta = self.backend.identify()
+        except Exception as exc:  # noqa: BLE001 - il collegamento resta valido
+            self.hardware = {"rilevato": False, "motivo": str(exc)}
+            return self.hardware
+        if not risposta.ok:
+            self.hardware = {
+                "rilevato": False,
+                "motivo": (risposta.error or {}).get("message", "censimento non riuscito"),
+            }
+            return self.hardware
+
+        dati = dict((risposta.to_dict().get("data") or {}))
+        self.hardware = self._leggi_censimento(dati)
+        log.info(
+            "Hardware rilevato: %s | bande %s | antenne %s",
+            self.hardware.get("modulo", "?"),
+            ", ".join(self.hardware.get("bande_nomi", [])) or "?",
+            self.hardware.get("antenne_collegate"),
+        )
+        self.db.log_event(
+            "hardware_detect",
+            ok=True,
+            operator=self.operatore,
+            detail=json.dumps(self.hardware, ensure_ascii=False)[:900],
+        )
+        return self.hardware
+
+    def _leggi_censimento(self, dati: Mapping[str, Any]) -> dict[str, Any]:
+        """Da quello che il modulo ha risposto, cosa si puo' e cosa non si puo'.
+
+        La regola sta in EX10 2024-12 §2.2 e §10.1: un modulo certificato per
+        una sola regione **non accetta altre bande** (stato 0x010B) e non
+        accetta elenchi di frequenze singole (il campo N deve valere 0). Su un
+        modulo cosi' la spazzata larga non e' una funzione da abilitare: e' una
+        cosa che il firmware non fa, e nessun software la aggira.
+        """
+        firmware = dati.get("firmware_info") or {}
+        bande = sorted(int(b) for b in (dati.get("regions_available") or []))
+        antenne = dati.get("antennas_connected")
+        configurata = int(self.config.get("reader", {}).get("region", 0x08))
+        # Una banda sola vuol dire modulo monoregione. Piu' d'una vuol dire
+        # certificazione Cina, l'unica che permette anche le frequenze singole.
+        multibanda = len(bande) > 1
+
+        return {
+            "rilevato": True,
+            "modulo": firmware.get("model") or firmware.get("version") or "sconosciuto",
+            "firmware": firmware,
+            "trasporto": (dati.get("transport") or {}).get("description", ""),
+            "seriale": dati.get("serial_number") or "",
+            "temperatura_c": dati.get("temperature_c"),
+            "antenne_collegate": antenne,
+            "antenne_configurate": sorted(
+                {int(a.get("id")) for a in (self.config.get("antennas") or []) if a.get("id")}
+            ),
+            "bande": bande,
+            "bande_nomi": [nome_regione(b) for b in bande],
+            "banda_configurata": configurata,
+            "banda_configurata_nome": nome_regione(configurata),
+            "multibanda": multibanda,
+            # Le due cose che cambiano davvero cosa l'interfaccia puo' offrire.
+            "spazzata_larga": multibanda,
+            "frequenze_singole": multibanda,
+            "motivo_limite": (
+                ""
+                if multibanda
+                else "il modulo dichiara una sola banda: e' certificato per una "
+                "regione e il firmware rifiuta le altre (0x010B), cosi' come "
+                "gli elenchi di frequenze singole. La curva fuori banda va "
+                "misurata con un analizzatore di antenna, non con il lettore."
+            ),
+            "non_disponibili": dati.get("non_disponibili") or {},
         }
 
     def disconnetti(self) -> dict[str, Any]:
@@ -2852,6 +2950,20 @@ class Workflow:
         cambio = consenti_cambio_regione and chiesta != regione_attuale and not frequenze
 
         nota = str(nota).strip()[:200]
+        # Il censimento fatto al collegamento dice se questo esemplare accetta
+        # elenchi di frequenze singole. Il manuale (EX10 2024-12 §10.1) e'
+        # esplicito: su un modulo non certificato Cina il campo N **deve**
+        # valere 0. Provarci comunque produrrebbe un errore criptico invece di
+        # una spiegazione, e farebbe credere a un guasto.
+        if frequenze and self.hardware.get("rilevato") and not self.hardware.get(
+            "frequenze_singole", True
+        ):
+            return {
+                "non_supportata": True,
+                "bande": self.hardware.get("bande", []),
+                "bande_nomi": self.hardware.get("bande_nomi", []),
+                "messaggio": self.hardware.get("motivo_limite", ""),
+            }
         if cambio:
             esito = self._misura_cambiando_regione(richiesta, regione_attuale)
             esito["nota"] = nota
@@ -2981,8 +3093,40 @@ class Workflow:
                 "vswr_peggiore": peggiore_eu,
                 "ok": peggiore_eu < float(dati.get("threshold", 7.0)),
             }
+        dati["larghezza_banda"] = self._larghezza_banda(ordinate)
         esito["data"] = dati
         return esito
+
+    @staticmethod
+    def _larghezza_banda(
+        ordinate: list[Mapping[str, Any]], soglia: float = 2.0
+    ) -> dict[str, Any]:
+        """Fra che frequenze l'antenna resta sotto VSWR 2 (cioe' -10 dB).
+
+        E' il numero che si scrive nei datasheet e che un fornitore riconosce
+        subito: la SLP1027 dichiara «VSWR <= 1,3 su 902-928 MHz». Il *minimo*
+        della curva, su un pannello a banda larga come questo, e' basso e
+        piatto — la sua posizione esatta si sposta col rumore di misura e non
+        e' un dato solido. **L'estensione della banda utile lo e'**, ed e' il
+        confronto diretto con la riga del datasheet.
+
+        Se la banda utile arriva fino al bordo della spazzata, si dice: vuol
+        dire che continua oltre e non e' stata misurata tutta.
+        """
+        sotto = [voce for voce in ordinate if voce["vswr"] <= soglia]
+        if not sotto:
+            return {"soglia": soglia, "trovata": False}
+        da, a = sotto[0]["frequency_khz"], sotto[-1]["frequency_khz"]
+        return {
+            "soglia": soglia,
+            "trovata": True,
+            "da_khz": da,
+            "a_khz": a,
+            "larghezza_khz": a - da,
+            "al_bordo": da == ordinate[0]["frequency_khz"] or a == ordinate[-1]["frequency_khz"],
+            # La banda utile copre tutta la banda ETSI? E' la domanda operativa.
+            "copre_eu": da <= _BANDA_EU_KHZ[0] and a >= _BANDA_EU_KHZ[1],
+        }
 
     def profila_tag(self) -> dict[str, Any]:
         """Misura TID e USER memory del tag, e dice cosa farne.

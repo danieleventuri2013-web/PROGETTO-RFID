@@ -651,6 +651,45 @@ class SIM7200Reader:
         )
         return misure
 
+    def get_available_regions(self) -> list[int]:
+        """0x71 - le bande che *questo* esemplare accetta.
+
+        E' la domanda che decide quali misure sono possibili, e non si risponde
+        dal datasheet: dipende dalla certificazione del singolo modulo. Un
+        modulo certificato Cina risponde `01 06 08 FF` (America, Cina, Europa,
+        banda intera) e puo' quindi spazzare l'antenna anche fuori dalla banda
+        EU. Un modulo certificato per una sola regione risponde solo quella, e
+        rifiuta le altre con lo stato 0x010B — nessun trucco software la
+        aggira, e' il firmware certificato.
+
+        Vedi EX10 2024-12 §2.2 (tabella delle differenze fra certificazioni) e
+        §8.11.
+        """
+        resp = self._command(P.CMD_GET_AVAILABLE_REGIONS)
+        check_status(resp.status)
+        regioni = sorted(set(resp.data))
+        checkpoint(log, "get_available_regions", regions=[f"0x{r:02X}" for r in regioni])
+        return regioni
+
+    def get_serial_number(self) -> str:
+        """0x10 - il numero di serie del modulo, per identificare l'esemplare."""
+        resp = self._command(P.CMD_GET_SERIAL_NUMBER)
+        check_status(resp.status)
+        return resp.data.hex().upper()
+
+    def get_module_temperature(self) -> int | None:
+        """0x72 - temperatura del modulo in gradi, con segno.
+
+        Il manuale avverte che sopra ~90 gradi il modulo segnala errore, e che
+        la serie SIMX600 non ha il sensore: da cui il `None` invece di un
+        numero inventato.
+        """
+        resp = self._command(P.CMD_GET_MODULE_TEMPERATURE)
+        check_status(resp.status)
+        if not resp.data:
+            return None
+        return int.from_bytes(resp.data[:1], "big", signed=True)
+
     def set_region(self, region: int) -> None:
         """0x97 - imposta regione (EU=0x08)."""
         if not 0 <= region <= 0xFF:

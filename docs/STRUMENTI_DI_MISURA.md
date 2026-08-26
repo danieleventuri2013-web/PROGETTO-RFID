@@ -1,15 +1,62 @@
 # Gli strumenti di misura: cosa chiede ogni pannello, e come si legge la risposta
 
-Stato: 2026-08-26. **Niente di quello che c'è qui è stato validato su hardware.**
-Le curve che si vedono sul banco simulato servono a provare l'interfaccia, non a
-prevedere cosa faranno le antenne vere.
+Stato: 2026-08-27. **Niente di quello che c'è qui è stato validato su hardware.**
+
+La curva del banco simulato è ora **ricavata dai punti pubblicati nel datasheet
+SLP1027** (modello a risonatore singolo tarato su 902 e 915 MHz, Q ≈ 5,9) invece
+che inventata: prima era una parabola con un minimo aguzzo che saliva a VSWR 4,5
+ai bordi, e insegnava a cercare una forma che quell'antenna non ha. Sotto i
+900 MHz resta comunque **estrapolazione, non dato** — il modello prevede circa
+VSWR 1,8 a 866 MHz, ma un adattamento reale può degradare più in fretta di un
+polo singolo. Quel numero lo dà solo la misura.
 
 Gli strumenti stanno in **Impostazioni › Misure**. Sono la parte del programma
 che serve a *tarare il prototipo*, non a farlo funzionare: i flussi operativi
 (accettazione, sigillo, ricezione) impostano già la radio da soli e non
 dipendono da niente di quello che si tocca qui.
 
-Cinque pannelli, e ognuno esiste per rispondere a una domanda precisa.
+Sei pannelli, e ognuno esiste per rispondere a una domanda precisa.
+
+---
+
+## 0. Hardware installato — «che cosa ho davvero attaccato?»
+
+Va per primo perché **quali misure siano possibili dipende dall'esemplare**, non
+dal datasheet. Il censimento si fa da solo appena ci si collega (comandi `0x03`
+versione, `0x10` numero di serie, `0x71` bande accettate, `0x72` temperatura,
+`0x61/0x05` antenne collegate) e da lì in poi il resto dell'interfaccia si adatta.
+
+### La certificazione decide cosa si può misurare
+
+Il manuale del protocollo (EX10 2024-12 §2.2) ha una tabella che vale la pena
+leggere per intero. In sintesi:
+
+| | modulo certificato **Cina** | modulo certificato **altra regione** |
+|---|---|---|
+| bande selezionabili | Cina, America, CE_LOW, banda intera | **solo la propria** |
+| frequenza fissa / scelta di banda | sì | «CE can be fixed frequency, others not supported» |
+| diagnostica d'antenna `0xAA4A` con elenco di frequenze | sì | **no** — il campo N deve valere 0 (§10.1) |
+
+Tradotto: **su un modulo certificato per una sola regione la spazzata larga non
+si può fare.** Non è una funzione da abilitare, è il firmware certificato, e
+nessun software lo aggira. In quel caso la curva fuori banda va misurata con un
+**analizzatore d'antenna**, e il pannello lo dice invece di lasciar provare.
+
+Il comando `0x71` risponde con l'elenco delle bande accettate — un modulo Cina
+risponde `01 06 08 FF`. È l'unico modo di saperlo, e va fatto prima.
+
+### Altri numeri che il manuale fissa e che qui non si inventano
+
+- la **potenza di prova non è impostabile**: il campo esiste nel frame ma il
+  manuale lo marca *invalid*, «20 dBm will be used in the module»;
+- la **soglia**: «It should usually be less than 7» — da lì il VSWR 7 del
+  pannello, che quindi non è una scelta nostra;
+- il **VSWR si ricava** da `RL = 10^(VL/10/20)`, `VSWR = (RL+1)/(RL-1)`. C'è un
+  test che verifica l'esempio ufficiale del manuale (VL = 0x78 → 1,67): se un
+  giorno smette di tornare, l'errore è nostro;
+- **CE_LOW è 865–867 MHz** in appendice 2, non 865–868;
+- una spazzata completa può richiedere **~25 secondi** (il manuale consiglia 30 s
+  di timeout), e infatti il driver lo usa.
 
 ---
 
@@ -32,8 +79,33 @@ due guasti diversi e si curano in modi opposti:
 
 Le **SLP1027** del prototipo sono specificate 902–928 MHz. In Italia si lavora a
 865–868 MHz. Il secondo caso è quindi quello atteso, ed è esattamente il motivo
-per cui questo pannello guarda anche fuori dalla banda: per distinguere i due
-casi bisogna **vedere dove sta il minimo**, e per vederlo bisogna spazzare largo.
+per cui questo pannello guarda anche fuori dalla banda.
+
+### Cosa dice il datasheet SLP1027, e cosa non dice
+
+Le curve pubblicate sono misurate **in camera anecoica** («in the darkroom»), e
+dicono che l'antenna è **piatta e ben adattata** in tutta la banda in cui è
+specificata:
+
+| | 902 MHz | 915 MHz | 922 MHz | 928 MHz |
+|---|---|---|---|---|
+| VSWR | 1,24 | 1,16 | 1,20 | 1,17 |
+| S11 | −21,8 dB | −21,8 dB | −20,6 dB | −20,9 dB |
+
+**Non è un risonatore stretto: è un pannello a banda larga.** Questo cambia come
+si legge la misura — cercare un «picco di risonanza» netto significherebbe
+cercare una forma che questa antenna non ha. Il minimo c'è, ma è basso e piatto,
+e la sua posizione esatta la sposta il rumore di misura.
+
+Quindi il numero solido, e quello che un fornitore riconosce subito, è
+**l'estensione della banda utile**: il datasheet dichiara «VSWR ≤ 1,3 su
+902–928 MHz», e la nostra misura risponde con la stessa grandezza — *sotto VSWR 2
+da X a Y MHz, e la banda ETSI ci sta dentro / ne resta fuori*. Il pannello la
+calcola e la scrive sotto il grafico accanto al minimo.
+
+E quello che il datasheet **non** dice: sotto i 900 MHz non c'è una sola riga.
+È tutto il motivo per cui questa misura esiste, e nessun ragionamento la
+sostituisce.
 
 ### In che condizione si misura — e perché conta più dei numeri
 

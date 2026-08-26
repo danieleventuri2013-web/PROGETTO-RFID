@@ -81,7 +81,7 @@ transports — only the bottom layer changes.
 3. **`reader.py`** — `SIM7200Reader(transport)`: one method per command, each wraps
    `_command()` (flush → send → read one full frame → verify cmd echo) and calls
    `check_status()`. `reader_from_config(cfg)` is the factory. Context-manager (`with`) capable.
-4. **`service.py`** — versioned headless application boundary (`RFIDService`, API 1.0):
+4. **`service.py`** — versioned headless application boundary (`RFIDService`, API 1.4):
    JSON-safe DTOs/responses, lifecycle, health, events and guarded writes. `RFIDBackend` /
    `RFIDServiceBinding` distinguish injectable owned/shared lifecycle. **`rpc.py`** maps
    JSON-RPC 2.0 to this boundary without I/O; **`service_host.py`** exposes JSON Lines on
@@ -288,6 +288,32 @@ The everyday interface. Tkinter GUIs stay as bench tools.
   and do **not** affect the operational flows: `SealingSession._apply` and
   `inventario_campagna` set their own Gen2 every pass, which is why the panel
   says so out loud. Rationale for all five: `docs/STRUMENTI_DI_MISURA.md`.
+- **The hardware census runs at connect, and it gates what the tools may offer.**
+  `RFIDService.identify` (API 1.4) asks the module what it is — `0x03` version,
+  `0x10` serial, `0x71` available bands, `0x72` temperature, `0x61/0x05`
+  connected antennas — and `Workflow.connetti` stores it in `self.hardware`,
+  which `descrivi()` then carries to every screen. **This is not cosmetic**:
+  EX10 2024-12 §2.2 and §10.1 say a module certified for a single region refuses
+  other bands (`0x010B`) *and* refuses per-frequency lists (the N field must be
+  0). So on such a unit the wide antenna sweep is impossible — not a feature to
+  enable, the certified firmware. The UI disables it and says the curve needs a
+  real antenna analyser, instead of letting the operator hunt a fault that isn't
+  there. A failed census does **not** fail the connection, and when nothing is
+  known nothing is forbidden: it's the module that says no, not us.
+- **The manual's numbers are the manual's, not ours.** VSWR threshold 7 ("It
+  should usually be less than 7"), test power fixed at 20 dBm (the frame field is
+  marked *invalid*), `VSWR=(RL+1)/(RL-1)` with `RL=10^(VL/10/20)` — pinned by a
+  test against the manual's worked example (`VL=0x78` → 1.67). CE_LOW is
+  865–867 MHz per appendix 2, not 865–868. A full sweep can take ~25 s, hence the
+  30 s timeout.
+- **The SLP1027 is a broadband patch, not a narrow resonator** — the datasheet's
+  anechoic curves are 1.16–1.24 VSWR flat across 902–928 MHz. So the *minimum* is
+  shallow and its exact position moves with noise; the solid number, and the one
+  a supplier recognises, is the **usable bandwidth** (`_larghezza_banda`, under
+  VSWR 2), which answers the datasheet's own "VSWR ≤1.3 over 902–928" in kind.
+  `simulazione._vswr_modello` fits a single-resonator model to the published
+  points instead of inventing a curve; below 900 MHz it is **extrapolation and
+  says so**.
 - **The antenna sweep must be able to leave the EU band, or it answers nothing.**
   A high VSWR at 866 MHz doesn't distinguish "bad antenna" from "good antenna
   tuned elsewhere" — and the SLP1027 is specified 902–928 MHz, so the second is

@@ -29,7 +29,7 @@ log = logging.getLogger("rfid_silion.service")
 # `tune_reader`, `antenna_diagnostics`). Tutte aggiunte puramente additive: i
 # client che dichiarano una minor version precedente restano serviti, come
 # stabilisce la compatibilita' gestita in `rpc.py`.
-SERVICE_API_VERSION = "1.3"
+SERVICE_API_VERSION = "1.4"
 
 
 class ServiceState(str, Enum):
@@ -634,6 +634,8 @@ class RFIDBackend(Protocol):
     ) -> ServiceResponse: ...
 
     def health(self, check_antennas: bool = True) -> ServiceResponse: ...
+
+    def identify(self) -> ServiceResponse: ...
 
     def snapshot(self) -> dict[str, Any]: ...
 
@@ -1380,6 +1382,42 @@ class RFIDService:
             return self._success(operation, {"report": report})
         except Exception as exc:
             return self._failure(operation, exc, {"report": report} if report is not None else None)
+
+    def identify(self) -> ServiceResponse:
+        """Che cosa c'e' davvero attaccato: modulo, certificazione, antenne.
+
+        Non e' una diagnosi, e' un censimento — e serve prima di ogni misura,
+        perche' **quali misure siano possibili dipende dall'esemplare**. La
+        certificazione del modulo (EX10 2024-12 §2.2) decide se si possono
+        selezionare bande diverse dalla propria e frequenze singole: senza
+        saperlo si finisce per proporre all'operatore una procedura che il suo
+        firmware rifiutera'.
+
+        Ogni interrogazione e' isolata: un modulo che non implementa `0x72`
+        (la serie SIMX600 non ha il sensore) non deve far fallire il resto.
+        """
+        operation = "identify"
+        try:
+            with self._lock:
+                reader = self._require_reader()
+                dati: dict[str, Any] = {
+                    "transport": reader._t.describe(),
+                    "firmware_info": reader.firmware_info,
+                }
+                for chiave, azione in (
+                    ("regions_available", reader.get_available_regions),
+                    ("serial_number", reader.get_serial_number),
+                    ("temperature_c", reader.get_module_temperature),
+                    ("antennas_connected", reader.get_antenna_connection),
+                ):
+                    try:
+                        dati[chiave] = azione()
+                    except Exception as exc:  # noqa: BLE001 - il censimento continua
+                        dati[chiave] = None
+                        dati.setdefault("non_disponibili", {})[chiave] = str(exc)
+            return self._success(operation, dati)
+        except Exception as exc:
+            return self._failure(operation, exc)
 
     def snapshot(self) -> dict[str, Any]:
         """Stato non sensibile utile a framework, monitor e diagnostica."""

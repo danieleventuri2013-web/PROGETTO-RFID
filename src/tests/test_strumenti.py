@@ -133,6 +133,154 @@ class _Postazione:
 
 
 # ---------------------------------------------------------------------------
+# Che cosa e' collegato davvero
+# ---------------------------------------------------------------------------
+def test_il_censimento_si_fa_da_solo_al_collegamento():
+    """Non e' un pannello da ricordarsi di aprire: e' la prima cosa che si sa."""
+    with _Postazione(_tmp("censimento")) as posto:
+        assert posto.server.workflow.hardware["rilevato"] is False
+        stato, esito = posto.post("/api/connetti")
+        assert stato == 200, esito
+        hardware = esito["hardware"]
+        assert hardware["rilevato"] is True
+        assert hardware["antenne_collegate"] == [1, 2, 3]
+        assert hardware["seriale"]
+        assert hardware["banda_configurata"] == 0x08
+        # E resta memorizzato: gli altri pannelli non lo richiedono di nuovo.
+        _, descrizione = posto.post("/api/descrivi")
+        assert descrizione["hardware"]["rilevato"] is True
+
+
+def test_le_bande_accettate_hanno_un_nome_e_i_loro_MHz():
+    """«0x08» non dice niente a nessuno; «CE_LOW 865-867 MHz» sì."""
+    with _Postazione(_tmp("bande")) as posto:
+        _, esito = posto.post("/api/connetti")
+        nomi = esito["hardware"]["bande_nomi"]
+        assert any("CE_LOW" in n and "865-867" in n for n in nomi), nomi
+        assert any("North America" in n for n in nomi), nomi
+        assert esito["hardware"]["banda_configurata_nome"].startswith("CE_LOW")
+
+
+def test_un_modulo_monoregione_dichiara_di_non_poter_spazzare():
+    """EX10 2024-12 §2.2 e §10.1: non e' un limite del programma, e' il firmware."""
+    with _Postazione(_tmp("monoregione")) as posto:
+        posto.backend.regioni_simulate = {0x08}
+        _, esito = posto.post("/api/connetti")
+        hardware = esito["hardware"]
+        assert hardware["multibanda"] is False
+        assert hardware["spazzata_larga"] is False
+        assert hardware["frequenze_singole"] is False
+        assert "0x010B" in hardware["motivo_limite"]
+        assert "analizzatore" in hardware["motivo_limite"]
+
+
+def test_su_un_modulo_monoregione_la_spazzata_larga_si_rifiuta_spiegando():
+    """Provarci darebbe un errore criptico e farebbe cercare un guasto."""
+    with _Postazione(_tmp("rifiuto_larga")) as posto:
+        posto.backend.regioni_simulate = {0x08}
+        posto.post("/api/connetti")
+        stato, esito = posto.post(
+            "/api/diagnostica_antenna",
+            {"antenna": 1, "da_khz": 850_000, "a_khz": 960_000, "passo_khz": 2000},
+        )
+        assert stato == 200, esito
+        assert esito["non_supportata"] is True
+        assert "analizzatore" in esito["messaggio"]
+        # La banda configurata invece si misura eccome.
+        _, in_banda = posto.post("/api/diagnostica_antenna", {"antenna": 1})
+        assert in_banda["data"]["measurements"]
+
+
+def test_su_un_modulo_multibanda_la_spazzata_larga_si_fa():
+    with _Postazione(_tmp("multibanda")) as posto:
+        posto.post("/api/connetti")
+        stato, esito = posto.post(
+            "/api/diagnostica_antenna",
+            {"antenna": 1, "da_khz": 850_000, "a_khz": 960_000, "passo_khz": 2000},
+        )
+        assert stato == 200, esito
+        assert "non_supportata" not in esito
+        assert esito["data"]["measurements"]
+
+
+def test_un_censimento_fallito_non_fa_fallire_il_collegamento():
+    """Si lavora anche senza sapere la certificazione — senza fingere di saperla."""
+    with _Postazione(_tmp("censimento_ko")) as posto:
+        def rompi():
+            raise RuntimeError("il modulo non risponde a 0x71")
+
+        posto.backend.identify = rompi
+        stato, esito = posto.post("/api/connetti")
+        assert stato == 200, esito
+        assert esito["hardware"]["rilevato"] is False
+        assert "0x71" in esito["hardware"]["motivo"]
+
+
+def test_senza_censimento_non_si_vieta_niente():
+    """Nel dubbio si lascia provare: e' il modulo a dire di no, non noi."""
+    with _Postazione(_tmp("nel_dubbio")) as posto:
+        assert posto.server.workflow.hardware["rilevato"] is False
+        stato, esito = posto.post(
+            "/api/diagnostica_antenna",
+            {"antenna": 1, "da_khz": 850_000, "a_khz": 960_000, "passo_khz": 2000},
+        )
+        assert stato == 200, esito
+        assert "non_supportata" not in esito
+
+
+def test_la_curva_simulata_riproduce_i_punti_del_datasheet():
+    """Il banco deve mentire il meno possibile.
+
+    La prima versione era una parabola con un minimo aguzzo a 915 MHz che
+    saliva a 4,5 ai bordi. Il datasheet SLP1027 dice che l'antenna e' piatta
+    fra 1,16 e 1,24 su 902-928: simulare un picco insegnava a cercare una forma
+    che questa antenna non ha.
+    """
+    from rfid_silion.simulazione import _vswr_modello
+
+    # I punti pubblicati, misurati in camera anecoica.
+    for frequenza_khz, atteso in ((902_000, 1.24), (915_000, 1.16), (922_000, 1.20)):
+        misurato = _vswr_modello(frequenza_khz, 915_000)
+        assert abs(misurato - atteso) < 0.03, (frequenza_khz, misurato, atteso)
+    # Su tutta la banda specificata resta ben adattata, come dice il datasheet.
+    for frequenza_khz in range(902_000, 929_000, 1_000):
+        assert _vswr_modello(frequenza_khz, 915_000) < 1.3
+
+
+def test_sotto_i_900_MHz_la_curva_simulata_e_estrapolazione():
+    """Il costruttore non pubblica niente li' sotto: e' il motivo della misura.
+
+    Il modello prevede circa 1,8 a 866 MHz, ma resta una previsione da un polo
+    singolo. Il test fissa che la simulazione sia *plausibile* — degradata ma
+    non assurda — non che quel numero sia vero.
+    """
+    from rfid_silion.simulazione import _vswr_modello
+
+    in_banda = _vswr_modello(866_000, 915_000)
+    assert 1.4 < in_banda < 3.0, in_banda
+    # Peggiora allontanandosi, come deve fare un adattamento.
+    assert _vswr_modello(860_000, 915_000) > in_banda
+
+
+def test_la_formula_del_vswr_e_quella_del_manuale():
+    """L'esempio ufficiale: VL=0x78 -> VSWR 1.67. Se cambia, e' un errore nostro."""
+    from rfid_silion import protocol as P
+
+    assert round(P.vswr_from_return_loss(0x78), 2) == 1.67
+    assert P.VSWR_ALERT_THRESHOLD == 7.0  # «It should usually be less than 7»
+
+
+def test_i_nomi_delle_bande_vengono_dall_appendice_del_manuale():
+    from rfid_silion import protocol as P
+
+    assert P.nome_regione(0x01).startswith("North America 902-928")
+    assert P.nome_regione(0x08).startswith("CE_LOW (Europa) 865-867")
+    assert P.nome_regione(0xFF).startswith("Banda intera 860-960")
+    # Un codice che il manuale non elenca non diventa un nome inventato.
+    assert "sconosciuta" in P.nome_regione(0x99)
+
+
+# ---------------------------------------------------------------------------
 # Adattamento delle antenne
 # ---------------------------------------------------------------------------
 def test_la_banda_configurata_si_misura_come_sempre():
@@ -162,6 +310,35 @@ def test_una_spazzata_larga_trova_dove_l_antenna_e_accordata():
         assert risonanza["scarto_da_eu_khz"] > 30_000, "sono ben sopra la banda EU"
         # E in banda EU il verdetto resta quello che conta per l'esercizio.
         assert esito["data"]["in_banda_eu"]["vswr_peggiore"] > risonanza["vswr"]
+
+
+def test_la_banda_utile_e_il_numero_confrontabile_col_datasheet():
+    """Il datasheet dichiara «VSWR <= 1,3 su 902-928 MHz»: si risponde in kind.
+
+    Il minimo, su un pannello a banda larga, e' piatto e la sua posizione la
+    sposta il rumore; l'estensione della banda utile no.
+    """
+    with _Postazione(_tmp("larghezza")) as posto:
+        _, esito = posto.post(
+            "/api/diagnostica_antenna",
+            {"antenna": 1, "da_khz": 840_000, "a_khz": 990_000, "passo_khz": 2000},
+        )
+        larghezza = esito["data"]["larghezza_banda"]
+        assert larghezza["trovata"] is True
+        assert larghezza["da_khz"] < larghezza["a_khz"]
+        assert larghezza["larghezza_khz"] > 0
+        # Con la curva del datasheet la banda utile arriva sotto gli 866 MHz.
+        assert larghezza["copre_eu"] is True, larghezza
+        assert larghezza["al_bordo"] is False, "la spazzata era abbastanza larga"
+
+
+def test_una_banda_utile_che_esce_dalla_spazzata_lo_dice():
+    """Dire «larga 3 MHz» quando continua oltre sarebbe una misura falsa."""
+    with _Postazione(_tmp("larghezza_bordo")) as posto:
+        _, esito = posto.post("/api/diagnostica_antenna", {"antenna": 1})
+        larghezza = esito["data"]["larghezza_banda"]
+        assert larghezza["trovata"] is True
+        assert larghezza["al_bordo"] is True
 
 
 def test_un_minimo_sul_bordo_non_e_una_risonanza():

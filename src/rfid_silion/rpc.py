@@ -99,6 +99,7 @@ class RFIDRPCDispatcher:
         "rfid.antenna_diagnostics",
         "rfid.verify",
         "rfid.health",
+        "rfid.identify",
         "rfid.snapshot",
         "rfid.events",
     )
@@ -312,6 +313,10 @@ class RFIDRPCDispatcher:
             if unknown:
                 raise ValueError(f"parametri non riconosciuti: {sorted(unknown)}")
             return self.service.health(check_antennas=check_antennas)
+        if method == "rfid.identify":
+            if params:
+                raise ValueError(f"parametri non riconosciuti: {sorted(params)}")
+            return self.service.identify()
         if method == "rfid.snapshot":
             self._require_empty(params)
             return self._local_response("snapshot", {"snapshot": self.service.snapshot()})

@@ -1505,6 +1505,16 @@ body {
   margin-top: var(--s3);
 }
 
+/* Un limite del firmware non e' un errore dell'operatore: ambra, non rosso. */
+.campo__nota--limite:not(:empty) {
+  display: block;
+  margin-top: var(--s2);
+  padding: var(--s2);
+  border-left: 3px solid var(--attesa);
+  background: var(--attesa-velo);
+  color: var(--inchiostro, var(--ematossilina));
+}
+
 .grafico__conclusione {
   margin-top: var(--s2);
   padding: var(--s2) var(--s3);

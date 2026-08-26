@@ -40,16 +40,60 @@ from .service import (
 
 __all__ = ["FakeTagBackend", "SimulatedTag"]
 
-#: Dove risuonano le antenne simulate. Non e' un numero scelto a caso: le
-#: SLP1027 sono specificate 902-928 MHz e la banda europea sta 35 MHz piu' in
-#: basso. Simulare un'antenna perfetta nasconderebbe proprio il problema che la
-#: misura di adattamento esiste per rivelare.
+# ---------------------------------------------------------------------------
+# La curva d'antenna simulata, ricavata dal datasheet invece che inventata
+#
+# La prima versione di questo modello era una parabola con un minimo netto a
+# 915 MHz che saliva a VSWR 4,5 ai bordi. Il datasheet SLP1027 dice un'altra
+# cosa: misurata in camera anecoica, l'antenna e' **piatta e ben adattata** su
+# tutta la banda in cui e' specificata —
+#
+#     902 MHz: 1,24    915 MHz: 1,16    922 MHz: 1,20    928 MHz: 1,17
+#
+# cioe' S11 fra -20,6 e -21,8 dB. Non e' un risonatore stretto, e' un pannello
+# a banda larga. Simulare un minimo aguzzo insegnava all'operatore a cercare
+# una forma che questa antenna non ha.
+#
+# Il modello e' quello standard a risonatore singolo:
+#
+#     |G|^2 = ((b-1)^2 + x^2) / ((b+1)^2 + x^2),  x = Q (f/f0 - f0/f)
+#
+# con `b` fissato dal VSWR minimo (1,16 a 915 MHz) e `Q` calcolato per passare
+# dal punto a 902 MHz (1,24). Ne esce Q ~= 5,9: un'antenna a basso Q, come ci
+# si aspetta da un pannello RFID largo 220 mm.
+#
+# ATTENZIONE — sotto i 900 MHz questa curva e' **estrapolazione, non dato**:
+# il costruttore non pubblica niente li' sotto, ed e' esattamente il motivo per
+# cui la misura vera va fatta. Il modello prevede circa VSWR 1,8 a 866 MHz, ma
+# un adattamento reale puo' degradare piu' in fretta di un polo singolo. Quel
+# numero lo da' solo l'hardware.
+#
+# Il modello e' simmetrico attorno a f0, la curva vera no: a 928 MHz il
+# datasheet da' 1,17 e il modello 1,24. Un polo singolo non cattura
+# l'asimmetria, e non vale la pena aggiungerne un secondo per un banco di
+# prova — basta sapere che la simulazione e' un po' pessimista in alto.
+# ---------------------------------------------------------------------------
+#: Centro della banda in cui l'antenna e' specificata (datasheet SLP1027).
 RISONANZA_KHZ = 915_000
-#: VSWR nel punto di risonanza e quanto peggiora allontanandosene. Con questi
-#: valori a 866 MHz il VSWR simulato e' circa 4,5: disadattata ma non assurda,
-#: che e' la situazione che ci si aspetta di trovare davvero.
-VSWR_RISONANZA = 1.25
-_PENDENZA = (4.5 - VSWR_RISONANZA) / (49_000 ** 2)
+#: VSWR nel punto migliore, dal datasheet.
+VSWR_RISONANZA = 1.16
+#: Coefficiente di accoppiamento. Per un risonatore singolo sovraccoppiato
+#: |G|min = (b-1)/(b+1), da cui VSWR minimo = b: coincidono.
+_BETA = VSWR_RISONANZA
+#: Q ricavato dal punto pubblicato a 902 MHz (VSWR 1,24). Vedi sopra.
+_Q_ANTENNA = 5.86
+
+
+def _vswr_modello(frequenza_khz: float, centro_khz: float) -> float:
+    """VSWR del risonatore singolo tarato sui punti del datasheet."""
+    f = frequenza_khz / centro_khz
+    x = _Q_ANTENNA * (f - 1.0 / f)
+    num = (_BETA - 1.0) ** 2 + x * x
+    den = (_BETA + 1.0) ** 2 + x * x
+    gamma = (num / den) ** 0.5
+    if gamma >= 0.999:
+        return 20.0
+    return min((1 + gamma) / (1 - gamma), 20.0)
 
 _MAX_READ_WORDS = 96
 _MAX_WRITE_BYTES = 64
@@ -159,6 +203,11 @@ class FakeTagBackend:
         #: Antenne che il modulo dichiara non collegate, per provare l'avviso
         #: che oggi e' la causa piu' comune di «non legge».
         self.antenne_scollegate: set[int] = set()
+        #: Le bande che il modulo simulato dichiara di accettare. Il valore
+        #: predefinito imita un modulo certificato Cina (America, Cina, Europa,
+        #: banda intera); `{0x08}` imita un modulo CE, che la spazzata larga
+        #: non la puo' fare.
+        self.regioni_simulate: set[int] = {0x01, 0x06, 0x08, 0xFF}
         #: Sposta la risonanza di tutte le antenne, per provare uno scenario
         #: diverso da quello atteso.
         self.scarto_risonanza_khz = 0
@@ -253,8 +302,7 @@ class FakeTagBackend:
         centro = RISONANZA_KHZ + (request.antenna - 1) * 3_000 + self.scarto_risonanza_khz
         misure = []
         for frequenza in frequenze:
-            vswr = VSWR_RISONANZA + _PENDENZA * (frequenza - centro) ** 2
-            vswr = min(vswr, 20.0)
+            vswr = _vswr_modello(frequenza, centro)
             misure.append(
                 {
                     "frequency_khz": int(frequenza),
@@ -324,6 +372,29 @@ class FakeTagBackend:
         self.started = False
         return ServiceResponse(operation="stop", ok=True, state=ServiceState.STOPPED, data={})
 
+    def identify(self) -> ServiceResponse:
+        """Il censimento, su un banco che finge un modulo certificato Cina.
+
+        La scelta non e' neutra: un modulo Cina accetta tutte le bande, quindi
+        sul banco la spazzata larga funziona. Sul modulo vero potrebbe non
+        essere cosi', ed e' esattamente per questo che la schermata esiste —
+        `regioni_simulate` permette di provare anche il caso opposto.
+        """
+        self.calls.append("identify")
+        return self._ok(
+            "identify",
+            {
+                "transport": {"description": "banco simulato"},
+                "firmware_info": {"version": "fake-1.0", "model": "SIM7200 simulato"},
+                "regions_available": sorted(self.regioni_simulate),
+                "serial_number": "5349-4D55-4C41-544F",
+                "temperature_c": 41,
+                "antennas_connected": [
+                    a for a in self.antennas if a not in self.antenne_scollegate
+                ],
+            },
+        )
+
     def health(self, check_antennas: bool = True) -> ServiceResponse:
         """Stesse chiavi di `reader.health_check`, altrimenti non prova niente.
 
@@ -363,7 +434,7 @@ class FakeTagBackend:
     def snapshot(self) -> dict[str, Any]:
         return {
             "state": self.state.value,
-            "api_version": "1.3",
+            "api_version": "1.4",
             "antennas": list(self.antennas),
             "tags_in_field": len(self.tags),
         }

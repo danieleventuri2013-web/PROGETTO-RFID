@@ -1374,6 +1374,7 @@
           <small class="campo__nota tenue">
             Un intervallo esplicito non tocca la regione impostata.
           </small>
+          <small class="campo__nota campo__nota--limite" id="nota-modulo"></small>
         </label>
         <label class="campo">
           <span class="etichetta">In che condizione</span>
@@ -1697,6 +1698,48 @@
           <tbody></tbody>
         </table>
       </details>
+    </div>
+
+    <!-- Hardware installato ------------------------------------------------
+         Va PRIMA di tutti i pannelli di misura, perche' e' quello che dice
+         quali misure sono possibili su questo esemplare. Il censimento si fa
+         da solo al collegamento: qui si rilegge e si puo' rifare. -->
+    <div class="pannello">
+      <header class="pannello__testa">
+        <h2>Hardware installato</h2>
+        <p class="tenue">
+          Che cosa è collegato davvero, chiesto al modulo e non dedotto dal
+          datasheet. Si rileva da solo appena ci si collega, perché
+          <strong>quali misure siano possibili dipende da questo esemplare</strong>.
+        </p>
+      </header>
+
+      <div class="spiega">
+        <p>
+          <b>La certificazione decide.</b> Il manuale del protocollo
+          (EX10 2024-12 §2.2) è esplicito: un modulo certificato <strong>Cina</strong>
+          può lavorare su quattro bande — America, Cina, Europa, banda intera — e
+          può misurare <em>frequenze singole</em>. Un modulo certificato per una
+          <strong>sola regione</strong> accetta solo la propria, e per la
+          diagnostica d'antenna il numero di frequenze deve valere zero
+          (§10.1): niente elenco, niente spazzata larga. Non è un limite del
+          programma, è il firmware certificato — nessun software lo aggira.
+        </p>
+        <p>
+          <b>Come si scopre.</b> Comando <span class="hex">0x71</span>: il modulo
+          risponde con l'elenco delle bande che accetta. Una sola banda vuol
+          dire modulo monoregione. In quel caso la curva fuori dalla banda EU si
+          misura con un <strong>analizzatore d'antenna</strong>, non con il lettore.
+        </p>
+      </div>
+
+      <div class="modulo__azioni">
+        <button class="bottone bottone--primario" id="rileva-hardware">Rileva di nuovo</button>
+        <span class="tenue" id="esito-hardware" role="status"></span>
+      </div>
+
+      <dl class="verdetto__dettagli" id="hardware-dati"></dl>
+      <ul class="avvisi" id="hardware-avvisi"></ul>
     </div>
 
     <!-- Salute del lettore ------------------------------------------------ -->
