@@ -2679,7 +2679,8 @@ const COLORI_CURVA = [
 async function misuraAntenna() {
   const antenna = Number($("#antenna-diagnosi").value || 1);
   const scelta = $("#intervallo-diagnosi").value;
-  const dati = { antenna };
+  const nota = $("#nota-diagnosi").value.trim();
+  const dati = { antenna, nota };
   let etichetta = "banda configurata";
   if (scelta !== "banda") {
     const [da, a] = scelta.split(",").map(Number);
@@ -2722,7 +2723,9 @@ async function misuraAntenna() {
       });
     }
 
-    aggiungiCurva(esito, `antenna ${antenna} · ${etichetta}`);
+    // La condizione entra nell'etichetta: una legenda con tre curve e nessuna
+    // indicazione di cosa c'era sull'antenna e' una legenda ambigua.
+    aggiungiCurva(esito, `antenna ${antenna} · ${etichetta}${nota ? ` · ${nota}` : ""}`);
     if (esito.regione_commutata) {
       avvisa("Misura fatta a regione commutata. La regione è stata rimessa a posto.", "attesa", 9000);
     }
@@ -3217,7 +3220,10 @@ function descriviMisura(m) {
     return (
       `antenna ${m.antenna ?? "?"} · ${(m.da_khz / 1000).toFixed(0)}–${(m.a_khz / 1000).toFixed(0)} MHz · ` +
       `${m.punti} punti · VSWR peggiore ${Number(m.vswr_peggiore).toFixed(2)}` +
-      (r ? ` · minimo a ${(r.frequency_khz / 1000).toFixed(1)} MHz` : "")
+      (r ? ` · minimo a ${(r.frequency_khz / 1000).toFixed(1)} MHz` : "") +
+      // La condizione della misura vale quanto i numeri: senza, non si sa se
+      // due curve diverse sono due antenne o due situazioni.
+      (m.nota ? ` — ${m.nota}` : "")
     );
   }
   if (m.genere === "profilazione") {

@@ -2803,6 +2803,7 @@ class Workflow:
         a_khz: int | None = None,
         passo_khz: int = 1000,
         consenti_cambio_regione: bool = False,
+        nota: str = "",
     ) -> dict[str, Any]:
         """Return loss per frequenza: il dato da portare al fornitore.
 
@@ -2825,6 +2826,16 @@ class Workflow:
         Il terzo modo trasmette fuori dalla banda ETSI. Ha senso su un banco di
         prototipazione e in nessun altro posto, e per questo non e' mai il
         comportamento predefinito: chi lo usa lo chiede.
+
+        `nota` descrive **in che condizione** e' stata fatta la misura. Non e'
+        un dettaglio burocratico: il VSWR e' l'impedenza vista al connettore, e
+        quella dipende da tutto cio' che sta nel campo vicino dell'antenna —
+        a 866 MHz circa sei centimetri. Un contenitore pieno di liquido
+        appoggiato sopra sposta la curva; un tag no, e' uno scatteratore
+        troppo piccolo per caricare l'antenna. Tre curve diverse nel registro
+        possono essere tre antenne diverse **oppure la stessa antenna con tre
+        cose diverse sul tavolo**, e senza questa riga fra un mese non si
+        distinguono.
         """
         from rfid_silion.service import AntennaDiagnosticsRequest
 
@@ -2840,8 +2851,11 @@ class Workflow:
         )
         cambio = consenti_cambio_regione and chiesta != regione_attuale and not frequenze
 
+        nota = str(nota).strip()[:200]
         if cambio:
-            return self._misura_cambiando_regione(richiesta, regione_attuale)
+            esito = self._misura_cambiando_regione(richiesta, regione_attuale)
+            esito["nota"] = nota
+            return esito
 
         risposta = self.backend.antenna_diagnostics(richiesta)
         if not risposta.ok:
@@ -2856,7 +2870,9 @@ class Workflow:
                     "messaggio": messaggio,
                 }
             raise WorkflowError(messaggio)
-        return self._descrivi_misura(risposta.to_dict(), antenna, chiesta, regione_attuale)
+        esito = self._descrivi_misura(risposta.to_dict(), antenna, chiesta, regione_attuale)
+        esito["nota"] = nota
+        return esito
 
     def _misura_cambiando_regione(self, richiesta: Any, regione_attuale: int) -> dict[str, Any]:
         """Commuta la regione, misura, e la rimette a posto comunque vada.
@@ -3878,6 +3894,9 @@ class Workflow:
                     "risonanza": fonte.get("risonanza"),
                     "da_khz": min(m["frequency_khz"] for m in misure),
                     "a_khz": max(m["frequency_khz"] for m in misure),
+                    # Cosa c'era sull'antenna. Senza, tre curve diverse non si
+                    # distinguono da tre antenne diverse.
+                    "nota": risposta.get("nota") or corpo.get("nota") or "",
                 }
             )
             return scheda

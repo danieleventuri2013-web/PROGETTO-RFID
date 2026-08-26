@@ -479,6 +479,7 @@ class WebUIServer:
                     a_khz=d.get("a_khz"),
                     passo_khz=d.get("passo_khz", 1000),
                     consenti_cambio_regione=bool(d.get("consenti_cambio_regione", False)),
+                    nota=str(d.get("nota", "")),
                 ),
                 True,
             ),

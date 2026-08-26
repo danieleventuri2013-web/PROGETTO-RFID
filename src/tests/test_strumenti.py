@@ -173,6 +173,53 @@ def test_un_minimo_sul_bordo_non_e_una_risonanza():
         assert esito["data"]["risonanza"]["al_bordo"] is True
 
 
+def test_la_condizione_della_misura_viaggia_con_la_misura():
+    """Tre curve diverse possono essere tre antenne o tre situazioni.
+
+    Il VSWR e' l'impedenza vista al connettore, e dipende da tutto quello che
+    sta nel campo vicino — a 866 MHz una manciata di centimetri. Senza sapere
+    cosa c'era sull'antenna, la curva di un mese fa non si sa piu' leggere.
+    """
+    with _Postazione(_tmp("condizione")) as posto:
+        stato, esito = posto.post(
+            "/api/diagnostica_antenna",
+            {"antenna": 1, "nota": "a vuoto, in posizione di lavoro"},
+        )
+        assert stato == 200, esito
+        assert esito["nota"] == "a vuoto, in posizione di lavoro"
+
+        # Anche quando il modulo ha dovuto cambiare regione per misurare.
+        posto.backend.rifiuta_bande_diverse = True
+        _, commutata = posto.post(
+            "/api/diagnostica_antenna",
+            {
+                "antenna": 1,
+                "banda": 0xFF,
+                "consenti_cambio_regione": True,
+                "nota": "scatola piena sopra",
+            },
+        )
+        assert commutata["nota"] == "scatola piena sopra"
+        assert commutata["regione_commutata"] is True
+
+
+def test_una_nota_lunghissima_viene_accorciata():
+    """Va nel diario e in una legenda: un tema non ci sta e non serve."""
+    with _Postazione(_tmp("nota_lunga")) as posto:
+        _, esito = posto.post(
+            "/api/diagnostica_antenna", {"antenna": 1, "nota": "x" * 500}
+        )
+        assert len(esito["nota"]) == 200
+
+
+def test_senza_nota_la_misura_si_fa_lo_stesso():
+    with _Postazione(_tmp("senza_nota")) as posto:
+        stato, esito = posto.post("/api/diagnostica_antenna", {"antenna": 1})
+        assert stato == 200
+        assert esito["nota"] == ""
+        assert esito["data"]["measurements"]
+
+
 def test_le_antenne_si_confrontano_fra_loro():
     """Due antenne uguali con curve diverse indicano un cavo, non un progetto."""
     with _Postazione(_tmp("confronto")) as posto:

@@ -1303,17 +1303,38 @@
         </p>
         <p>
           <b>Come si esegue.</b> Antenna collegata al suo cavo e
-          <strong>nella posizione di lavoro</strong> — una mano vicina o un piano
-          metallico cambiano la misura. Nessun contenitore sopra. Una misura per
-          antenna, poi si confrontano: due antenne uguali che danno curve molto
-          diverse indicano un cavo o un connettore difettoso, non un problema di
-          progetto.
+          <strong>nella posizione di lavoro</strong>, <strong>a vuoto</strong>:
+          niente contenitore sopra, niente mani vicine, niente che si muova
+          durante la spazzata. Una misura per antenna, poi si confrontano: due
+          antenne uguali che danno curve molto diverse indicano un cavo o un
+          connettore difettoso, non un problema di progetto — quello che si
+          misura è l'antenna <em>più il suo cavo e i suoi connettori</em>, non
+          l'antenna da sola.
+        </p>
+        <p>
+          <b>I tag non c'entrano.</b> Questa misura non ha niente a che vedere
+          con la lettura: non serve nessun tag, e metterne uno non cambia il
+          risultato. Un tag passivo è troppo piccolo per caricare l'antenna.
+          Quello che <strong>sì</strong> cambia la misura è tutto ciò che sta
+          nei primi <strong>sei centimetri</strong> attorno all'antenna — il
+          campo vicino a 866&nbsp;MHz: metallo, acqua, una mano, il piano
+          d'appoggio.
         </p>
         <p>
           <b>Cosa farne.</b> Questa è la misura da allegare quando si chiede al
           fornitore un'antenna tarata per la banda europea: le SLP1027 sono
           specificate 902–928 MHz e il costruttore non pubblica curve sotto i
           900&nbsp;MHz, quindi il dato in banda EU può darlo solo chi le usa lì.
+        </p>
+        <p>
+          <b>Due misure, due domande diverse.</b> <em>A vuoto</em> si misura
+          <strong>l'antenna</strong>: è la curva da mandare al fornitore, ed è
+          l'unica confrontabile con il suo datasheet. <em>Con la scatola piena
+          appoggiata sopra</em> si misura <strong>il sistema che avremo</strong>:
+          trenta flaconcini di liquido nel campo vicino spostano e smorzano la
+          curva, e quel numero spiega perché leggere è difficile — ma non è
+          colpa del fornitore e non va spedito a lui. Vale la pena farle
+          entrambe; vale molto la pena non confonderle.
         </p>
       </div>
 
@@ -1353,6 +1374,15 @@
           <small class="campo__nota tenue">
             Un intervallo esplicito non tocca la regione impostata.
           </small>
+        </label>
+        <label class="campo">
+          <span class="etichetta">In che condizione</span>
+          <!-- Tre curve diverse nel registro possono essere tre antenne oppure
+               la stessa antenna con tre cose diverse sul tavolo: senza questa
+               riga, fra un mese non si distinguono. -->
+          <input id="nota-diagnosi" type="text" maxlength="200"
+                 placeholder="a vuoto, banco / scatola piena sopra / cavo nuovo…"
+                 value="a vuoto, in posizione di lavoro">
         </label>
         <button class="bottone bottone--radio" id="misura-antenna">Misura</button>
         <button class="bottone bottone--sobrio" id="svuota-curve">Svuota il grafico</button>

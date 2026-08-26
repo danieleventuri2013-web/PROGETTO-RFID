@@ -35,6 +35,51 @@ Le **SLP1027** del prototipo sono specificate 902–928 MHz. In Italia si lavora
 per cui questo pannello guarda anche fuori dalla banda: per distinguere i due
 casi bisogna **vedere dove sta il minimo**, e per vederlo bisogna spazzare largo.
 
+### In che condizione si misura — e perché conta più dei numeri
+
+Questa misura **non ha niente a che vedere con la lettura dei tag**. Non serve
+nessun tag, e metterne uno non cambia il risultato: un tag passivo è uno
+scatteratore troppo piccolo per caricare l'antenna. Quello che il comando misura
+è l'*impedenza vista al connettore* — quanta potenza torna indietro invece di
+partire.
+
+Quello che **sì** sposta la curva è tutto ciò che sta nel **campo vicino**
+dell'antenna: a 866 MHz la lunghezza d'onda è circa 35 cm, e il campo reattivo
+si estende all'incirca **sei centimetri**. Dentro quei sei centimetri contano
+metallo, acqua, una mano, il piano d'appoggio. Fuori, quasi niente.
+
+Da cui la regola: **antenna nella posizione di lavoro, a vuoto, e niente si
+muove durante la spazzata.**
+
+E da cui una distinzione che è facile perdere e costosa da sbagliare — **sono
+due misure diverse che rispondono a due domande diverse**:
+
+| Condizione | Cosa misura | A chi serve |
+|---|---|---|
+| **a vuoto**, in posizione di lavoro | l'antenna (più cavo e connettori) | è la curva **da mandare al fornitore**: l'unica confrontabile con il suo datasheet |
+| **con la scatola piena sopra** | il sistema che avremo davvero | serve a noi: trenta flaconcini di liquido nel campo vicino spostano e smorzano la curva, ed è questo che spiega perché leggere è difficile |
+
+Mandare al fornitore la seconda significherebbe dargli un numero che descrive il
+nostro liquido, non la sua antenna. È lo stesso errore, di categoria, del minimo
+di bordo spacciato per risonanza. **Vale la pena farle entrambe; vale molto la
+pena non confonderle.**
+
+Due dettagli che cambiano la lettura:
+
+- si misura l'antenna **più il suo cavo e i suoi connettori**, perché il comando
+  guarda dalla porta del modulo. Un SMA ossidato si legge come un'antenna
+  scadente — ed è esattamente il motivo per cui le tre antenne si confrontano fra
+  loro;
+- le tre antenne sono complanari e vicine: quelle inattive ma collegate sono
+  elementi parassiti per quella in misura. Non è un problema, **purché le tre
+  misure siano fatte tutte nella stessa configurazione**, altrimenti il confronto
+  non confronta niente.
+
+Per questo il pannello ha un campo **«In che condizione»**: la nota viaggia con
+la misura, finisce nell'etichetta della curva e nel registro. Tre curve diverse
+possono essere tre antenne diverse **oppure la stessa antenna con tre cose
+diverse sul tavolo**, e fra un mese, senza quella riga, non si distinguono più.
+
 ### Come si usa
 
 1. Scegli l'antenna, lascia l'intervallo su **banda configurata** e misura.
