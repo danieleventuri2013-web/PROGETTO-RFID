@@ -7,6 +7,9 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
+.venv-sam2/
+.venv-openvino/
+models/sam2/
 venv/
 .pytest_cache/
 
@@ -44,3 +47,11 @@ graphify-out/
 
 # Materiale dimostrativo generato localmente (screenshot, video e runtime isolato).
 demo-output/
+
+# Credenziali e prove temporanee della postazione.
+.env
+.env.*
+!.env.example
+.tmp/
+tmp/
+kernel.errors.txt

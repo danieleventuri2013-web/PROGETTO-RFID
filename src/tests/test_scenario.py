@@ -306,6 +306,7 @@ class _Postazione:
         )
         self.server.workflow.imposta_operatore("TEST")
         self.server.start_background()
+        assert self.server.call("connetti", {})[0] == 200
 
     def __enter__(self):
         return self

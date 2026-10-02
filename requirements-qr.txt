@@ -1,0 +1,6 @@
+# Dipendenze facoltative per QR con webcam e controllo visivo della scatola.
+opencv-python>=4.10
+zxing-cpp>=2.3
+Pillow>=10.0
+pyyaml>=6.0
+cryptography>=42.0

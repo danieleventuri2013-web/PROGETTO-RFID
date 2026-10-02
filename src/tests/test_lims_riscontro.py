@@ -148,7 +148,6 @@ def test_il_verbale_chiude_il_giro():
     circuito = _Circuito(_tmp("giro"))
     try:
         spedizione = circuito.spedisci()
-        identificativo = spedizione["shipment_id"]
 
         # Prima del verbale il mittente sa solo di aver spedito.
         prima = circuito.mittente.riepilogo_transito("Ospedale Foligno")
@@ -400,6 +399,13 @@ def test_un_verbale_piu_recente_sostituisce_il_precedente():
         # Il contenitore salta fuori: si rilegge e si riconferma.
         circuito.backend_destinatario.tags[:] = circuito.tag
         circuito.destinatario.leggi_volume()
+        assert not circuito.destinatario.stato_ricezione()["confermata"]
+        assert not circuito.destinatario.stato_riscontro()["disponibile"]
+        try:
+            circuito.destinatario.esporta_riscontro()
+            raise AssertionError("la nuova lettura deve essere riconfermata")
+        except WorkflowError as exc:
+            assert "confermare" in str(exc)
         circuito.destinatario.conferma_ricezione("")
         secondo, _ = circuito.destinatario.esporta_riscontro()
         esito = circuito.mittente.importa_riscontro(secondo)

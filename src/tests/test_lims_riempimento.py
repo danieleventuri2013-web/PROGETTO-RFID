@@ -18,7 +18,6 @@ aperta. Le promesse:
 from __future__ import annotations
 
 import sys
-import tempfile
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -28,7 +27,7 @@ from fake_backend import FakeTagBackend, SimulatedTag
 
 from lims.codec import build_box_epc, build_epc
 from lims.db import LimsDatabase
-from lims.model import Case, ContainerState, Patient, Sex, Shipment, Specimen
+from lims.model import Case, Patient, Sex, Shipment, Specimen
 from lims.riempimento import (
     Esito,
     PoliticaRiempimento,

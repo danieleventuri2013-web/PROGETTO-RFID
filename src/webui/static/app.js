@@ -48,6 +48,13 @@ const stato = {
   archivio: { mostrati: 0, totale: 0, ordine: "recenti", attesa: null },
   /** Timer della sorveglianza della scatola. */
   vigilanza: null,
+  /** Il giro della scatola in volo: chi deve usare il lettore lo aspetta. */
+  giroScatola: null,
+  presenza: null,
+  presenzaRichiesta: null,
+  presenzaUltimoGiro: 0,
+  presenzaPausa: false,
+  presenzaErrore: "",
 };
 
 const $ = (sel) => document.querySelector(sel);
@@ -104,6 +111,9 @@ function annotaResiduo(risposta) {
    Rete
    ========================================================================== */
 async function chiama(operazione, dati = {}) {
+  if (["scrivi", "conferma_conteggio", "correggi_conteggio", "annulla_accettazione", "annulla_contenitore", "sospendi_accettazione"].includes(operazione) && stato.accettazione?.accession_id) {
+    dati = {accession_id: stato.accettazione.accession_id, ...dati};
+  }
   const risposta = await fetch(`/api/${operazione}`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-RFID-Token": TOKEN },
@@ -353,6 +363,11 @@ function schermataAttiva() {
 }
 
 function mostra(nome, scheda) {
+  const ruolo = stato.descrizione?.operativita?.station_mode || "entrambe";
+  if ((ruolo === "ricezione" && ["accettazione", "sigillo"].includes(nome)) ||
+      (ruolo === "spedizione" && nome === "ricezione")) nome = "impostazioni";
+  if (nome !== "ricezione") window.fermaWebcamRicezione?.();
+  if (nome !== "sigillo") window.fermaWebcamSigillo?.();
   Traccia.nota("schermata", { da: schermataAttiva(), a: nome, scheda: scheda || "" });
   $$(".schermata").forEach((sezione) => {
     sezione.classList.toggle("schermata--attiva", sezione.id === `schermata-${nome}`);
@@ -377,6 +392,7 @@ function mostra(nome, scheda) {
   // compilare prima di vedere qualcosa. Si ricarica ogni volta perche' nel
   // frattempo si sono accettati altri pazienti.
   if (nome === "archivio") elencaPazienti({ azzera: true });
+  if (nome === "accettazione" && typeof Giornata !== "undefined" && Giornata.avviata) Giornata.aggiorna();
 }
 
 /** Le due metà delle impostazioni: la configurazione si fa una volta e si
@@ -421,7 +437,8 @@ async function collega() {
       adattaAllHardware(esito.hardware);
     }
     stato.collegato = true;
-    dipingiStatoLettore("pronto", "pronto");
+    stato.radioConfigurata = Boolean(esito.configurazione_ok);
+    dipingiStatoLettore(stato.radioConfigurata ? "pronto" : "da configurare", stato.radioConfigurata ? "pronto" : "attesa");
     $("#collega").textContent = "Scollega";
     if (!esito.configurazione_ok && esito.configurazione_errore) {
       avvisa(`Lettore avviato ma non configurato: ${esito.configurazione_errore}`, "attesa", 9000);
@@ -540,6 +557,7 @@ function numeraReperti() {
 
 async function registra(evento) {
   evento.preventDefault();
+  if (typeof Giornata !== "undefined" && Giornata.avviata) return Giornata.salva();
   $("#errore-accettazione").textContent = "";
   const reperti = [primoReperto(), ...repertiAggiuntivi()];
   const dati = {
@@ -650,6 +668,7 @@ function dipingiCartella() {
 }
 
 function dipingiAccettazione() {
+  if (typeof Giornata !== "undefined" && Giornata.avviata) return Giornata.aggiornaPostazione();
   const attiva = Boolean(stato.accettazione?.accession_id);
   $("#pannello-anagrafica").classList.toggle("pannello--nascosto", attiva);
   $("#pannello-postazione").classList.toggle("pannello--nascosto", !attiva);
@@ -660,6 +679,7 @@ function dipingiAccettazione() {
 }
 
 async function nuovaAccettazione({ automatica = false } = {}) {
+  if (typeof Giornata !== "undefined" && Giornata.avviata) return Giornata.torna();
   const conclusa = stato.accettazione?.accession_id;
   try {
     await chiama("nuova_accettazione");
@@ -724,6 +744,9 @@ function avanza() {
   stato.ultimoEpc = "";
   $("#riepilogo").hidden = true;
   $("#etichetta").hidden = true;
+  // Il contenitore ha lasciato il piatto: l'offerta di riscrivere *quel* tag
+  // non ha piu' oggetto, e lasciarla accesa la farebbe cadere sul prossimo.
+  $("#riscrivi").hidden = true;
   $("#passi-scrittura").innerHTML = "";
   // Ultimo contenitore andato via dal piatto: l'accettazione è chiusa e la
   // postazione torna da sola al modulo, pronta per il campione successivo. I
@@ -785,64 +808,28 @@ function dipingiCampione(campione, descrizione = "") {
    La lettura serve comunque, perche' la guardia di scrittura pretende un
    inventory con un tag solo. -------------------------------------------- */
 function avviaSorveglianza() {
-  if (stato.sorveglianza || !stato.collegato) return;
-  if ($("#pannello-postazione").classList.contains("pannello--nascosto")) return;
-  stato.sorveglianza = setInterval(guarda, stato.intervalloSorveglianza);
-  guarda();
+  // Compatibilita' con gli aggiornamenti della postazione: nessun timer RF.
+  aggiornaComandoScrittura();
 }
 
 function fermaSorveglianza() {
-  if (!stato.sorveglianza) return;
-  clearInterval(stato.sorveglianza);
+  if (stato.sorveglianza) clearInterval(stato.sorveglianza);
   stato.sorveglianza = null;
 }
 
-async function guarda() {
-  if (stato.occupato) return;
-  try {
-    const esito = await chiama("sorveglia");
-    if (stato.occupato) return;
-
-    // Finche' sul piatto c'e' ancora il contenitore appena scritto, si chiede
-    // di toglierlo. E' la lettura a dire che e' andato via, non un cronometro:
-    // avanzare da soli significherebbe dare per fatto un gesto dell'operatore.
-    const ancoraLui = stato.ultimoEpc && esito.epcs.includes(stato.ultimoEpc);
-    if (ancoraLui) {
-      Scena.stato(
-        "rimuovi",
-        stato.accettazione.prossimo
-          ? "Togli il contenitore e appoggia il prossimo"
-          : "Togli l'ultimo contenitore: accettazione completata"
-      );
-      $("#scrivi").disabled = true;
-      return;
-    }
-    if (stato.ultimoEpc) avanza();
-
-    if (esito.stato === "vuoto") {
-      Scena.stato("attesa");
-      $("#scrivi").disabled = true;
-    } else if (esito.stato === "pronto") {
-      Scena.stato("rilevato");
-      $("#scrivi").disabled = !stato.accettazione?.prossimo;
-    } else if (esito.stato === "troppi") {
-      Scena.stato("troppi", `Sull'antenna ci sono ${esito.epcs.length} contenitori: lasciane uno solo`);
-      $("#scrivi").disabled = true;
-    } else {
-      Scena.stato("attesa", esito.messaggio || "Lettura non riuscita");
-      $("#scrivi").disabled = true;
-    }
-  } catch (errore) {
-    if (!errore.occupato) {
-      fermaSorveglianza();
-      dipingiStatoLettore("errore", "errore");
-    }
-  }
+function aggiornaComandoScrittura() {
+  $("#scrivi").disabled = !stato.collegato || !stato.radioConfigurata ||
+    (typeof Giornata !== "undefined" && Giornata.avviata && Giornata.vista !== "scrittura") ||
+    stato.occupato || Boolean(stato.ultimoEpc) || !stato.accettazione?.prossimo;
+  $("#prossimo-contenitore").hidden = !stato.ultimoEpc;
+  $("#prossimo-contenitore").textContent = stato.accettazione?.prossimo
+    ? "Prossimo contenitore" : "Completa accettazione";
 }
 
 /* -- Scrittura ------------------------------------------------------------ */
-async function scrivi() {
+async function scrivi(deroga = false) {
   if (!stato.accettazione) return;
+  if (typeof Giornata !== "undefined" && Giornata.avviata && Giornata.vista !== "scrittura") return;
 
   // La conferma del numero si chiede alla PRIMA scrittura, non alla
   // registrazione: e' qui che il totale diventa irreversibile, ed e' qui che
@@ -850,8 +837,8 @@ async function scrivi() {
   if (!stato.accettazione.conteggio_confermato) {
     const totale = stato.accettazione.totale;
     const conferma = await domanda(
-      "Conferma i campioni di questo paziente",
-      `Stai per scrivere <strong>${totale}</strong> ${plurale(totale, "campione", "campioni")} per questo paziente.
+      "Conferma i contenitori di questa accettazione",
+      `Stai per scrivere <strong>${totale}</strong> ${plurale(totale, "contenitore", "contenitori")} per questo paziente.
        Il totale finisce dentro ogni tag come <span class="hex">n/${totale}</span> e dopo la
        prima scrittura non si corregge: si possono solo annullare i tag già scritti.
        <br><br>Sono tutti qui davanti a te?`,
@@ -871,13 +858,17 @@ async function scrivi() {
   $("#scrivi").disabled = true;
   $("#etichetta").hidden = true;
   $("#errore-scrittura").textContent = "";
+  $("#riscrivi").hidden = true;
   $("#passi-scrittura").innerHTML = "";
   Scena.stato("scrittura");
   dipingiStatoLettore("scrittura", "attivo");
 
   try {
-    stato.accettazione = annotaResiduo(await chiama("scrivi"));
+    stato.accettazione = annotaResiduo(
+      await chiama("scrivi", {authorized_rewrite: deroga, accession_id: stato.accettazione.accession_id})
+    );
     const esito = stato.accettazione.scrittura;
+    stato.radioConfigurata = stato.accettazione.radio_configurata !== false;
     if (esito.ok) {
       Scena.stato("verificato");
       chiudiPassi("ok");
@@ -895,6 +886,11 @@ async function scrivi() {
       chiudiPassi("errore");
       $("#errore-scrittura").textContent = esito.error || "";
       $("#salta").hidden = false;
+      // Il chip non e' rotto: e' gia' scritto. E' l'unico errore a cui
+      // l'operatore possa rispondere qualcosa, e in prototipazione capita a
+      // ogni giro, perche' lo stesso tag si riusa. Si riconosce dal codice,
+      // non dal testo del messaggio.
+      $("#riscrivi").hidden = esito.error_code !== "tag_gia_scritto";
     }
     dipingiSerie();
     aggiornaWorkflowBar();
@@ -906,8 +902,25 @@ async function scrivi() {
     avviaSorveglianza();
   } finally {
     stato.occupato = false;
-    dipingiStatoLettore(stato.collegato ? "pronto" : "non collegato", stato.collegato ? "pronto" : "fermo");
+    aggiornaComandoScrittura();
+    dipingiStatoLettore(stato.collegato ? (stato.radioConfigurata ? "pronto" : "da configurare") : "non collegato", stato.collegato && stato.radioConfigurata ? "pronto" : "attesa");
   }
+}
+
+/** Riscrive un tag che risulta gia' scritto. Deroga, non scorciatoia. */
+async function riscriviTag() {
+  const ok = await domanda(
+    "Riscrivere questo tag?",
+    `Questo chip risulta <strong>già scritto</strong>. Riscriverlo sovrascrive
+     i dati che porta adesso: se appartiene a un campione ancora in giro, quel
+     campione resta senza identificazione.
+     <br><br>La strada normale è annullare il contenitore e usarne uno nuovo.
+     La riscrittura esiste per l'assistenza e per il banco di prova, e resta
+     <strong>scritta nel registro</strong> con il nome di chi è in servizio.`,
+    "Sì, riscrivi"
+  );
+  if (!ok) return;
+  await scrivi(true);
 }
 
 function aggiungiPasso(testo) {
@@ -933,10 +946,11 @@ function chiudiPassi(esito) {
 async function annullaContenitore() {
   const prossimo = stato.accettazione?.prossimo;
   if (!prossimo) return;
-  const motivo = prompt(
-    `Annulli il contenitore ${prossimo.index}/${prossimo.total}?\n\n` +
-      "Ne verrà creato uno sostitutivo con un tag nuovo. Scrivi il motivo:",
-    "tag non funzionante"
+  const motivo = await chiediTesto(
+    `Annullare il contenitore ${prossimo.index}/${prossimo.total}?`,
+    "<p>Ne verrà creato uno sostitutivo con un tag nuovo. Scrivi il motivo:</p>",
+    "tag non funzionante",
+    "Annulla il contenitore"
   );
   if (motivo === null) return;
   try {
@@ -946,6 +960,7 @@ async function annullaContenitore() {
       tag_guasto: /tag/i.test(motivo),
     });
     $("#salta").hidden = true;
+    $("#riscrivi").hidden = true;
     $("#errore-scrittura").textContent = "";
     dipingiAccettazione();
     avvisa("Contenitore annullato: prepara il sostituto con un tag nuovo", "attesa", 8000);
@@ -986,6 +1001,7 @@ async function annullaAccettazione() {
     $("#riepilogo").hidden = true;
     $("#etichetta").hidden = true;
     $("#salta").hidden = true;
+    $("#riscrivi").hidden = true;
     $("#passi-scrittura").innerHTML = "";
     $("#modulo-accettazione").reset();
     $("#cf").focus();
@@ -993,6 +1009,10 @@ async function annullaAccettazione() {
     await caricaCoda();
 
     const rimasti = esitoAnnullo.gia_scritti.length;
+    if (typeof Giornata !== "undefined" && Giornata.avviata) {
+      Giornata.cambiaVista("elenco");
+      await Giornata.torna();
+    }
     avvisa(
       rimasti
         ? `Accettazione ${esitoAnnullo.accettazione} chiusa: ${rimasti} ${plurale(
@@ -1168,27 +1188,24 @@ async function preparaSpedizione() {
     aggiornaWorkflowBar();
     $("#pannello-sigillo").classList.remove("pannello--nascosto");
     disponiPuntiIn("#volume-punti", stato.spedizione.attesi);
-    aggiornaVerdetto(0, stato.spedizione.attesi, "attesa");
-    $("#verdetto-esito").textContent =
-      `${stato.spedizione.attesi} ${plurale(
-        stato.spedizione.attesi,
-        "contenitore pronto",
-        "contenitori pronti"
-      )} a partire. Chiudi la scatola e certifica.`;
-    $("#sigilla").focus();
+    aggiornaPresenzaContenuto();
   } catch (errore) {
     $("#errore-spedizione").textContent = errore.message;
   }
 }
 
 function dipingiSpedizione() {
+  window.aggiornaVisivoSpedizione?.();
   const spedizione = stato.spedizione;
   const attiva = Boolean(spedizione?.shipment_id);
   const pecAbilitata = Boolean(stato.descrizione?.pec?.abilitata);
   $("#pannello-sigillo").classList.toggle("pannello--nascosto", !attiva);
   $("#coda-spedizione").hidden =
     attiva && !["sent", "cancelled"].includes(spedizione.stato);
-  if (!attiva) return;
+  if (!attiva) {
+    stato.presenza = null;
+    return;
+  }
 
   disponiPuntiIn("#volume-punti", spedizione.attesi);
   const nomi = {
@@ -1199,7 +1216,7 @@ function dipingiSpedizione() {
     cancelled: "annullata",
   };
   $("#stato-spedizione").textContent = nomi[spedizione.stato] || spedizione.stato;
-  $("#sigilla").disabled = ["exported", "sent", "cancelled"].includes(spedizione.stato);
+  $("#sigilla").disabled = true;
   $("#esporta").disabled = !["sealed", "exported"].includes(spedizione.stato);
   $("#prepara-email").disabled = !["exported", "sent"].includes(spedizione.stato);
   $("#conferma-invio").disabled = spedizione.stato !== "exported";
@@ -1256,13 +1273,95 @@ function dipingiSpedizione() {
   } else if (spedizione.sigillo?.expected) {
     dipingiSigillo(spedizione);
   } else {
-    aggiornaVerdetto(0, spedizione.attesi, "attesa");
-    $("#verdetto-esito").textContent =
-      `${spedizione.attesi} ${plurale(
-        spedizione.attesi,
-        "contenitore pronto",
-        "contenitori pronti"
-      )} a partire. Chiudi la scatola e certifica.`;
+    dipingiPresenzaContenuto();
+  }
+  $("#presenza-contenuto").hidden = spedizione.stato !== "open";
+  $("#verifica-contenuto").hidden = spedizione.stato !== "open";
+  aggiornaPresenzaContenuto();
+}
+
+function chiaveContenuto() {
+  return JSON.stringify([stato.spedizione?.shipment_id,
+    (stato.spedizione?.contenitori || []).map((c) => c.epc).sort()]);
+}
+
+function presenzaAttiva() {
+  return schermataAttiva() === "sigillo" && !document.hidden &&
+    stato.collegato && stato.radioConfigurata !== false && !stato.riempimento &&
+    stato.spedizione?.stato === "open";
+}
+
+function presenzaRecente() {
+  return stato.presenza?.chiave === chiaveContenuto() &&
+    performance.now() - stato.presenza.ricevuta < 10000;
+}
+
+function dipingiPresenzaContenuto() {
+  if (stato.spedizione?.stato !== "open" || stato.occupato) return;
+  const recente = presenzaRecente() && presenzaAttiva();
+  const p = recente ? stato.presenza : null;
+  $("#sigilla").disabled = !p?.completo || Boolean(stato.presenzaRichiesta);
+  $("#verifica-contenuto").disabled = !presenzaAttiva() || Boolean(stato.presenzaRichiesta);
+  aggiornaVerdetto(p?.trovati ?? 0, stato.spedizione.attesi,
+    p ? (p.completo ? "completo" : "incompleto") : "attesa");
+  if (!p) $("#verdetto-conteggio").textContent = `— / ${stato.spedizione.attesi}`;
+  $("#verdetto-esito").textContent = p
+    ? (p.completo ? "Tutti i tag attesi sono stati rilevati. Puoi chiudere la scatola e certificare."
+      : `${p.attesi - p.trovati} tag attesi non rilevati` +
+        (p.estranei.length ? `; ${p.estranei.length} tag fuori elenco nell'area di lettura.` : ". Controlla posizione e contenuto."))
+    : (stato.presenzaErrore || (stato.collegato
+      ? "Verifica attuale del contenuto in attesa…" : "Collega il lettore per verificare il contenuto."));
+  $("#presenza-orario").textContent = p
+    ? `Ultima verifica: ${dataOra(p.verificato_il)} · antenne ${p.antenne.join(", ")} · aggiornamento automatico`
+    : "Nessuna verifica recente. Le letture durante l'inserimento non valgono come presenza attuale.";
+  const elenco = $("#presenza-elenco");
+  elenco.replaceChildren();
+  for (const voce of p?.contenitori || []) {
+    const li = document.createElement("li");
+    li.textContent = `${voce.rilevato ? "✓ Rilevato" : "Non rilevato"} — ${voce.etichetta} · ${voce.epc}`;
+    elenco.append(li);
+  }
+  for (const epc of p?.estranei || []) {
+    const li = document.createElement("li");
+    li.textContent = `Fuori elenco — ${epc}`;
+    elenco.append(li);
+  }
+}
+
+async function verificaContenuto() {
+  if (!presenzaAttiva() || stato.occupato || stato.presenzaRichiesta || stato.giroScatola) return;
+  const chiave = chiaveContenuto();
+  const richiesta = chiama("verifica_contenuto", {shipment_id: stato.spedizione.shipment_id});
+  stato.presenzaRichiesta = richiesta;
+  stato.presenzaUltimoGiro = performance.now();
+  dipingiPresenzaContenuto();
+  try {
+    const p = await richiesta;
+    if (chiave !== chiaveContenuto() || !presenzaAttiva()) return;
+    const ricevuta = JSON.stringify([p.shipment_id, p.contenitori.map((c) => c.epc).sort()]);
+    if (ricevuta !== chiave) throw new Error("L'elenco della scatola è cambiato: riapri la spedizione.");
+    stato.presenza = {...p, chiave, ricevuta: performance.now()};
+    stato.presenzaErrore = "";
+  } catch (errore) {
+    if (chiave !== chiaveContenuto()) return;
+    stato.presenza = null;
+    stato.presenzaErrore = `Verifica non disponibile: ${errore.message}`;
+  } finally {
+    stato.presenzaRichiesta = null;
+    dipingiPresenzaContenuto();
+  }
+}
+
+function aggiornaPresenzaContenuto() {
+  if (stato.presenzaPausa || stato.occupato) return;
+  if (!presenzaAttiva()) {
+    stato.presenza = null;
+    $("#sigilla").disabled = true;
+    return;
+  }
+  dipingiPresenzaContenuto();
+  if (!stato.presenzaRichiesta && performance.now() - stato.presenzaUltimoGiro >= 4000) {
+    verificaContenuto();
   }
 }
 
@@ -1442,9 +1541,21 @@ function fermaVigilanza() {
 }
 
 async function guardaScatola() {
-  if (stato.occupato) return;
+  // Un giro alla volta. Con la scatola piena una lettura dura piu'
+  // dell'intervallo (1,25 s contro 0,9 s al banco, l'11/09/2026): il giro
+  // successivo trovava la radio occupata dal precedente, un giro su due
+  // tornava 409, e i pulsanti premuti in quel momento venivano rifiutati.
+  if (stato.occupato || stato.giroScatola) return;
+  const richiesta = chiama("sorveglia_scatola");
+  // Chi deve usare il lettore subito dopo aspetta questa promessa, che non
+  // fallisce mai: l'errore del giro resta affare di questa funzione.
+  stato.giroScatola = richiesta.catch(() => {});
   try {
-    const giro = annotaResiduo(await chiama("sorveglia_scatola"));
+    const giro = annotaResiduo(await richiesta);
+    // Sorveglianza fermata mentre il giro era in volo (scatola chiusa,
+    // annullata o ripresa): la risposta tardiva non deve riportare in vita
+    // un riempimento che l'operatore ha gia' chiuso.
+    if (!stato.vigilanza) return;
     stato.riempimento = giro;
     for (const evento of giro.eventi || []) annunciaTag(evento);
     dipingiRiempimento(giro);
@@ -1453,10 +1564,17 @@ async function guardaScatola() {
       $("#riempimento-stato").textContent = `Lettura non riuscita: ${giro.errore}`;
     }
   } catch (errore) {
-    if (errore.occupato) return;
+    if (errore.occupato || !stato.vigilanza) return;
     fermaVigilanza();
     $("#riempimento-stato").textContent = errore.message;
-    dipingiStatoLettore("errore", "errore");
+    // Il motivo va dove si legge: il pannello del riempimento puo' essere
+    // nascosto, e la sola pastiglia «errore» del lettore faceva cercare un
+    // guasto di collegamento davanti a un rifiuto del flusso («aprire prima
+    // una scatola»): il lettore veniva scollegato e ricollegato per niente.
+    avvisa(errore.message, "errore", 9000);
+    if (errore.stato !== 400) dipingiStatoLettore("errore", "errore");
+  } finally {
+    stato.giroScatola = null;
   }
 }
 
@@ -1592,6 +1710,9 @@ async function togliDallaScatola(voce) {
 
 async function chiudiScatola() {
   fermaVigilanza();
+  // Il giro gia' partito tiene la radio finche' non risponde: chiudere nel
+  // frattempo dava «il lettore sta gia' eseguendo: sorveglia_scatola».
+  await stato.giroScatola;
   try {
     stato.spedizione = annotaResiduo(await chiama("chiudi_riempimento"));
     stato.riempimento = null;
@@ -1601,7 +1722,7 @@ async function chiudiScatola() {
     avvisa(
       `Scatola composta: ${stato.spedizione.attesi} ` +
         plurale(stato.spedizione.attesi, "campione", "campioni") +
-        ". Chiudi il coperchio e certifica.",
+        ". Verifico adesso la presenza prima della chiusura.",
       "ok",
       9000
     );
@@ -1621,6 +1742,7 @@ async function annullaScatola() {
   );
   if (!conferma) return;
   fermaVigilanza();
+  await stato.giroScatola;
   try {
     await chiama("annulla_spedizione");
     stato.riempimento = null;
@@ -1667,6 +1789,7 @@ async function caricaInSospeso() {
 async function riprendiSpedizione(shipment_id) {
   try {
     fermaVigilanza();
+    await stato.giroScatola;
     stato.riempimento = null;
     $("#pannello-riempimento").classList.add("pannello--nascosto");
     stato.spedizione = annotaResiduo(await chiama("riapri_spedizione", { shipment_id }));
@@ -1698,6 +1821,12 @@ function aggiornaVerdetto(trovati, attesi, esito) {
 
 async function sigilla() {
   if (!stato.spedizione) return;
+  const contenutoConfermato = chiaveContenuto();
+  if (!presenzaAttiva() || !presenzaRecente() || !stato.presenza?.completo || stato.presenzaRichiesta) {
+    avvisa("Attendi una verifica recente e completa del contenuto prima di certificare.", "attesa");
+    return;
+  }
+  stato.presenzaPausa = true;
 
   // La prova di chiusura oggi e' la parola dell'operatore: si chiede in modo
   // esplicito e si registra come tale nel documento del sigillo. Il giorno in
@@ -1709,7 +1838,16 @@ async function sigilla() {
      <br><br>Confermi che il coperchio è montato e agganciato su tutti e quattro i lati?`,
     "Sì, è chiusa"
   );
+  stato.presenzaPausa = false;
   if (!conferma) return;
+  if (contenutoConfermato !== chiaveContenuto()) return;
+  // Durante la conferma il contenuto puo' cambiare: si rilegge prima del sigillo.
+  await verificaContenuto();
+  if (!presenzaAttiva() || !presenzaRecente() || !stato.presenza?.completo ||
+      contenutoConfermato !== chiaveContenuto()) {
+    avvisa("Il contenuto non risulta completo alla nuova lettura. Controlla i tag prima di certificare.", "attesa");
+    return;
+  }
 
   stato.occupato = true;
   fermaSorveglianza();
@@ -1720,6 +1858,10 @@ async function sigilla() {
   dipingiStatoLettore("lettura del volume", "attivo");
   aggiornaVerdetto(0, stato.spedizione.attesi, "lettura");
   $("#verdetto-esito").textContent = "Lettura in corso…";
+
+  // Nuovi giri della scatola non partono piu' (stato.occupato), ma quello
+  // eventualmente in volo tiene la radio finche' non risponde.
+  await stato.giroScatola;
 
   try {
     const esito = annotaResiduo(await chiama("sigilla"));
@@ -1732,7 +1874,8 @@ async function sigilla() {
     $("#volume").dataset.stato = "incompleto";
   } finally {
     stato.occupato = false;
-    $("#sigilla").disabled = false;
+    stato.presenza = null;
+    $("#sigilla").disabled = true;
     $("#interrompi").hidden = true;
     dipingiStatoLettore(stato.collegato ? "pronto" : "non collegato", stato.collegato ? "pronto" : "fermo");
   }
@@ -1852,6 +1995,10 @@ async function stampaDistinta() {
 }
 
 function dipingiFoglio(foglio) {
+  $("#foglio-visivo-riepilogo").textContent = foglio.visual_check
+    ? `Controllo visivo: ${foglio.visual_check.stato}; visibili ${foglio.visual_check.confermati?.length ?? "—"}; RFID ${foglio.visual_check.rfid?.trovati ?? "—"}; coperchio ${foglio.visual_check.coperchio?.stato || "non richiesto"}.`
+    : "Controllo visivo aggiuntivo non eseguito.";
+  window.mostraProvaVisiva?.(foglio.visual_check, $("#foglio-visivo-foto"));
   $("#foglio-mittente").textContent =
     foglio.mittente.nome || foglio.mittente.insegna || "—";
   $("#foglio-destinatario").textContent = foglio.destinatario.nome || "—";
@@ -1961,44 +2108,55 @@ function dipingiFoglio(foglio) {
 }
 
 /* -- Ricezione: leggere il QR invece del file ----------------------------- */
-async function leggiScansione(testo) {
-  const pulito = String(testo || "").replace(/[\r\n\t]+$/, "");
-  if (!pulito) return;
-  stato.scansioni = stato.scansioni || [];
-  stato.scansioni.push(pulito);
+async function leggiScansione(testi) {
+  const nuove = (Array.isArray(testi) ? testi : [testi]).map(t => String(t || "").replace(/[\r\n\t]+$/, "")).filter(Boolean);
+  const candidate = [...new Set([...(stato.scansioni || []), ...nuove])];
   $("#errore-scansione").textContent = "";
-
   try {
-    const letta = await chiama("leggi_qr_distinta", { scansioni: stato.scansioni });
+    const letta = await chiama("leggi_qr_distinta", { scansioni: candidate });
+    if (letta.completa === false) {
+      stato.scansioni = candidate;
+      dipingiParti(letta.parti_acquisite.map(n => `parte ${n} letta`));
+      $("#scansione-nota").textContent = letta.messaggio;
+      return false;
+    }
     stato.scansioni = [];
     dipingiParti([]);
     $("#scansione-nota").textContent =
       `Distinta letta: ${letta.attesi} ${plurale(letta.attesi, "campione", "campioni")}` +
-      (letta.firma_verificata ? ", firma verificata." : ", senza firma.");
+      (letta.firma_verificata ? ", firma verificata." : ", firma non verificata.");
     stato.distintaQr = letta;
+    stato.distinta = letta.ricezione || null;
+    $("#visivo-ricevuta-foto").replaceChildren();
+    stato.ultimaRicezione = null;
+    if (letta.ricezione) ripristinaRicezione(letta.ricezione, true);
+    $("#conferma-ricezione").disabled = true;
+    $("#esporta-riscontro").disabled = true;
+    $("#pannello-ricezione").classList.remove("pannello--nascosto");
+    $("#leggi-volume").disabled = false;
+    $("#arrivo-conteggio").textContent = `— / ${letta.attesi}`;
+    $("#arrivo-mancanti").hidden = true;
+    $("#arrivo-inattesi").hidden = true;
+    $("#tabella-letti tbody").replaceChildren();
+    $("#ricezione-esito").textContent = "Dati QR caricati. Leggere il contenuto del collo.";
+    disponiPuntiIn("#arrivo-punti", letta.attesi);
     dipingiDistintaLetta(letta);
+    aggiornaWorkflowBar();
     avvisa(`Distinta letta dal QR: ${letta.attesi} campioni attesi`, "ok", 8000);
+    return true;
   } catch (errore) {
-    // «Manca la parte 2 su 2» non è un errore: è il codice successivo da
-    // leggere, e va detto come un'istruzione invece che come un guasto.
-    if (/manca(no)? (la parte|le parti)/i.test(errore.message)) {
-      dipingiParti(stato.scansioni);
-      $("#scansione-nota").textContent = errore.message;
-      return;
-    }
-    stato.scansioni = [];
-    dipingiParti([]);
     $("#errore-scansione").textContent = errore.message;
+    return false;
   }
 }
 
 function dipingiParti(scansioni) {
   const elenco = $("#scansione-parti");
   elenco.innerHTML = "";
-  scansioni.forEach((_, indice) => {
+  scansioni.forEach((testo) => {
     const voce = document.createElement("li");
     voce.className = "scansione__parte";
-    voce.textContent = `parte ${indice + 1} letta`;
+    voce.textContent = testo;
     elenco.append(voce);
   });
 }
@@ -2028,15 +2186,7 @@ function dipingiDistintaLetta(letta) {
     dd.textContent = valore;
     riquadro.append(dt, dd);
   }
-  dipingiElencoArrivo(
-    "#contenitore-atteso",
-    "#elenco-atteso",
-    (letta.righe || []).map((riga) => ({
-      etichetta: riga.etichetta,
-      paziente: riga.paziente,
-      epc: riga.epc,
-    }))
-  );
+  dipingiChecklistAtteso(letta.righe || [], null);
 }
 
 async function esportaDistinta() {
@@ -2108,6 +2258,10 @@ async function apriDistinta(evento) {
 
   try {
     stato.distinta = await chiama("importa_distinta", { contenuto_base64: btoa(binario) });
+    window.azzeraWebcamRicezione?.();
+    stato.ultimaRicezione = null;
+    $("#conferma-ricezione").disabled = true;
+    $("#esporta-riscontro").disabled = true;
     aggiornaWorkflowBar();
   } catch (errore) {
     // I tre errori restano tre: servono tre azioni diverse — chiedere la
@@ -2146,6 +2300,9 @@ async function apriDistinta(evento) {
 
   $("#pannello-ricezione").classList.remove("pannello--nascosto");
   disponiPuntiIn("#arrivo-punti", distinta.attesi);
+  // La checklist dei campioni attesi, per paziente: con l'import da file non
+  // era mai mostrata, e invece e' il riferimento per l'apertura della scatola.
+  dipingiChecklistAtteso(distinta.contenitori || [], distinta.riconciliazione?.missing || null);
   $("#arrivo-conteggio").textContent = `— / ${distinta.attesi}`;
   $("#ricezione-esito").textContent = "Appoggia la scatola chiusa sulle antenne e leggi.";
   $("#leggi-volume").disabled = false;
@@ -2172,13 +2329,17 @@ function disponiPuntiIn(selettore, quanti) {
 
 async function leggiVolume() {
   stato.occupato = true;
+  stato.ultimaRicezione = null;
+  $("#conferma-ricezione").disabled = true;
   $("#leggi-volume").disabled = true;
   $("#volume-arrivo").dataset.stato = "lettura";
   $("#verdetto-arrivo").dataset.esito = "lettura";
   dipingiStatoLettore("lettura del volume", "attivo");
   try {
-    const esito = await chiama("leggi_volume");
+    const esito = await chiama("leggi_volume", { inbound_id: stato.distinta?.inbound_id ?? null });
     dipingiRicezione(esito);
+    aggiornaWorkflowBar();
+    await window.aggiornaArchivioRicezione?.();
   } catch (errore) {
     $("#ricezione-esito").textContent = errore.message;
     $("#verdetto-arrivo").dataset.esito = "incompleto";
@@ -2204,9 +2365,14 @@ function dipingiRicezione(esito) {
   }
 
   const completo = conciliazione.ok;
+  if (stato.distinta) {
+    stato.distinta.stato = "open";
+    stato.distinta.confermata = null;
+  }
+  $("#esporta-riscontro").disabled = true;
   stato.ultimaRicezione = conciliazione;
   $("#campo-motivo-ricezione").hidden = completo;
-  $("#conferma-ricezione").disabled = false;
+  $("#conferma-ricezione").disabled = Boolean(esito.solo_qr);
   $("#arrivo-conteggio").textContent = `${conciliazione.arrivati} / ${conciliazione.attesi}`;
   $("#verdetto-arrivo").dataset.esito = completo ? "completo" : "incompleto";
   $("#volume-arrivo").dataset.stato = completo ? "completo" : "incompleto";
@@ -2231,6 +2397,8 @@ function dipingiRicezione(esito) {
       ]
         .filter(Boolean)
         .join(", ") + ".";
+  if (esito.solo_qr) $("#ricezione-esito").textContent +=
+    " Confronto con il foglio QR. Per registrare la ricezione ed esportare il verbale, importa la distinta cifrata della spedizione.";
 
   const dettagli = $("#arrivo-dettagli");
   dettagli.innerHTML = "";
@@ -2252,6 +2420,13 @@ function dipingiRicezione(esito) {
     "#arrivo-inattesi-elenco",
     (conciliazione.inattesi || []).map((epc) => ({ epc, etichetta: "?", paziente: "sconosciuto" }))
   );
+
+  // Ogni riga della checklist prende il suo esito: arrivato o mancante.
+  if (stato.distinta?.contenitori?.length) {
+    dipingiChecklistAtteso(stato.distinta.contenitori, conciliazione.mancanti || []);
+  } else if (stato.distintaQr?.righe?.length) {
+    dipingiChecklistAtteso(stato.distintaQr.righe, conciliazione.mancanti || []);
+  }
 
   const corpo = $("#tabella-letti").querySelector("tbody");
   corpo.innerHTML = "";
@@ -2471,6 +2646,7 @@ async function scaricaTransito() {
 async function confermaRicezione() {
   try {
     const risposta = await chiama("conferma_ricezione", {
+      inbound_id: stato.distinta?.inbound_id ?? null,
       motivo_non_conformita: $("#motivo-ricezione").value.trim(),
     });
     stato.distinta = risposta;
@@ -2480,6 +2656,7 @@ async function confermaRicezione() {
     // scatola mai controllata sarebbe peggio di nessun verbale.
     $("#esporta-riscontro").disabled = false;
     aggiornaWorkflowBar();
+    await window.aggiornaArchivioRicezione?.();
     avvisa("Ricezione registrata nella catena di custodia", "ok", 9000);
     avvisa(
       "Esporta il verbale e mandalo al mittente: senza, per loro questa scatola " +
@@ -2493,9 +2670,19 @@ async function confermaRicezione() {
   }
 }
 
-function ripristinaRicezione(distinta) {
+function ripristinaRicezione(distinta, daQr = false) {
   if (!distinta?.inbound_id) return;
+  $("#visivo-ricevuta-foto").replaceChildren();
+  if (!daQr) window.azzeraWebcamRicezione?.();
   stato.distinta = distinta;
+  stato.ultimaRicezione = null;
+  $("#conferma-ricezione").disabled = true;
+  $("#motivo-ricezione").value = "";
+  $("#ricezione-esito").textContent = "Distinta selezionata. Leggere il contenuto del collo.";
+  $("#arrivo-conteggio").textContent = `— / ${distinta.attesi}`;
+  $("#arrivo-mancanti").hidden = true;
+  $("#arrivo-inattesi").hidden = true;
+  $("#tabella-letti tbody").replaceChildren();
   // Una ricezione già confermata prima di un riavvio ha ancora il suo verbale
   // da mandare: il pulsante deve tornare disponibile da solo.
   $("#esporta-riscontro").disabled = distinta.stato !== "received";
@@ -2524,7 +2711,8 @@ function ripristinaRicezione(distinta) {
   }
   $("#pannello-ricezione").classList.remove("pannello--nascosto");
   disponiPuntiIn("#arrivo-punti", distinta.attesi);
-  $("#leggi-volume").disabled = distinta.stato === "received";
+  dipingiChecklistAtteso(distinta.contenitori || [], distinta.riconciliazione?.missing || null);
+  $("#leggi-volume").disabled = false;
   const conciliazione = distinta.riconciliazione;
   if (conciliazione) {
     const arrivati = conciliazione.arrived?.length || 0;
@@ -2534,7 +2722,7 @@ function ripristinaRicezione(distinta) {
       ? "Ultimo confronto conforme, salvato nell'archivio."
       : "Ultimo confronto non conforme, salvato nell'archivio.";
     $("#campo-motivo-ricezione").hidden = conciliazione.ok;
-    $("#conferma-ricezione").disabled = distinta.stato === "received";
+    $("#conferma-ricezione").disabled = distinta.stato === "received" || !distinta.lettura_valida;
   }
 }
 
@@ -2554,6 +2742,100 @@ function dipingiElencoArrivo(contenitoreSel, elencoSel, voci) {
     riga.append(etichetta, paziente, epc);
     elenco.append(riga);
   }
+}
+
+/** Il materiale viaggia come codice nella distinta cifrata e come nome gia'
+ *  stampato nel QR: si risolve nel codebook quando si puo', altrimenti si
+ *  mostra com'e' — un nome leggibile vale piu' di un codice esatto. */
+function nomeMateriale(valore) {
+  if (!valore) return "";
+  const voce = stato.descrizione?.codebook?.materiali?.find((x) => x.codice === valore);
+  return voce?.nome || valore;
+}
+
+/* -- La checklist degli attesi ----------------------------------------------
+   Un gruppo per paziente, una riga per contenitore. Lo stato parte da
+   «in attesa» e si decide solo dopo una lettura vera della scatola: arrivato
+   o mancante. Vale sia per la distinta da file (contenitori con codici) sia
+   per quella ricostruita dal QR (righe con nomi): i due formati vengono
+   normalizzati qui, invece di avere due elenchi quasi uguali. */
+function dipingiChecklistAtteso(contenitori, mancanti) {
+  const pannello = $("#contenitore-atteso");
+  pannello.hidden = contenitori.length === 0;
+  const elenco = $("#elenco-atteso");
+  elenco.innerHTML = "";
+  if (!contenitori.length) return;
+
+  // Prima di qualunque lettura `mancanti` e' null: nessuna riga ha un esito.
+  const persi = mancanti ? new Set(mancanti.map((epc) => String(epc).toUpperCase())) : null;
+
+  // Raggruppa per paziente mantenendo l'ordine della distinta: chi apre la
+  // scatola confronta i vasetti persona per persona, non per EPC.
+  const gruppi = new Map();
+  for (const voce of contenitori) {
+    const paziente =
+      voce.paziente || [voce.cognome, voce.nome].filter(Boolean).join(" ") || "Paziente senza nome";
+    const chiave = `${paziente}|${voce.codice_fiscale || ""}|${voce.accettazione || ""}`;
+    if (!gruppi.has(chiave)) {
+      gruppi.set(chiave, {
+        paziente,
+        codice_fiscale: voce.codice_fiscale || "",
+        accettazione: voce.accettazione || "",
+        righe: [],
+      });
+    }
+    gruppi.get(chiave).righe.push(voce);
+  }
+
+  let arrivati = 0;
+  for (const gruppo of gruppi.values()) {
+    const sezione = document.createElement("section");
+    sezione.className = "checklist__paziente";
+    const testa = document.createElement("header");
+    testa.className = "checklist__testa";
+    const nome = document.createElement("b");
+    nome.textContent = gruppo.paziente;
+    const dettagli = document.createElement("span");
+    dettagli.className = "tenue";
+    dettagli.textContent = [
+      gruppo.codice_fiscale || "codice fiscale non indicato",
+      gruppo.accettazione ? `accettazione ${gruppo.accettazione}` : "",
+    ]
+      .filter(Boolean)
+      .join(" · ");
+    testa.append(nome, dettagli);
+
+    const lista = document.createElement("ul");
+    lista.className = "checklist__righe";
+    for (const voce of gruppo.righe) {
+      const epc = String(voce.epc || "").toUpperCase();
+      const esito = persi === null ? "attesa" : persi.has(epc) ? "mancante" : "presente";
+      if (esito === "presente") arrivati += 1;
+      const riga = document.createElement("li");
+      riga.className = `checklist__riga checklist__riga--${esito}`;
+      const etichetta = document.createElement("b");
+      etichetta.textContent = voce.etichetta || "?";
+      const campione = document.createElement("span");
+      campione.textContent = nomeMateriale(voce.materiale) || voce.descrizione || "";
+      const epcNodo = document.createElement("span");
+      epcNodo.className = "hex tenue";
+      epcNodo.textContent = voce.epc || "";
+      const pastiglia = document.createElement("span");
+      pastiglia.className = `checklist__stato checklist__stato--${esito}`;
+      pastiglia.textContent =
+        esito === "attesa" ? "In attesa" : esito === "presente" ? "✓ Arrivato" : "✗ Mancante";
+      riga.append(etichetta, campione, epcNodo, pastiglia);
+      lista.append(riga);
+    }
+    sezione.append(testa, lista);
+    elenco.append(sezione);
+  }
+
+  $("#atteso-titolo").textContent =
+    persi === null
+      ? "Campioni attesi"
+      : `Campioni attesi — ${arrivati} ${plurale(arrivati, "arrivato", "arrivati")}, ` +
+        `${persi.size} ${plurale(persi.size, "mancante", "mancanti")}`;
 }
 
 /** Le avvertenze arrivano dai tag, letti attraverso la scatola chiusa: e'
@@ -3136,6 +3418,7 @@ async function rilevaHardware() {
     if (stato.descrizione) stato.descrizione.hardware = hardware;
     dipingiHardware(hardware);
     adattaAllHardware(hardware);
+    await caricaAntenne();
   } catch (errore) {
     $("#esito-hardware").textContent = errore.message;
   } finally {
@@ -3150,9 +3433,7 @@ function dipingiHardware(hardware) {
   avvisi.innerHTML = "";
   if (!hardware || !hardware.rilevato) {
     $("#esito-hardware").textContent =
-      hardware?.motivo === "mai collegato"
-        ? "Non ancora rilevato: si fa da solo appena ci si collega al lettore."
-        : `Censimento non riuscito: ${hardware?.motivo || "motivo sconosciuto"}`;
+      `Hardware da rilevare: ${hardware?.motivo || "nessuna misura"}. Usa Rileva hardware quando il lettore è collegato.`;
     return;
   }
   $("#esito-hardware").textContent = "";
@@ -3162,12 +3443,16 @@ function dipingiHardware(hardware) {
   );
   const righe = [
     ["modulo", hardware.modulo || "—"],
+    ["firmware", versioneFirmware(hardware.firmware)],
     ["trasporto", hardware.trasporto || "—"],
     ["numero di serie", hardware.seriale || "—"],
     ["temperatura", hardware.temperatura_c == null ? "non disponibile" : `${hardware.temperatura_c} °C`],
     ["banda in uso", hardware.banda_configurata_nome || "—"],
     ["bande accettate", (hardware.bande_nomi || []).join(" · ") || "—"],
+    ["porte antenna", porteAntenna(hardware)],
     ["antenne collegate", (hardware.antenne_collegate || []).join(", ") || "nessuna"],
+    ["in lettura", (hardware.antenne_lettura || []).join(", ") || "—"],
+    ["in scrittura", (hardware.antenne_scrittura || []).join(", ") || "—"],
     ["antenne in configurazione", (hardware.antenne_configurate || []).join(", ") || "—"],
   ];
   for (const [chiave, valore] of righe) {
@@ -3191,6 +3476,15 @@ function dipingiHardware(hardware) {
     dire.push(
       `${plurale(mancanti.length, "L'antenna", "Le antenne")} ${mancanti.join(", ")} ` +
         `${plurale(mancanti.length, "è in configurazione ma non risulta collegata", "sono in configurazione ma non risultano collegate")}.`
+    );
+  }
+  const orfane = hardware.antenne_ruoli_scollegati || [];
+  if (orfane.length) {
+    dire.push(
+      `${plurale(orfane.length, "L'antenna", "Le antenne")} ${orfane.join(", ")} ` +
+        `${plurale(orfane.length, "ha un ruolo assegnato", "hanno un ruolo assegnato")} ` +
+        "ma il modulo non vede niente attaccato: leggere o scrivere lì non " +
+        "funzionerà. Si corregge in Impostazioni, «Antenne — chi legge e chi scrive»."
     );
   }
   for (const [chiave, motivo] of Object.entries(hardware.non_disponibili || {})) {
@@ -3263,9 +3557,9 @@ function dipingiSalute(esito) {
   elenco.innerHTML = "";
   const firmware = dati.firmware_info || {};
   const righe = [
-    ["trasporto", (dati.transport || {}).description || JSON.stringify(dati.transport || {})],
+    ["trasporto", descrizioneTrasporto(dati.transport)],
     ["avviato", dati.booted ? "sì" : "no — manca il boot del firmware"],
-    ["firmware", firmware.version || firmware.model || "—"],
+    ["firmware", firmware.firmware_version || firmware.version || firmware.model || "—"],
     ["antenne collegate", collegate.join(", ") || "nessuna"],
     ["antenne in configurazione", [...new Set(configurate)].join(", ") || "—"],
     ["comandi inviati", contatori.commands_sent ?? "—"],
@@ -3384,7 +3678,9 @@ async function profila() {
   try {
     const esito = await chiama("profila_tag");
     const profilo = esito.profilo;
-    $("#esito-profilo").textContent = profilo.suitable ? "Tag adatto." : "Tag non adatto.";
+    $("#esito-profilo").textContent = profilo.ok
+      ? (profilo.suitable ? "Misura completata: USER compatibile con il payload cifrato." : "Misura completata: utilizzabile in solo EPC se la banca EPC è scrivibile.")
+      : `Misura non completata: ${profilo.error || "riprovare su un solo tag"}`;
 
     const dati = $("#profilo-dati");
     dati.innerHTML = "";
@@ -3428,58 +3724,13 @@ async function profila() {
  *  nessuno saprebbe più perché. */
 function dipingiProposta(proposta, profilo) {
   const riquadro = $("#profilo-proposta");
-  stato.proposta = null;
-  if (!proposta || !proposta.cambia) {
-    riquadro.hidden = true;
-    return;
-  }
+  riquadro.hidden = !profilo?.ok;
+  if (!profilo?.ok) { stato.proposta = null; return; }
   stato.proposta = { ...proposta, profilo };
-  riquadro.hidden = false;
-  const ridotta = proposta.modalita_scrittura === "solo_epc";
-  riquadro.dataset.tipo = ridotta ? "ridotta" : "normale";
-  $("#proposta-titolo").textContent = ridotta
-    ? "Questo tag non può portare il campione"
-    : "Cosa cambierebbe in configurazione";
-
-  const dati = $("#proposta-dati");
-  dati.innerHTML = "";
-  const righe = [];
-  if (proposta.modalita_scrittura !== proposta.modalita_attuale) {
-    righe.push([
-      "modalità di scrittura",
-      `${nomeModalita(proposta.modalita_attuale)} → ${nomeModalita(proposta.modalita_scrittura)}`,
-    ]);
-  }
-  if (proposta.user_memory_bytes !== proposta.user_memory_attuale) {
-    righe.push([
-      "USER memory",
-      `${proposta.user_memory_attuale} → ${proposta.user_memory_bytes} byte` +
-        (proposta.in_aumento ? " (in aumento: va deciso)" : ""),
-    ]);
-  }
-  for (const [chiave, valore] of righe) {
-    const dt = document.createElement("dt");
-    dt.textContent = chiave;
-    const dd = document.createElement("dd");
-    dd.textContent = valore;
-    dati.append(dt, dd);
-  }
-
-  const motivi = $("#proposta-motivi");
-  motivi.innerHTML = "";
-  for (const testo of proposta.motivi || []) {
-    const li = document.createElement("li");
-    li.textContent = testo;
-    motivi.append(li);
-  }
-  if (proposta.in_aumento) {
-    const li = document.createElement("li");
-    li.textContent =
-      "La soglia sale: deve reggere il tag peggiore del lotto, quindi un tag " +
-      "più piccolo già scritto diventerebbe illeggibile. Alzarla ha senso solo " +
-      "se questo è il primo tag di una serie nuova.";
-    motivi.append(li);
-  }
+  $("#proposta-titolo").textContent = "Caratteristiche del modello esaminato";
+  $("#proposta-dati").textContent = `USER misurata: ${profilo.user_bytes} byte.`;
+  $("#proposta-motivi").textContent = "Puoi usare questa misura nel profilo oppure impostare manualmente i dati del modello che intendi acquistare.";
+  $("#applica-profilo").textContent = "Approva questa misura";
   $("#esito-proposta").textContent = "";
 }
 
@@ -3488,51 +3739,14 @@ function nomeModalita(modalita) {
 }
 
 async function applicaProfilo() {
-  const proposta = stato.proposta;
-  if (!proposta) return;
-  const ridotta = proposta.modalita_scrittura === "solo_epc";
-  if (ridotta) {
-    const conferma = await domanda(
-      "Passare alla scrittura del solo EPC?",
-      `Su questi tag il campione cifrato non ci sta. In modalità
-       <strong>solo EPC</strong> il contenitore resta identificato dal suo
-       pseudonimo, e cosa contiene lo dice <strong>la distinta stampata</strong>.
-       <br><br>Si perde il legame fra campione e numero di serie del chip, cioè
-       la difesa contro un tag copiato. Restano il registro degli EPC, che è
-       perpetuo, e la firma sulla distinta.
-       <br><br>La scelta resta scritta in configurazione finché non la si cambia.`,
-      "Sì, lavora in solo EPC"
-    );
-    if (!conferma) return;
-  }
+  if (!stato.proposta?.profilo?.ok) return;
   try {
-    const esito = await chiama("applica_profilo", {
-      modalita_scrittura: proposta.modalita_scrittura,
-      user_memory_bytes: proposta.user_memory_bytes,
-      tid_serializzato: Boolean(proposta.profilo?.tid?.serialized),
-      chip: proposta.profilo?.tid?.manufacturer || "",
-      epc: proposta.profilo?.epc || "",
-      // Alzare la soglia renderebbe illeggibile un tag più piccolo già
-      // scritto: si fa solo se l'operatore ha appena confermato di volerlo.
-      forza: Boolean(proposta.in_aumento),
-    });
+    const esito = await chiama("applica_profilo", {});
     $("#esito-proposta").textContent = esito.motivo;
-    if (stato.descrizione) stato.descrizione.modalita_scrittura = esito.modalita_scrittura;
-    dipingiModalita(esito.modalita_scrittura);
-    // Il riquadro si chiude solo se qualcosa è davvero cambiato: sparire dopo
-    // un «non ho scritto niente» farebbe credere il contrario.
-    if (esito.scritto) $("#profilo-proposta").hidden = true;
-    avvisa(
-      esito.scritto
-        ? `Configurazione aggiornata: ${nomeModalita(esito.modalita_scrittura)}, ` +
-            `${esito.user_memory_bytes} byte di USER memory.`
-        : `Niente da cambiare: ${esito.motivo}`,
-      esito.scritto ? "ok" : "attesa",
-      12000
-    );
-  } catch (errore) {
-    $("#esito-proposta").textContent = errore.message;
-  }
+    await caricaImpostazioni();
+    stato.descrizione = await chiama("descrivi");
+    dipingiModalita(stato.descrizione.modalita_scrittura);
+  } catch (errore) { $("#esito-proposta").textContent = errore.message; }
 }
 
 /** La fascia che ricorda che si sta lavorando in modalità ridotta. Non deve
@@ -3543,9 +3757,7 @@ function dipingiModalita(modalita) {
   fascia.hidden = !ridotta;
   if (ridotta) {
     fascia.textContent =
-      "Modalità ridotta: sui tag si scrive solo l'EPC. I dati del paziente " +
-      "viaggiano sulla distinta stampata, e il legame anti-clonazione con il " +
-      "chip non c'è.";
+      "Solo EPC: il codice identifica il contenitore nel database. Non è richiesta USER memory; i dati del paziente restano nel sistema e nella distinta.";
   }
 }
 
@@ -3740,6 +3952,36 @@ async function aggiornaRegistro() {
    ==========================================================================
    L'archivio conserva ISO 8601, che è giusto per un file. A schermo no: in un
    laboratorio italiano «2026-08-16T14:32» si legge male e si sbaglia. */
+// Il trasporto arriva come stringa dal lettore vero («serial COM5@115200») e
+// puo' arrivare come oggetto da altri backend. Mostrarne una forma sola
+// significa stampare virgolette e graffe all'operatore, o niente.
+// Il lettore vero si presenta con `firmware_version` e `firmware_date`; il
+// banco con `version`. Mostrare la versione **e** la data serve a dire quale
+// esemplare ha prodotto una misura, mesi dopo averla presa.
+function versioneFirmware(firmware) {
+  if (!firmware) return "—";
+  const versione = firmware.firmware_version || firmware.version || firmware.model || "";
+  const quando = firmware.firmware_date || "";
+  if (versione && quando) return `${versione} (${quando})`;
+  return versione || quando || "—";
+}
+
+// «Quante se ne possono installare» e «quante ce ne sono» sono due domande
+// diverse, e il modulo risponde a tutt'e due nello stesso frame.
+function porteAntenna(hardware) {
+  const porte = hardware.antenne_porte || [];
+  if (!porte.length) return hardware.antenne_massime ? String(hardware.antenne_massime) : "—";
+  const libere = porte.filter((p) => !p.collegata).map((p) => p.id);
+  if (!libere.length) return `${porte.length}, tutte popolate`;
+  return `${porte.length}, libere: ${libere.join(", ")}`;
+}
+
+function descrizioneTrasporto(valore) {
+  if (!valore) return "—";
+  if (typeof valore === "string") return valore;
+  return valore.description || JSON.stringify(valore);
+}
+
 function dataOra(iso) {
   if (!iso) return "—";
   const quando = new Date(iso);
@@ -3961,6 +4203,16 @@ function costruisciAccettazione(accettazione) {
       : "supervisione non registrata";
 
     riga.append(stato, dove, pezzi, inviata, chi);
+    const foto = document.createElement("button");
+    foto.type = "button"; foto.className = "bottone"; foto.textContent = "Prova visiva";
+    const fotoArea = document.createElement("div");
+    foto.addEventListener("click", async () => {
+      try {
+        const esito = await chiama("controllo_visivo", {azione:"archivio", shipment_id:spedizione.shipment_id});
+        window.mostraProvaVisiva?.(esito.prova, fotoArea);
+      } catch(e) { avvisa(e.message, "errore"); }
+    });
+    riga.append(foto, fotoArea);
     if (spedizione.sigillo_dettaglio) {
       const dettaglio = document.createElement("span");
       dettaglio.className = "tenue";
@@ -4219,6 +4471,7 @@ async function caricaImpostazioni() {
     return;
   }
   stato.impostazioni = dati;
+  dipingiOperativita(dati.operativita);
 
   const radio = $$('input[name="trasporto"]').find((r) => r.value === dati.trasporto_attivo);
   if (radio) radio.checked = true;
@@ -4271,8 +4524,155 @@ async function caricaImpostazioni() {
   }
 
   caricaAnagrafiche();
+  await caricaAntenne();
   await caricaPostazione();
   await aggiornaPorte();
+}
+
+/* Quali porte leggono e quali scrivono.
+
+   Le porte le dichiara il modulo, non l'interfaccia: su un lettore a 4 vie con
+   tre antenne attaccate la quarta riga c'è ed è vuota, e si vede che è vuota.
+   Assegnarle un ruolo è il guasto che si scoprirebbe col tag in mano. */
+async function caricaAntenne() {
+  let dati;
+  try {
+    dati = await chiama("antenne_ruoli");
+  } catch (errore) {
+    $("#antenne-nota").textContent = errore.message;
+    return;
+  }
+  stato.antenne = dati;
+  const corpo = $("#tabella-antenne tbody");
+  corpo.innerHTML = "";
+
+  for (const porta of dati.porte) {
+    const riga = document.createElement("tr");
+
+    const numero = document.createElement("td");
+    numero.textContent = porta.id;
+    riga.append(numero);
+
+    const stato_ = document.createElement("td");
+    if (porta.collegata === null || porta.collegata === undefined) {
+      stato_.textContent = "non ancora rilevata";
+      stato_.className = "tenue";
+    } else if (porta.collegata) {
+      stato_.textContent = "antenna collegata";
+    } else {
+      stato_.textContent = "porta libera";
+      stato_.className = "tenue";
+    }
+    riga.append(stato_);
+
+    for (const ruolo of ["lettura", "scrittura"]) {
+      const cella = document.createElement("td");
+      const spunta = document.createElement("input");
+      spunta.type = "checkbox";
+      spunta.checked = Boolean(porta[ruolo]);
+      spunta.dataset.ruolo = ruolo;
+      spunta.dataset.antenna = String(porta.id);
+      // Una porta che il modulo dichiara vuota non si assegna: è il modulo
+      // ad averlo detto, non una regola nostra.
+      spunta.disabled = false;
+      spunta.setAttribute(
+        "aria-label",
+        `antenna ${porta.id} in ${ruolo}`
+      );
+      cella.append(spunta);
+      riga.append(cella);
+    }
+
+    const potenze = document.createElement("td");
+    potenze.className = "tenue";
+    potenze.textContent = `${porta.potenza_lettura} / ${porta.potenza_scrittura} dBm`;
+    riga.append(potenze);
+
+    corpo.append(riga);
+  }
+
+  const libere = dati.porte.filter((p) => p.collegata === false).length;
+  if (!dati.rilevato) {
+    $("#antenne-nota").textContent =
+      "Rilevamento non eseguito: usa Rileva hardware per conoscere le porte. " +
+      "I ruoli si possono comunque impostare manualmente.";
+  } else {
+    $("#antenne-nota").textContent =
+      `Il modulo dichiara ${dati.massime} porte` +
+      (libere
+        ? `, di cui ${libere} libere: si possono installare altre ${libere} antenne.`
+        : ": tutte popolate.");
+  }
+}
+
+function dipingiOperativita(dati) {
+  if (!dati) return;
+  stato.descrizione.operativita = dati;
+  stato.radioConfigurata = dati.radio_configurata;
+  $("#station-mode").value = dati.station_mode;
+  $("#prototype-mode").checked = dati.prototype_mode;
+  $("#modo-prototipo").hidden = !dati.prototype_mode;
+  $("#tag-user-bytes").value = dati.user_memory_bytes;
+  $("#tag-profile-name").value = dati.active_tag_profile || "";
+  for (const [chiave, valore] of Object.entries(dati.memorie)) {
+    const box = document.getElementById(`memory-${chiave.replace("_", "-")}`);
+    if (box) box.checked = valore;
+  }
+  const profili = $("#tag-profiles");
+  profili.replaceChildren(new Option("Configurazione corrente", ""));
+  for (const nome of Object.keys(dati.tag_profiles || {})) profili.add(new Option(nome, nome));
+  profili.value = dati.active_tag_profile || "";
+  for (const nome of ["accettazione", "sigillo", "ricezione"]) {
+    const vietata = dati.station_mode === "ricezione" ? nome !== "ricezione" :
+      dati.station_mode === "spedizione" && nome === "ricezione";
+    const voce = $(`.rail__voce[data-schermata="${nome}"]`);
+    voce.hidden = vietata;
+    if (vietata && schermataAttiva() === nome) mostra(dati.station_mode === "ricezione" ? "ricezione" : "accettazione");
+  }
+  aggiornaComandoScrittura();
+}
+
+async function salvaOperativita() {
+  const memorie = {};
+  for (const banca of ["epc", "tid", "user"]) for (const azione of ["read", "write"]) {
+    memorie[`${azione}_${banca}`] = document.getElementById(`memory-${azione}-${banca}`).checked;
+  }
+  try {
+    const risposta = await chiama("salva_operativita", {
+      station_mode: $("#station-mode").value, prototype_mode: $("#prototype-mode").checked,
+      memorie, user_memory_bytes: Number($("#tag-user-bytes").value),
+      profile_name: $("#tag-profile-name").value.trim(),
+    });
+    dipingiOperativita(risposta);
+    $("#esito-operativita").textContent = "Salvato e operativo; disponibile anche dopo il riavvio.";
+    stato.descrizione = await chiama("descrivi");
+    dipingiModalita(stato.descrizione.modalita_scrittura);
+  } catch (errore) { $("#esito-operativita").textContent = errore.message; }
+}
+
+async function salvaAntenne() {
+  const scelte = (ruolo) =>
+    $$(`#tabella-antenne input[data-ruolo="${ruolo}"]`)
+      .filter((s) => s.checked)
+      .map((s) => Number(s.dataset.antenna));
+
+  const esito = $("#esito-antenne");
+  esito.textContent = "…";
+  try {
+    const risposta = await chiama("salva_antenne", {
+      lettura: scelte("lettura"),
+      scrittura: scelte("scrittura"),
+    });
+    stato.radioConfigurata = Boolean(risposta.configurazione_ok);
+    aggiornaComandoScrittura();
+    esito.textContent =
+      `lettura ${risposta.lettura.join(", ")} · scrittura ${risposta.scrittura.join(", ")}` +
+      (risposta.salvato ? " — salvato" : " — valido fino alla chiusura");
+    await caricaAntenne();
+  } catch (errore) {
+    esito.textContent = "";
+    avvisa(errore.message, "errore", 9000);
+  }
 }
 
 /* Da dove si comanda, e da dove ci si può collegare. */
@@ -4414,10 +4814,11 @@ async function applicaCollegamento() {
   dipingiStatoLettore("collegamento…", "attivo");
   try {
     const risposta = await chiama("applica_collegamento", datiCollegamento());
+    stato.radioConfigurata = Boolean(risposta.configurazione_ok);
     const versione = risposta.avvio?.data?.firmware_info ?? risposta.avvio?.data?.version ?? "";
     stato.collegato = true;
     $("#collega").textContent = "Scollega";
-    dipingiStatoLettore("pronto", "pronto");
+    dipingiStatoLettore(stato.radioConfigurata ? "pronto" : "da configurare", stato.radioConfigurata ? "pronto" : "attesa");
     esito(
       "#esito-collegamento",
       versione
@@ -4426,6 +4827,9 @@ async function applicaCollegamento() {
       "ok"
     );
     avvisa("Lettore collegato con i nuovi parametri", "ok");
+    if (!risposta.configurazione_ok) {
+      esito("#esito-collegamento", risposta.configurazione_errore || "Radio da configurare", "errore");
+    }
     await caricaImpostazioni();
   } catch (errore) {
     stato.collegato = false;
@@ -4525,6 +4929,33 @@ function domanda(titolo, corpoHtml, testoOk = "Conferma") {
   });
 }
 
+/** Come domanda(), ma chiede anche un testo: risolve il testo scritto, o null
+ *  se si annulla. Il motivo di un annullamento non e' un si/no, e un prompt()
+ *  nativo stonerebbe con il resto dei dialoghi. */
+function chiediTesto(titolo, corpoHtml, valoreIniziale = "", testoOk = "Conferma") {
+  return new Promise((risolvi) => {
+    const dialogo = $("#dialogo");
+    $("#dialogo-titolo").textContent = titolo;
+    const corpo = $("#dialogo-corpo");
+    corpo.innerHTML = corpoHtml;
+    const involucro = document.createElement("label");
+    involucro.className = "campo dialogo__campo";
+    const campo = document.createElement("textarea");
+    campo.rows = 3;
+    campo.value = valoreIniziale;
+    involucro.append(campo);
+    corpo.append(involucro);
+    $("#dialogo-ok").textContent = testoOk;
+    dialogo.addEventListener(
+      "close",
+      () => risolvi(dialogo.returnValue === "conferma" ? campo.value.trim() : null),
+      { once: true }
+    );
+    dialogo.showModal();
+    campo.focus();
+  });
+}
+
 /* ==========================================================================
    Flusso eventi
    ========================================================================== */
@@ -4539,6 +4970,7 @@ function ascoltaEventi() {
   // Il conteggio sale passata per passata, mentre la lettura e' ancora in
   // corso: e' il momento in cui l'operatore confronta con quello che ha visto
   // mettere nella scatola.
+  flusso.addEventListener("visivo", messaggio => window.aggiornaRecuperoVisivo?.(JSON.parse(messaggio.data)));
   flusso.addEventListener("sigillo", (messaggio) => {
     const dati = JSON.parse(messaggio.data).data;
     if (dati.fase !== "passata") return;
@@ -4597,6 +5029,39 @@ function ascoltaEventi() {
    Avvio
    ========================================================================== */
 async function avvia() {
+  $("#salva-operativita").addEventListener("click", salvaOperativita);
+  $("#prossimo-contenitore").addEventListener("click", () => {
+    avanza(); Scena.stato("attesa", "Appoggia un solo tag e premi Scrivi"); aggiornaComandoScrittura();
+  });
+  $("#applica-radio").addEventListener("click", async () => {
+    try {
+      const r = await chiama("applica_radio");
+      stato.radioConfigurata = r.configurazione_ok;
+      dipingiStatoLettore(r.configurazione_ok ? "pronto" : "da configurare", r.configurazione_ok ? "pronto" : "attesa");
+      $("#esito-collegamento").textContent = r.configurazione_ok ? "Configurazione applicata" : r.configurazione_errore;
+      aggiornaComandoScrittura();
+    } catch (e) { $("#esito-collegamento").textContent = e.message; }
+  });
+  $("#tag-profiles").addEventListener("change", () => {
+    const nome = $("#tag-profiles").value;
+    const p = stato.descrizione?.operativita?.tag_profiles?.[nome];
+    if (!p) return;
+    $("#tag-profile-name").value = nome;
+    $("#tag-user-bytes").value = p.user_memory_bytes;
+    for (const [k, v] of Object.entries(p.memorie)) {
+      const box = document.getElementById(`memory-${k.replace("_", "-")}`);
+      if (box) box.checked = v;
+    }
+    $("#esito-operativita").textContent = "Profilo caricato: salvare per applicarlo.";
+  });
+  for (const id of ["memory-read-user", "memory-write-user"]) {
+    document.getElementById(id).addEventListener("change", () => {
+      if ($("#memory-read-user").checked || $("#memory-write-user").checked) $("#memory-read-tid").checked = true;
+    });
+  }
+  // Gli strumenti di riconoscimento sono accanto alla configurazione che informano.
+  $("#config-tag-rilevamento").append($("#profila").closest(".pannello"));
+  $("#tabella-antenne").closest(".pannello").before($("#rileva-hardware").closest(".pannello"));
   applicaTema(localStorage.getItem("tema") || "sistema");
   // Prima di ogni altra cosa: decide le misure di tutta l'interfaccia, e
   // cambiarle dopo che la pagina si e' disegnata si vedrebbe.
@@ -4615,8 +5080,11 @@ async function avvia() {
   $("#tema").addEventListener("click", alternaTema);
   $("#collega").addEventListener("click", () => (stato.collegato ? scollega() : collega()));
   $("#modulo-accettazione").addEventListener("submit", registra);
-  $("#scrivi").addEventListener("click", scrivi);
+  // Senza la lambda l'ascoltatore passerebbe l'evento del click come primo
+  // argomento, cioe' una deroga di riscrittura a ogni pressione del bottone.
+  $("#scrivi").addEventListener("click", () => scrivi());
   $("#salta").addEventListener("click", annullaContenitore);
+  $("#riscrivi").addEventListener("click", riscriviTag);
   $("#etichetta").addEventListener("click", () => mostraEtichetta(stato.ultimoContenitore));
   $("#dialogo-etichetta").addEventListener("close", stampaEtichetta);
   $("#aggiungi-reperto").addEventListener("click", aggiungiReperto);
@@ -4663,7 +5131,7 @@ async function avvia() {
   $("#conferma-invio").addEventListener("click", confermaInvio);
   $("#invia-pec").addEventListener("click", inviaDistintaPec);
   $("#aggiorna-pec").addEventListener("click", aggiornaRicevutePec);
-  $("#file-distinta").addEventListener("change", apriDistinta);
+  $("#file-distinta").addEventListener("change", (evento) => importaDistinteMultiple(evento));
   $("#leggi-volume").addEventListener("click", leggiVolume);
   $("#conferma-ricezione").addEventListener("click", confermaRicezione);
   $("#esporta-riscontro").addEventListener("click", esportaRiscontro);
@@ -4706,18 +5174,11 @@ async function avvia() {
     })
   );
   $("#sigilla").addEventListener("click", sigilla);
+  $("#verifica-contenuto").addEventListener("click", verificaContenuto);
+  setInterval(aggiornaPresenzaContenuto, 1000);
   $("#stampa-distinta").addEventListener("click", stampaDistinta);
   $("#foglio-stampa").addEventListener("click", () => window.print());
   $("#foglio-chiudi").addEventListener("click", () => ($("#foglio").hidden = true));
-  // Il lettore di codici a barre digita in fretta e chiude con Invio: qui
-  // significa «ho finito di leggere questo codice».
-  $("#scansione-qr").addEventListener("keydown", (evento) => {
-    if (evento.key !== "Enter") return;
-    evento.preventDefault();
-    const testo = evento.target.value;
-    evento.target.value = "";
-    leggiScansione(testo);
-  });
   $("#esporta").addEventListener("click", esportaDistinta);
   $("#interrompi").addEventListener("click", () =>
     fetch("/api/interrompi", {
@@ -4756,6 +5217,7 @@ async function avvia() {
   $("#applica-destinatari").addEventListener("click", () =>
     applicaAnagrafiche("destinatari", "#esito-destinatari")
   );
+  $("#salva-antenne").addEventListener("click", salvaAntenne);
   $("#aggiungi-operatore").addEventListener("click", () => aggiungiRiga("operatori"));
   $("#aggiungi-destinatario").addEventListener("click", () => aggiungiRiga("destinatari"));
   for (const [bottone, esitoSel] of [
@@ -4788,7 +5250,8 @@ async function avvia() {
   // Scorciatoie da banco: le mani dell'operatore sono spesso occupate, e i
   // guanti rendono il mouse scomodo.
   document.addEventListener("keydown", (evento) => {
-    if (evento.target.matches("input, select, textarea") || evento.ctrlKey || evento.altKey) return;
+    // Invio su un pulsante deve attivare quel pulsante, non la scrittura RF.
+    if (evento.target.closest("input, select, textarea, button, a, summary, [contenteditable='true']") || evento.ctrlKey || evento.altKey) return;
     if (evento.key === "Enter" && !$("#scrivi").disabled && schermataAttiva() === "accettazione") {
       evento.preventDefault();
       scrivi();
@@ -4813,6 +5276,7 @@ async function avvia() {
     if (stato.descrizione.diario?.interfaccia === false) Traccia.attiva = false;
     dipingiModalita(stato.descrizione.modalita_scrittura);
     stato.hardware = stato.descrizione.hardware || null;
+    dipingiOperativita(stato.descrizione.operativita);
     dipingiHardware(stato.hardware);
     adattaAllHardware(stato.hardware);
     dipingiTestata();
@@ -4831,6 +5295,7 @@ async function avvia() {
     stato.accettazione = ripresa.accettazione;
     stato.spedizione = ripresa.spedizione;
     stato.distinta = ripresa.ricezione;
+    await Giornata.avvia();
     dipingiAccettazione();
     dipingiSpedizione();
     ripristinaRicezione(stato.distinta);

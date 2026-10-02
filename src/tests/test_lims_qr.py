@@ -26,7 +26,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from lims import qr
-from lims.base45 import Base45Error, codifica as b45_codifica, decodifica as b45_decodifica
+from lims.base45 import Base45Error
+from lims.base45 import codifica as b45_codifica
+from lims.base45 import decodifica as b45_decodifica
 from lims.qr import Correzione, capacita, codifica, svg
 
 #: Le capienze pubblicate nella norma, per (versione, correzione):
@@ -174,7 +176,7 @@ def test_la_capienza_cresce_sempre_con_la_versione():
     scopre una riga di tabella spostata di un posto."""
     for correzione in Correzione:
         serie = [capacita(v, correzione, qr._MODO_BYTE) for v in range(1, 41)]
-        assert all(b > a for a, b in zip(serie, serie[1:])), correzione.name
+        assert all(b > a for a, b in zip(serie, serie[1:], strict=False)), correzione.name
 
 
 def test_piu_correzione_vuol_dire_meno_spazio():
@@ -183,7 +185,7 @@ def test_piu_correzione_vuol_dire_meno_spazio():
             capacita(versione, c, qr._MODO_BYTE)
             for c in (Correzione.L, Correzione.M, Correzione.Q, Correzione.H)
         ]
-        assert all(b < a for a, b in zip(capienze, capienze[1:])), versione
+        assert all(b < a for a, b in zip(capienze, capienze[1:], strict=False)), versione
 
 
 # ---------------------------------------------------------------------------

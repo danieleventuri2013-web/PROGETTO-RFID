@@ -175,11 +175,14 @@ def test_percorso_v2_blocca_la_partenza_fino_alla_consegna_e_si_importa() -> Non
                 mittente.shipment_id, ok=True, operator="TEST", record=sigillo
             )
             mittente.db.set_shipment_state(mittente.shipment_id, ShipmentState.SEALED)
+            prova_visiva = {"stato": "concordante", "foto_contenuto": {"jpeg": "FOTO_VISIVA_V2_PRIVATA"}}
+            mittente._visual_save(mittente.shipment_id, prova_visiva)
             mittente._pec_transport = lambda: _PecFinta()  # type: ignore[method-assign]
 
             stato = mittente.invia_distinta_pec()
             assert stato["consegna_pec"]["stato"] == "smtp_accepted"
             blob, _ = mittente.esporta_distinta()
+            assert b"FOTO_VISIVA_V2_PRIVATA" not in blob
             assert blob == bytes(mittente.db.outbound_manifest(mittente.shipment_id)["encrypted_blob"])
             try:
                 mittente.conferma_invio()
@@ -222,6 +225,7 @@ def test_percorso_v2_blocca_la_partenza_fino_alla_consegna_e_si_importa() -> Non
             assert importata["verifica_documento"]["ok"] is True
             assert importata["verifica_documento"]["mittente"] == "UNITA-A"
             assert importata["contenitori"][0]["paziente"] == "ROSSI MARIO"
+            prova = destinatario.foto_visiva_ricevuta({"inbound_id": destinatario.inbound_id})
+            assert prova["prova"] == prova_visiva
         finally:
             destinatario.chiudi()
-

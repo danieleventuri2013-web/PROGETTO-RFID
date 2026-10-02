@@ -1,8 +1,3 @@
-serial:
-  port: COM5
-  baudrate: 115200
-  timeout_s: 2.0
-  inter_byte_timeout_s: 0.1
 reader:
   region: 8
   boot_timeout_ms: 3000
@@ -19,8 +14,8 @@ antennas:
   write_power: 2000
 - id: 3
   role: floor_write_station
-  read_power: 2000
-  write_power: 2000
+  read_power: 2700
+  write_power: 2700
 geometry:
   antenna_hpbw_deg: 68
   antenna_gain_dbi: 8
@@ -120,20 +115,41 @@ lims:
   keyring: logs/lims_keys.json
   manifest_archive: logs/archivio_distinte
   manifest_retention_days: null
-  user_memory_bytes: 86
-  # Cosa si scrive sul tag: «payload» (pseudonimo + campione cifrato) oppure
-  # «solo_epc» per i chip senza USER memory utilizzabile. In «solo_epc» i dati
-  # del paziente viaggiano sulla distinta stampata e si perde il legame
-  # anti-clonazione fra campione e numero di serie del chip.
-  modalita_scrittura: payload
+  user_memory_bytes: 0
+  modalita_scrittura: solo_epc
+  station_mode: entrambe
+  prototype_mode: false
+  tag_memory:
+    read_epc: true
+    write_epc: true
+    write_tid: false
+    read_tid: true
+    read_user: false
+    write_user: false
   tag_misurato:
-    chip: 'Alien Technology, modello 0x821, TID serializzato'
-    tid_serializzato: true
-    minimo_byte: 86
-    ultimo_byte: 86
-    tag_provati: 1
-    ultimo_epc: '010001000000030102DA7942'
-    aggiornato: '2026-08-26T10:40:55'
+    ok: true
+    epc: E28011B0A503007B2852B3B2
+    user_words: 0
+    user_bytes: 0
+    user_capped: false
+    usable_payload_bytes: 0
+    tier: A
+    recommendation: 'il chip non ha USER memory: sul tag entra solo lo pseudonimo
+      EPC. Il requisito di far viaggiare i dati nel tag non e'' soddisfacibile con
+      questi tag, vanno sostituiti.'
+    suitable: false
+    reads_performed: 5
+    warnings: []
+    started_at: '2026-10-01T10:24:20+02:00'
+    finished_at: '2026-10-01T10:24:27+02:00'
+    tid:
+      hex: E28011B0200073B2429503D9
+      class_id: '0xE2'
+      mdid: '0x001'
+      tmn: '0x1B0'
+      xtid: true
+      manufacturer: Impinj
+      serialized: true
   write_antennas:
   - 3
   read_antennas:
@@ -189,3 +205,8 @@ diario:
 logging:
   dir: logs
   level: INFO
+serial:
+  port: COM5
+  baudrate: 115200
+  timeout_s: 2.0
+  inter_byte_timeout_s: 0.1

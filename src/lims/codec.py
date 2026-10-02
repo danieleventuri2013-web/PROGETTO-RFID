@@ -47,6 +47,7 @@ __all__ = [
     "MATERIALS",
     "PAYLOAD_FIXED_SIZE",
     "PAYLOAD_SCHEMA_V1",
+    "PAYLOAD_SCHEMA_V2",
     "SITES",
     "EpcInfo",
     "SpecimenFlags",
@@ -379,6 +380,7 @@ def epc_kind(data: bytes | str) -> str:
 # Payload del campione (parte fissa + nome a lunghezza variabile)
 # --------------------------------------------------------------------------
 PAYLOAD_SCHEMA_V1 = 0x01
+PAYLOAD_SCHEMA_V2 = 0x02  # CF facoltativo: undici byte zero indicano assenza.
 PAYLOAD_FIXED_SIZE = 18
 
 # Le date viaggiano come giorni trascorsi da questa epoca: due byte coprono
@@ -456,7 +458,7 @@ def pack_payload(payload: TagPayload, *, max_bytes: int | None = None) -> bytes:
     tag di autenticazione. Il troncamento riguarda **solo** il nome: tutti i
     campi identificativi strutturati sono preservati integralmente.
     """
-    if payload.schema != PAYLOAD_SCHEMA_V1:
+    if payload.schema not in (PAYLOAD_SCHEMA_V1, PAYLOAD_SCHEMA_V2):
         raise ValueError(f"versione schema payload non supportata: 0x{payload.schema:02X}")
     if not 1 <= payload.container_total <= 0xFF:
         raise ValueError("container_total fuori intervallo 1..255")
@@ -487,8 +489,8 @@ def pack_payload(payload: TagPayload, *, max_bytes: int | None = None) -> bytes:
 
     head = b"".join(
         (
-            bytes([PAYLOAD_SCHEMA_V1]),
-            pack_codice_fiscale(payload.codice_fiscale),
+            bytes([PAYLOAD_SCHEMA_V1 if payload.codice_fiscale else PAYLOAD_SCHEMA_V2]),
+            pack_codice_fiscale(payload.codice_fiscale) if payload.codice_fiscale else bytes(CF_PACKED_SIZE),
             _encode_date(payload.data_prelievo).to_bytes(2, "big"),
             bytes(
                 [
@@ -516,13 +518,13 @@ def unpack_payload(data: bytes, epc_info: EpcInfo) -> TagPayload:
             f"payload troppo corto: {len(data)} byte, minimo {PAYLOAD_FIXED_SIZE}"
         )
     schema = data[0]
-    if schema != PAYLOAD_SCHEMA_V1:
+    if schema not in (PAYLOAD_SCHEMA_V1, PAYLOAD_SCHEMA_V2):
         raise ValueError(f"versione schema payload non supportata: 0x{schema:02X}")
 
     name = data[PAYLOAD_FIXED_SIZE:].decode("ascii", "ignore").rstrip("\x00").strip()
     return TagPayload(
         schema=schema,
-        codice_fiscale=unpack_codice_fiscale(data[1:12]),
+        codice_fiscale="" if schema == PAYLOAD_SCHEMA_V2 and data[1:12] == bytes(CF_PACKED_SIZE) else unpack_codice_fiscale(data[1:12]),
         data_prelievo=_decode_date(int.from_bytes(data[12:14], "big")),
         material_code=data[14],
         fixative_code=data[15],

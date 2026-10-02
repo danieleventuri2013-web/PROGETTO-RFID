@@ -2,6 +2,19 @@
 
 This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
+## Memoria di lavoro aggiornata
+
+Per riprendere il progetto, leggere [NOTE_SESSIONE_2026-10-01.md](NOTE_SESSIONE_2026-10-01.md),
+in particolare la sezione finale sulla ripresa dopo il limite: invii email con più
+colli, archivio distinte e SQLite schema 9. La successiva prova QR con webcam
+è ora integrata nella Ricezione; guida `docs/QR_WEBCAM.md`, **735/735 test superati**.
+La precedente [sessione del 6 settembre](NOTE_SESSIONE_2026-09-06.md) documenta
+l'accettazione giornaliera confermata dall'utente. Le sezioni storiche sottostanti
+non descrivono tutte le funzionalità attuali. Il collaudo email è simulato;
+la webcam nella Ricezione è stata confermata funzionante dall'utente
+(«ok funziona»); vedere le note per i limiti del collaudo.
+Guida: [Accettazione giornaliera](docs/ACCETTAZIONE_GIORNALIERA.md).
+
 ## What this is
 
 A cross-platform Python driver + apps to control a **Silion SIM7200** UHF RFID reader

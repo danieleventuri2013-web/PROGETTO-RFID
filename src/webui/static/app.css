@@ -239,6 +239,28 @@ body {
   box-shadow: inset 3px 0 0 var(--eosina);
 }
 
+/* Il lavoro residuo di una sezione (es. tag da scrivere): un numero, non un
+   pallino — «3» dice quanto, un puntino direbbe solo «qualcosa». */
+.rail__voce {
+  position: relative;
+}
+
+.rail__badge {
+  position: absolute;
+  top: 4px;
+  right: 6px;
+  min-width: 18px;
+  padding: 1px 5px;
+  border-radius: 10px;
+  border: 1px solid var(--attesa);
+  background: var(--attesa-velo);
+  color: var(--attesa);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.4;
+  text-align: center;
+}
+
 /* ==========================================================================
    Palco e schermate
    ========================================================================== */
@@ -1087,6 +1109,102 @@ body {
   font-family: var(--f-strumenti);
   font-size: var(--t-medio);
   color: var(--allarme);
+}
+
+/* -- La checklist degli attesi: per paziente, con l'esito riga per riga ---- */
+.checklist {
+  margin-top: var(--s5);
+  padding: var(--s4);
+  border: 1px solid var(--bordo);
+  border-radius: var(--r3);
+  background: var(--superficie);
+}
+
+.checklist__titolo {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-grande);
+  color: var(--ematossilina);
+}
+
+.checklist__gruppi {
+  display: grid;
+  gap: var(--s3);
+  margin-top: var(--s3);
+}
+
+.checklist__paziente {
+  border: 1px solid var(--bordo);
+  border-radius: var(--r2);
+  overflow: hidden;
+}
+
+.checklist__testa {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--s2) var(--s3);
+  flex-wrap: wrap;
+  padding: var(--s2) var(--s3);
+  background: var(--fondo-alt);
+}
+
+.checklist__righe {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.checklist__riga {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s1) var(--s3);
+  flex-wrap: wrap;
+  padding: var(--s2) var(--s3);
+  border-top: 1px solid var(--bordo);
+  border-left: 4px solid transparent;
+}
+
+.checklist__riga b {
+  font-family: var(--f-strumenti);
+  font-size: var(--t-medio);
+}
+
+.checklist__riga .hex {
+  margin-left: auto;
+  overflow-wrap: anywhere;
+}
+
+.checklist__riga--presente {
+  border-left-color: var(--conferma);
+  background: var(--conferma-velo);
+}
+
+.checklist__riga--mancante {
+  border-left-color: var(--allarme);
+  background: var(--allarme-velo);
+}
+
+.checklist__stato {
+  border-radius: 20px;
+  padding: 3px 10px;
+  font-family: var(--f-strumenti);
+  font-size: var(--t-micro);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  background: var(--fondo-alt);
+  color: var(--ematossilina-tenue);
+}
+
+.checklist__stato--presente {
+  color: var(--conferma);
+  background: var(--conferma-velo);
+}
+
+.checklist__stato--mancante {
+  color: var(--allarme);
+  background: var(--allarme-velo);
+  font-weight: 700;
 }
 
 /* -- La prova: le passate che giustificano il verdetto -------------------- */
@@ -1980,6 +2098,17 @@ body {
   padding: 0;
 }
 
+/* Il campo testo dentro il dialogo (es. il motivo di un annullamento). */
+.dialogo__campo {
+  display: block;
+  margin-top: var(--s3);
+}
+
+.dialogo__campo textarea {
+  width: 100%;
+  resize: vertical;
+}
+
 /* Sbarramento del token: copre tutto perché sotto non c'è niente di usabile. */
 .sbarramento {
   position: fixed;
@@ -2071,6 +2200,14 @@ body {
     grid-column: span 1;
   }
 }
+
+#presenza-elenco {
+  padding-left: 1.2rem;
+  font-size: var(--t-micro);
+  overflow-wrap: anywhere;
+}
+
+#presenza-elenco li + li { margin-top: .4rem; }
 
 @media (max-width: 720px) {
   body {
@@ -2730,3 +2867,21 @@ body {
     overflow-x: auto;
   }
 }
+/* Invii email e archivio distinte: utilizzabili anche su tablet. */
+.email-campi { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1rem; margin: 1rem 0; }
+.email-lista { display: grid; gap: .65rem; margin: 1rem 0; max-height: 22rem; overflow: auto; }
+.email-lista label { display: flex; align-items: start; gap: .75rem; padding: .65rem; }
+.email-lista button { text-align: left; white-space: normal; overflow-wrap: anywhere; }
+.email-azioni { display: flex; gap: .65rem; flex-wrap: wrap; margin: 1rem 0; }
+.email-testo { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; padding: 1rem; border: 1px solid currentColor; border-radius: .5rem; }
+.qr-camera-anteprima { position: relative; width: min(100%, 480px); background: #111; border-radius: .5rem; overflow: hidden; }
+.qr-camera-anteprima video { display: block; width: 100%; height: auto; }
+.qr-camera-anteprima canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.qr-camera-tabella { overflow-x: auto; max-width: 100%; }
+.visivo { padding: 1rem; margin-bottom: 1rem; border: 1px solid #b7b1c5; border-radius: .65rem; }
+.visivo-video { position: relative; max-width: 720px; background: #111; }
+.visivo-video video { display: block; width: 100%; }
+.visivo-video canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+.visivo-conteggi { font-size: 1.3rem; font-weight: 600; }
+.visivo-foto { max-width: 720px; width: 100%; display: block; margin: .5rem 0; }
+.visivo details { margin: .75rem 0; }

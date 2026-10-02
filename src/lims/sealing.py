@@ -458,7 +458,12 @@ class SealingSession:
                 ]
                 accumulatore.add(letti)
                 record.passes_run = numero
-                record.passes.append({**passata.describe(), "pass": numero, "tags": len(letti)})
+                pass_epcs = sorted({t.epc for t in letti})
+                gia_visti = {e for p in record.passes for e in p.get("epcs", [])}
+                record.passes.append({**passata.describe(), "pass": numero, "tags": len(letti),
+                    "epcs": pass_epcs, "nuovi": sorted(set(pass_epcs) - gia_visti),
+                    "rilevamenti": [{"epc": t.epc, "antenna": t.antenna_id, "rssi": t.rssi} for t in letti],
+                    "secondi": round(self.policy.max_seconds - max(0, scadenza-time.monotonic()), 3)})
 
                 evidenze, accettati = self._evaluate(accumulatore)
                 if on_progress is not None:

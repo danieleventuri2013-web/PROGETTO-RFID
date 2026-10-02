@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prova riconoscimento campioni</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f5f0;color:#20342e;font:16px system-ui,sans-serif}main{max-width:1200px;margin:auto;padding:24px}h1{font-size:26px;margin:0 0 8px}p{line-height:1.5}.comandi{display:flex;flex-wrap:wrap;gap:12px;align-items:center;margin:18px 0}button,select,input{font:inherit;padding:10px;border:1px solid #adbcb4;border-radius:8px;background:white;color:inherit}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}label{display:flex;align-items:center;gap:8px}input[type=number]{width:85px}.video{position:relative;width:100%;background:#172420;min-height:200px;border-radius:12px;overflow:hidden}video{display:block;width:100%}canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}.conteggio{font-size:24px;font-weight:700;margin:16px 0 8px}.nota{min-height:24px}details{margin-top:18px}.legenda{color:#42594e}.legenda span{padding:3px 9px;border-radius:6px;background:#fff;display:inline-block;margin-right:12px}
+</style></head><body><main>
+<h1>Prova riconoscimento campioni</h1>
+<p>Solo riconoscimento ottico della borsa e dei coperchi rotondi dei contenitori. Le immagini sono analizzate su questo PC e rimangono in memoria.</p>
+<div class="comandi"><label>Webcam <select id="camera"><option value="">Predefinita</option></select></label><button id="avvia">Attiva webcam</button><button id="ferma" disabled>Spegni webcam</button><label>Campioni presenti <input id="attesi" type="number" value="8" min="0" max="100"></label></div>
+<div class="comandi"><label>Risoluzione <select id="risoluzione"><option value="1080" selected>Full HD — 1920×1080</option><option value="720">HD — 1280×720</option></select></label></div>
+<p id="qualita-video" role="status">La risoluzione effettiva sarà mostrata all'avvio della webcam.</p>
+<div class="video"><video id="video" autoplay muted playsinline></video><canvas id="overlay" aria-label="Bordo della borsa e campioni riconosciuti"></canvas></div>
+<p class="conteggio" id="conteggio" role="status">Riconosciuti — / 8</p><p id="stato" class="nota" role="status">Attiva la webcam e inquadra tutta la borsa.</p>
+<p class="legenda"><span>Bordo giallo: borsa</span><span>Cerchi verdi e numeri: campioni stabili</span></p>
+<p>Analisi su fotogrammi fermi: i cerchi compaiono dopo tre rilevamenti coerenti. Tieni ferma la borsa durante la conferma.</p>
+<div class="comandi"><button id="manuale" disabled>Indica il bordo della borsa</button><button id="automatico">Rileva il bordo automaticamente</button></div>
+<div class="comandi"><button id="piccolo" disabled>Indica il campione più piccolo</button><button id="grande" disabled>Indica il campione più grande</button><label>Analizza ogni <select id="intervallo"><option value="1000">1 secondo</option><option value="1500" selected>1,5 secondi</option><option value="2500">2,5 secondi</option></select></label></div>
+<p id="calibrazione">Per calibrare le dimensioni: scegli piccolo o grande, poi clicca il centro del coperchio e un punto sulla sua circonferenza.</p>
+<details><summary>Regola il rilevamento</summary><p>Il numero atteso serve solo al confronto. Il conteggio viene dall'immagine. Abbassa la soglia se mancano coperchi; alzala se compaiono falsi cerchi.</p><div class="comandi"><label>Soglia cerchi <input id="soglia" type="number" value="30" min="10" max="80"></label><label>Raggio minimo (%) <input id="min" type="number" value="1.2" min="0.5" max="20" step="0.1"></label><label>Raggio massimo (%) <input id="max" type="number" value="16" min="1" max="40" step="0.5"></label></div></details>
+</main><script src="prova-visiva.js"></script></body></html>

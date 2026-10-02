@@ -257,6 +257,19 @@ def profile_tag(
         nonlocal letture
         risposta = None
         for _ in range(max(1, attempts)):
+            # Rimettere il tag in gioco **prima** di ogni lettura, non solo
+            # riprovare: una ripetizione identica difende dal rumore radio e non
+            # da un tag che il modulo non singolarizza piu'.
+            #
+            # Chi chiama deve pero' aver portato il modulo in sessione S0
+            # (`webui.workflow.Workflow._assetto_accesso`). In S2 questo
+            # inventario non basta e anzi non aiuta: il flag di inventario resta
+            # su B finche' il tag e' alimentato, e i comandi di accesso
+            # interrogano solo il target A (manuale EX10 2024-12 §6.5) — la
+            # profilazione misurava zero byte di USER memory su un chip sano.
+            backend.inventory(
+                InventoryRequest(antennas=antennas, timeout_ms=timeout_ms)
+            )
             letture += 1
             risposta = backend.read(
                 ReadRequest(
@@ -273,7 +286,16 @@ def profile_tag(
         return risposta
 
     def _leggibile(address: int, words: int = 1) -> bool:
-        return bool(getattr(_leggi(MemoryBank.USER, address, words), "ok", False))
+        risposta = _leggi(MemoryBank.USER, address, words)
+        if getattr(risposta, "ok", False):
+            return True
+        # Solo un errore esplicito di indirizzamento misura il confine della
+        # memoria. Timeout, lock e silenzio del tag non significano zero byte.
+        messaggio = str(getattr(risposta, "error", {}) or {})
+        if "0x0423" in messaggio or "oltre la fine della banca" in messaggio:
+            return False
+        raise_for_status(risposta, "capacita' USER non determinabile")
+        return False
 
     try:
         inventario = raise_for_status(

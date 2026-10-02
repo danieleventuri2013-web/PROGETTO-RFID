@@ -17,7 +17,7 @@ from lims.codec import SpecimenFlags, TagPayload, build_epc, parse_epc
 from lims.crypto import KEY_SIZE, Keyring
 from lims.db import LimsDatabase
 from lims.model import Case, ContainerState, Patient, Specimen
-from lims.tagio import MAX_WRITE_BYTES, TagIO
+from lims.tagio import MAX_WRITE_BYTES, TagIO, _stesso_tag_del_tentativo
 
 CF_VALIDO = "MRTMTT25D09F205Z"
 CHIAVE = bytes(range(KEY_SIZE))
@@ -74,19 +74,133 @@ def test_provision_giro_completo() -> None:
 
 
 def test_provision_rispetta_l_ordine_imposto_dalle_guardie() -> None:
-    # Il cambio EPC azzera l'EPC osservato dal servizio: senza un nuovo inventory
-    # la scrittura del payload verrebbe rifiutata.
+    """Un inventario prima di ogni accesso, e non e' zelo.
+
+    Due vincoli diversi cadono sullo stesso punto. Il primo e' la **guardia del
+    servizio**: il cambio EPC azzera l'EPC osservato, e senza un nuovo inventory
+    la scrittura del payload verrebbe rifiutata. Il secondo e' la **sessione
+    Gen2 S2** del modulo: ogni comando di accesso consuma la singolarizzazione,
+    e il successivo troverebbe «0x0400 No tag found» su un tag fermo davanti
+    all'antenna.
+
+    I due inventari di fila dopo il cambio EPC sono la conferma del nuovo
+    pseudonimo e la ri-singolarizzazione del primo blocco: `_write_blocks` la fa
+    da se' perche' deve reggere anche i blocchi dal secondo in poi e la chiamata
+    da `retire_tag`, dove quella conferma non c'e'.
+    """
     backend = _backend_vergine()
     assert _tagio(backend).provision(_payload()).ok is True
     assert backend.calls == [
         "inventory",     # 1. un solo tag in campo
         "read",          # 2. TID
-        "write_epc",     # 3. nuovo pseudonimo
-        "inventory",     # 4. riarma la guardia
-        "write",         # 5. payload sigillato
-        "verify",        # 6. rilettura di controllo
+        "inventory",     # 3. rimette in gioco il tag per la scrittura
+        "write_epc",     # 4. nuovo pseudonimo
+        "inventory",     # 5. conferma il cambio e riarma la guardia
+        "inventory",     # 6. rimette in gioco il tag per il payload
+        "write",         # 7. payload sigillato
+        "inventory",     # 8. rimette in gioco il tag per la rilettura
+        "verify",        # 9. rilettura di controllo
         "read",          # (la verifica rilegge)
     ]
+
+
+def test_provision_regge_la_sessione_S2() -> None:
+    """L'errore visto al banco: «cambio EPC: scrittura EPC fallita: 0x0400 No tag found».
+
+    Il modulo arriva in sessione Gen2 S2: dopo la lettura del TID il tag e' gia'
+    in stato B e non risponde piu' al comando successivo. Il messaggio era
+    esatto e insieme fuorviante — il tag stava fermo davanti all'antenna 3 a
+    -41 dBm e in inventario dava 20 letture per giro.
+    """
+    backend = _backend_vergine()
+    backend.sessione_persistente = True
+    esito = _tagio(backend).provision(_payload())
+    assert esito.ok is True, esito.error
+    assert esito.epc and esito.payload_bytes > 0
+
+
+def test_l_errore_muto_non_manda_a_cercare_un_tag_caduto() -> None:
+    """«0x0400 No tag found» su un tag appena inventariato e' esatto e fuorviante.
+
+    Il tag e' li', fermo davanti all'antenna, e l'inventario lo vede benissimo:
+    il messaggio del modulo manda a cercare un chip rotto, un contenitore
+    caduto, un'antenna scollegata — nessuna delle quali c'entra. Le cause vere
+    sono due, e vanno dette all'operatore invece di lasciargliele indovinare.
+    """
+    from lims.tagio import _spiega_errore
+
+    codice, testo = _spiega_errore(
+        "cambio EPC: scrittura EPC fallita: {'3': '0x0400: No tag found'}",
+        "E280F30200000001B72AEEE0",
+    )
+    assert codice == "tag_muto_all_accesso"
+    assert "0x0400" in testo, "il messaggio del modulo non si nasconde"
+    assert "E280F30200000001B72AEEE0" in testo
+    assert "S2" in testo and "potenza di scrittura" in testo
+    assert "RF continua" in testo and "non dimostra" in testo
+
+
+def test_un_guasto_qualunque_resta_quello_che_e() -> None:
+    """Un codice d'errore che arriva anche quando non c'entra vale zero."""
+    from lims.tagio import _spiega_errore
+
+    codice, testo = _spiega_errore("verifica dati fallita: 0x0405", "AABB")
+    assert codice == ""
+    assert testo == "verifica dati fallita: 0x0405"
+
+
+def test_senza_ri_singolarizzare_la_scrittura_S2_fallisce() -> None:
+    """La prova che la difesa serve, e che il banco riproduce davvero la trappola."""
+    from rfid_silion.service import ReadRequest, WriteEpcRequest
+
+    backend = _backend_vergine()
+    backend.sessione_persistente = True
+    epc = backend.only_tag.epc.hex().upper()
+    backend.inventory({"antennas": (1, 2), "timeout_ms": 100})
+    # Un accesso qualunque consuma la singolarizzazione...
+    assert backend.read(
+        ReadRequest(bank=2, address=0, word_count=6, antennas=(1, 2))
+    ).ok is True
+    # ...e il cambio EPC che segue non trova piu' nessuno.
+    negata = backend.write_epc(
+        WriteEpcRequest(
+            new_epc="00" * 12, expected_epc=epc, antennas=(1, 2)
+        )
+    )
+    assert negata.ok is False
+    assert "No tag found" in (negata.error or {}).get("message", "")
+
+
+def test_una_scatola_piena_si_rilegge_anche_in_S2() -> None:
+    """Dal secondo tag in poi, senza inventario, sarebbe «0x0400 No tag found».
+
+    Il filtro Select dice *quale* tag deve rispondere, non lo rimette in gioco:
+    il flag di inventario e' del tag. Con una scatola piena e' esattamente il
+    caso normale, non un caso limite.
+    """
+    tid_diversi = [
+        TID_A,
+        TID_B,
+        bytes.fromhex("E2801190200050112233AABB"),
+    ]
+    backend = _backend_vergine()
+    tagio = _tagio(backend)
+    scritti, scatola = [], []
+    for tid in tid_diversi:
+        # Uno per volta nel campo: la scrittura pretende un tag solo.
+        backend.tags[:] = [SimulatedTag(VERGINE, tid=tid, user_bytes=64)]
+        esito = tagio.provision(_payload())
+        assert esito.ok is True, esito.error
+        scritti.append(esito.epc)
+        scatola.append(backend.tags[0])
+
+    # Ora sono tutti e tre nella scatola, e si rilegge a scatola chiusa.
+    backend.tags[:] = scatola
+    backend.sessione_persistente = True
+    rilievo = tagio.survey_field()
+    letti = [o.epc for o in rilievo.observations if o.tid]
+    for epc in scritti:
+        assert epc in letti, f"{epc} non riletto: {[(o.epc, o.status, o.detail) for o in rilievo.observations]}"
 
 
 def test_provision_scrive_davvero_sul_tag() -> None:
@@ -460,6 +574,107 @@ def test_errore_del_database_non_blocca_la_traccia() -> None:
     # `container_id` assente: il db viene usato solo per la traccia, che fallisce
     # in silenzio senza compromettere la scrittura sul tag.
     assert esito.ok is True, esito.error
+
+
+# --------------------------------------------------------------------------
+# Tentativo di scrittura interrotto
+# --------------------------------------------------------------------------
+class _CambioEpcInterrotto(FakeTagBackend):
+    """Il primo cambio EPC si ferma a meta': tre word nuove, tre vecchie.
+
+    E' cio' che il modulo ha fatto al banco l'11/09/2026 rispondendo
+    «0x0400 No tag found»: il chip aveva gia' preso le prime tre word.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.interruzioni = 1
+
+    def write_epc(self, request):
+        if self.interruzioni <= 0:
+            return super().write_epc(request)
+        self.interruzioni -= 1
+        self.calls.append("write_epc")
+        bloccato = self._guard("write_epc", request.expected_epc)
+        if bloccato is not None:
+            return bloccato
+        vecchio, nuovo = self.only_tag.epc, bytes.fromhex(request.new_epc)
+        self.only_tag.epc = nuovo[:6] + vecchio[6:]
+        self.observed_epcs = frozenset()
+        return self._ko("write_epc", "scrittura EPC fallita: 0x0400: No tag found")
+
+
+def _contenitore_pianificato(db: LimsDatabase) -> int:
+    patient_id = db.upsert_patient(Patient(codice_fiscale=CF_VALIDO, cognome="Rossi", nome="Mario"))
+    case_id = db.create_case(Case(accession_id=987654, patient_id=patient_id))
+    specimen_id = db.add_specimen(Specimen(case_id=case_id, material_code=1))
+    return db.plan_containers(specimen_id, 3)[0]
+
+
+def test_cambio_epc_interrotto_a_meta_si_completa_sullo_stesso_chip() -> None:
+    with LimsDatabase() as db:
+        container_id = _contenitore_pianificato(db)
+        backend = _CambioEpcInterrotto([SimulatedTag(VERGINE, tid=TID_A)])
+        tagio = _tagio(backend, db=db)
+
+        primo = tagio.provision(_payload(), container_id=container_id)
+        assert primo.ok is False
+        tentativo = db.provision_attempt(container_id)
+        assert tentativo is not None and tentativo["phase"] == "avviata"
+        a_meta = backend.only_tag.epc_hex
+        assert a_meta not in (VERGINE.hex().upper(), tentativo["epc"])
+
+        # Stesso chip, EPC ne' vecchio ne' nuovo: prima veniva rifiutato.
+        secondo = tagio.provision(_payload(), container_id=container_id)
+        assert secondo.ok is True, secondo.error
+        assert secondo.previous_epc == a_meta
+        assert secondo.epc == tentativo["epc"] == backend.only_tag.epc_hex
+        assert any("rimasto a meta'" in passo for passo in secondo.steps)
+        record = db.find_container_by_epc(secondo.epc)
+        assert record is not None and record.state == ContainerState.PROVISIONED
+        assert db.provision_attempt(container_id)["phase"] == "verificata"
+
+
+def test_dopo_un_tentativo_interrotto_un_altro_tag_resta_fuori() -> None:
+    with LimsDatabase() as db:
+        container_id = _contenitore_pianificato(db)
+        backend = _CambioEpcInterrotto([SimulatedTag(VERGINE, tid=TID_A)])
+        tagio = _tagio(backend, db=db)
+        assert tagio.provision(_payload(), container_id=container_id).ok is False
+
+        # Stesso EPC di fabbrica, altro chip: e' il caso del clone.
+        estraneo = SimulatedTag(VERGINE, tid=TID_B)
+        backend.tags = [estraneo]
+        esito = tagio.provision(_payload(), container_id=container_id)
+        assert esito.ok is False
+        # L'operatore deve sapere quale tag rimettere e qual e' l'alternativa.
+        assert TID_A.hex().upper() in esito.error, esito.error
+        assert "Contenitore rotto o tag guasto" in esito.error
+        assert estraneo.epc == VERGINE
+        assert backend.calls.count("write_epc") == 1
+
+
+def test_riconoscimento_del_tag_di_un_tentativo_con_i_valori_del_banco() -> None:
+    # Valori veri dell'11/09/2026, contenitore 2/3 dell'accettazione 2.
+    tentativo = {
+        "previous_epc": "E280F30200000001B72AEEEC",
+        "epc": "010001000000020203FEB92C",
+        "tid": "",
+    }
+    # Senza TID: partenza, arrivo, oppure il misto lasciato dall'interruzione.
+    assert _stesso_tag_del_tentativo(tentativo, "E280F30200000001B72AEEEC", "")
+    assert _stesso_tag_del_tentativo(tentativo, "010001000000020203FEB92C", "")
+    assert _stesso_tag_del_tentativo(tentativo, "0100010000000001B72AEEEC", "")
+    # un altro tag della stessa bobina differisce nell'ultima word
+    assert not _stesso_tag_del_tentativo(tentativo, "E280F30200000001B72AEED4", "")
+    # un EPC di questo sistema, ma di un'altra accettazione
+    assert not _stesso_tag_del_tentativo(tentativo, "0100010000000301023CDD78", "")
+
+    # Con il TID registrato decide il TID, qualunque cosa mostri l'EPC.
+    con_tid = {**tentativo, "tid": "E280F30220000001B72AEEEC"}
+    assert _stesso_tag_del_tentativo(con_tid, "0100010000000001B72AEEEC", "E280F30220000001B72AEEEC")
+    assert not _stesso_tag_del_tentativo(con_tid, "E280F30200000001B72AEEEC", "E280F30220000001B72AEED4")
+    assert not _stesso_tag_del_tentativo(con_tid, "E280F30200000001B72AEEEC", "")
 
 
 def _run_all() -> int:

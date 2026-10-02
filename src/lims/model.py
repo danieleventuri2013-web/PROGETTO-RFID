@@ -176,7 +176,7 @@ class ShipmentState(str, Enum):
 
 @dataclass
 class Patient:
-    """Anagrafica del paziente. `codice_fiscale` e' la chiave naturale."""
+    """Anagrafica identificata dall'ID interno; codice fiscale facoltativo e univoco."""
 
     codice_fiscale: str
     cognome: str
@@ -186,7 +186,7 @@ class Patient:
     id: int | None = None
 
     def __post_init__(self) -> None:
-        self.codice_fiscale = validate_codice_fiscale(self.codice_fiscale)
+        self.codice_fiscale = validate_codice_fiscale(self.codice_fiscale) if self.codice_fiscale else ""
         self.cognome = normalize_name(self.cognome)
         self.nome = normalize_name(self.nome)
         if not self.cognome:

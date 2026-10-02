@@ -125,8 +125,10 @@ class FakeReader:
             return {antenna: {"ok": False, "error": "lock fallito"} for antenna in antennas}
         return {antennas[0]: {"ok": True}}
 
-    def write_epc_try_all_antennas(self, antennas, epc, password, timeout_ms):
-        self.write_epc_calls.append((antennas, epc, password, timeout_ms))
+    def write_epc_try_all_antennas(
+        self, antennas, epc, password, timeout_ms, select_epc=None
+    ):
+        self.write_epc_calls.append((antennas, epc, password, timeout_ms, select_epc))
         if not self.write_ok:
             return {antenna: {"ok": False, "error": "write EPC fallita"} for antenna in antennas}
         self.tags[0].epc = epc.hex().upper()
@@ -291,6 +293,10 @@ def test_generate_and_write_epc_are_service_operations_with_fresh_target_guard()
     assert changed.data["success_antenna"] == 1
     assert changed.data["verification_required"] is True
     assert reader.write_epc_calls[0][1].hex().upper() == target_epc
+    # Il filtro Select porta l'EPC atteso fino al comando: la guardia lo pretende
+    # gia' come unico osservato, quindi non c'e' ragione di colpire «il primo
+    # tag che risponde».
+    assert reader.write_epc_calls[0][4].hex().upper() == previous_epc
     assert service.snapshot()["observed_epcs"] == []
     assert any(event["kind"] == "tag.epc.changed" for event in service.recent_events())
 

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="it"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Prova SAM 2 — campioni</title><style>
+*{box-sizing:border-box}body{margin:0;background:#f4f5f0;color:#20342e;font:16px system-ui,sans-serif}main{max-width:1200px;margin:auto;padding:24px}h1{font-size:26px}p{line-height:1.5}.comandi{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin:16px 0}button,select{font:inherit;padding:10px;border:1px solid #adbcb4;border-radius:8px;background:white;color:inherit}button{cursor:pointer}button:disabled{opacity:.45;cursor:default}label{display:flex;gap:8px;align-items:center}.video{position:relative;background:#172420;border-radius:12px;overflow:hidden}video{display:block;width:100%;min-height:200px}canvas{position:absolute;inset:0;width:100%;height:100%;cursor:crosshair}.conteggio{font-weight:700;font-size:22px}#risultati{line-height:1.6}#stato{min-height:28px}small{display:block;color:#42594e}
+</style></head><body><main>
+<h1>Prova SAM 2 con clic manuali</h1>
+<p><a id="automatico" href="sam2-auto.html">Configura l’area e prova lo scatto con conteggio automatico</a></p>
+<p>Lascia gli otto campioni nella posizione attuale. Ferma una foto, poi clicca <strong>dentro ogni contenitore, uno alla volta</strong>. SAM 2 proverà a ricavarne i contorni su questo PC.</p>
+<div class="comandi"><label>Webcam <select id="camera"><option value="">Predefinita</option></select></label><button id="avvia">Attiva webcam</button><button id="ferma" disabled>Spegni webcam</button><button id="foto" disabled>Ferma foto per segnare i campioni</button><button id="riprendi" disabled>Nuova foto</button></div>
+<p id="qualita">La foto userà la risoluzione effettiva della webcam, fino a Full HD.</p>
+<div class="video"><video id="video" autoplay muted playsinline></video><canvas id="overlay" aria-label="Foto ferma: clicca dentro i campioni"></canvas></div>
+<div class="comandi"><label>Azione <select id="azione"><option value="nuovo">Indica un nuovo campione</option><option value="positivo">Aggiungi un punto dentro il campione selezionato</option><option value="negativo">Escludi un punto dal campione selezionato</option></select></label><label>Campione <select id="campione"></select></label></div>
+<div class="comandi"><button id="annulla" disabled>Annulla ultimo clic</button><button id="azzera" disabled>Cancella i punti</button><button id="analizza" disabled>Disegna contorni con SAM 2</button></div>
+<p class="conteggio" id="conteggio" role="status">Campioni indicati: 0 · Contorni SAM: —</p>
+<p id="stato" role="status">Attiva la webcam e ferma la foto.</p>
+<div id="risultati"></div>
+<small>I punti blu sono quelli indicati da te. I contorni verdi sono il risultato di SAM; quelli arancioni richiedono correzione. Otto clic non dimostrano un conteggio automatico: verifica che ogni contorno appartenga a un solo contenitore. Questa prova usa una foto ferma e non segue ancora i campioni nel video.</small>
+</main><script src="sam2.js"></script></body></html>

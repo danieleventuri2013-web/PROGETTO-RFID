@@ -223,7 +223,12 @@ def test_il_file_vero_del_progetto_regge_la_scrittura():
     assert dati["lims"]["tag_misurato"]["minimo_byte"] == 48
     # Niente sezioni perse per strada.
     assert list(dati) == list(yaml.safe_load(testo))
-    assert nuovo.count("\r\n") >= testo.count("\r\n") - 1
+    # Un profilo WebUI completo puo' occupare piu' righe del registro CLI:
+    # preservare CRLF non significa preservare il numero di righe sostituite.
+    if "\r\n" in testo:
+        assert "\n" not in nuovo.replace("\r\n", "")
+    else:
+        assert "\r\n" not in nuovo
 
 
 def _run_all() -> int:

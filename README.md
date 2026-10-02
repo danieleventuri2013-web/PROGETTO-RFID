@@ -24,6 +24,20 @@ espone entrambi).
 | [`docs/REPORT_REVISIONE.md`](docs/REPORT_REVISIONE.md) | analisi e revisione codice 2026-07 |
 | [`PIANO_PROGETTO.md`](PIANO_PROGETTO.md) | pianificazione completa (hardware, step 1→4, rischi) |
 | [`CHANGELOG.md`](CHANGELOG.md) | storico modifiche |
+| [`docs/ACCETTAZIONE_GIORNALIERA.md`](docs/ACCETTAZIONE_GIORNALIERA.md) | accettazione, spedizioni e ricezione |
+| [`docs/QR_WEBCAM.md`](docs/QR_WEBCAM.md) | acquisizione QR dalla webcam |
+| [`docs/SAM2_LOCALE.md`](docs/SAM2_LOCALE.md) | prova conteggio e calibrazione webcam |
+| [`docs/SAM2_OPENVINO.md`](docs/SAM2_OPENVINO.md) | SAM su GPU Intel |
+| [`docs/OPENROUTER_VISION.md`](docs/OPENROUTER_VISION.md) | confronto Qwen/SAM sullo stesso scatto |
+
+## Collaborazione
+
+Il repository contiene codice, configurazione e documentazione. Foto, log,
+database, chiavi, ambienti Python e pesi dei modelli sono esclusi da Git.
+Ogni postazione installa le proprie dipendenze e configura credenziali e
+calibrazione webcam localmente. Per proporre modifiche creare un ramo dedicato,
+eseguire `python run.py tests` e aprire una pull request; i test completi
+sono eseguiti anche dalla CI su Windows e Linux.
 
 ## Requisiti e installazione
 

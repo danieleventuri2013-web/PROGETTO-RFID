@@ -20,6 +20,7 @@
 <link rel="stylesheet" href="app.css">
 <!-- Ultimo: tutto quello che contiene vale solo in modalita' tavoletta. -->
 <link rel="stylesheet" href="tocco.css">
+<link rel="stylesheet" href="accettazione.css">
 <link rel="stylesheet" href="stampa.css">
 </head>
 <body>
@@ -47,6 +48,7 @@
       <span class="spia" aria-hidden="true"></span><span id="stato-lettore-testo">non collegato</span>
     </span>
     <button class="bottone bottone--sobrio" id="collega">Collega</button>
+    <span class="pastiglia" id="modo-prototipo" hidden>PROTOTIPO · tag riutilizzabili</span>
     <button class="bottone bottone--sobrio" id="tema" aria-label="Cambia tema" title="Tema chiaro / scuro">
       <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
         <path d="M12 3v2m0 14v2m9-9h-2M5 12H3m14.5-6.5-1.4 1.4M7.9 16.1l-1.4 1.4m11.6 0-1.4-1.4M7.9 7.9 6.5 6.5"
@@ -64,6 +66,9 @@
       <path d="M9 8h6M9 12h6M9 16h3"/>
     </svg>
     <span>Accettazione</span>
+    <!-- I tag ancora da scrivere, giornata e arretrati: il numero che dice
+         a colpo d'occhio se c'e' lavoro rimasto indietro. -->
+    <span class="rail__badge" id="rail-badge-accettazione" hidden></span>
   </button>
   <button class="rail__voce" data-schermata="sigillo">
     <svg viewBox="0 0 24 24" aria-hidden="true">
@@ -122,6 +127,43 @@
   <!-- ACCETTAZIONE                                                        -->
   <!-- ================================================================== -->
   <section class="schermata schermata--attiva" id="schermata-accettazione">
+    <div id="giornata" class="giornata">
+      <header class="giornata__testa">
+        <div><span class="etichetta">Il lavoro del laboratorio</span><h1>Accettazioni del giorno</h1>
+          <p class="tenue">Pazienti, campioni e tag. Ogni passaggio resta qui.</p></div>
+        <button class="bottone bottone--primario" id="giorno-nuovo">+ Nuovo paziente</button>
+      </header>
+      <div class="giornata__strumenti">
+        <label class="campo"><span class="etichetta">Giornata</span><input id="giorno-data" type="date"></label>
+        <button class="bottone bottone--sobrio" id="giorno-oggi">Oggi</button>
+        <label class="campo giornata__ricerca"><span class="etichetta">Cerca nella giornata e negli arretrati</span>
+          <input id="giorno-cerca" type="search" placeholder="Nome, cognome, ID o codice fiscale" autocomplete="off"></label>
+        <label class="campo"><span class="etichetta">Mostra</span><select id="giorno-filtro">
+          <option value="tutti">Tutti gli stati</option><option value="da_preparare">Da preparare</option>
+          <option value="da_scrivere">Da scrivere</option><option value="parziale">Parziali</option>
+          <option value="completato">Completati</option><option value="errori">Con errori</option>
+        </select></label>
+        <button class="bottone bottone--sobrio" id="giorno-aggiorna" aria-label="Aggiorna accettazioni">↻ Aggiorna</button>
+      </div>
+      <div id="giorno-contatori" class="giornata__contatori" aria-label="Riepilogo della giornata"></div>
+      <p id="giorno-esito" class="tenue" role="status" aria-live="polite"></p>
+      <!-- I tag dei giorni scorsi ancora da scrivere: detto qui, in testa,
+           perche' e' la prima cosa che serve sapere aprendo la giornata. -->
+      <div class="giornata__arretrati-avviso" id="giorno-arretrati-avviso" hidden></div>
+      <div class="giornata__griglia">
+        <aside class="giornata__elenco" aria-label="Pazienti del giorno">
+          <div class="giornata__elenco-testa"><h2>Pazienti</h2><span id="giorno-quanti" class="pastiglia"></span></div>
+          <div id="giorno-pazienti"></div>
+          <section id="giorno-arretrati-sezione" class="giornata__arretrati" hidden>
+            <h2>Da completare</h2><p class="tenue">Dai giorni precedenti</p><div id="giorno-arretrati"></div>
+          </section>
+        </aside>
+        <div id="giorno-corpo" class="giornata__corpo">
+          <button id="giorno-indietro" class="bottone bottone--sobrio giornata__indietro">← Elenco pazienti</button>
+          <div id="giorno-dettaglio" aria-live="polite"></div>
+        </div>
+      </div>
+    </div>
 
     <!-- Passo 1: chi e quanti ------------------------------------------ -->
     <div class="pannello" id="pannello-anagrafica">
@@ -135,7 +177,7 @@
         <div class="modulo__griglia">
           <label class="campo campo--mono modulo__largo">
             <span class="etichetta">Codice fiscale</span>
-            <input id="cf" name="codice_fiscale" maxlength="16" required
+            <input id="cf" name="codice_fiscale" maxlength="16"
                    placeholder="RSSMRA80A01H501U" spellcheck="false">
             <small class="campo__nota tenue" id="cf-nota">Il lettore di codici a barre compila e conferma da solo.</small>
           </label>
@@ -222,7 +264,8 @@
           <button type="button" class="bottone bottone--sobrio" id="aggiungi-reperto">
             + Un altro campione di questo paziente
           </button>
-          <button type="submit" class="bottone bottone--primario" id="registra">Registra e prepara i tag</button>
+          <button type="submit" class="bottone bottone--primario" id="registra">Salva paziente e campioni</button>
+          <button type="button" class="bottone bottone--sobrio" id="giorno-annulla-modulo">Chiudi senza salvare</button>
           <span class="tenue" id="errore-accettazione" role="alert"></span>
         </div>
       </form>
@@ -230,6 +273,8 @@
 
     <!-- Passo 2: la postazione di scrittura ------------------------------ -->
     <div class="pannello pannello--nascosto" id="pannello-postazione">
+      <div class="giornata__ritorno"><button id="giorno-torna" class="bottone bottone--sobrio">← Torna all’elenco pazienti</button>
+        <span class="tenue">Puoi riprendere i tag mancanti dall’elenco.</span></div>
 
       <!-- I campioni arrivano in ordine sparso: che lo stesso paziente ne
            abbia altri lo si scopre solo trascrivendo il successivo. Questa è
@@ -321,8 +366,12 @@
 
           <div class="cartella__azioni">
             <button class="bottone bottone--radio" id="scrivi" disabled>Scrivi il tag</button>
+            <button class="bottone bottone--primario" id="prossimo-contenitore" hidden>Prossimo contenitore</button>
             <button class="bottone" id="etichetta" hidden>Stampa l'etichetta</button>
             <button class="bottone bottone--sobrio" id="salta" hidden>Contenitore rotto o tag guasto…</button>
+            <!-- Compare solo quando il tag risulta gia' scritto: e' la deroga
+                 per l'assistenza e per il banco, e resta nella traccia. -->
+            <button class="bottone bottone--sobrio" id="riscrivi" hidden>Riscrivi questo tag…</button>
           </div>
           <p class="tenue cartella__errore" id="errore-scrittura" role="alert"></p>
         </aside>
@@ -444,6 +493,59 @@
     </div>
 
     <div class="pannello pannello--nascosto" id="pannello-sigillo">
+      <section id="visivo" class="visivo">
+        <label class="interruttore"><input type="checkbox" id="visivo-attivo"> Controllo avanzato visivo / RFID (facoltativo)</label>
+        <div id="visivo-pannello" hidden>
+          <p>Scatola aperta, contenitori in piedi e tutti visibili. Il confronto aggiuntivo non sostituisce il sigillo RFID.</p>
+          <details><summary>Marcatori e calibrazione</summary>
+            <div class="email-campi">
+              <label><input type="checkbox" id="visivo-box-mark"> Marcatori sulla scatola (0–3)</label>
+              <label><input type="checkbox" id="visivo-lid-mark"> Marcatori sul coperchio (4–5)</label>
+              <label><input type="checkbox" id="visivo-lid-check"> Controlla anche il coperchio</label>
+              <label>Raggio minimo (% lato corto) <input id="visivo-min" type="number" value="1.2" min="0.5" max="20" step="0.1"></label>
+              <label>Raggio massimo (%) <input id="visivo-max" type="number" value="16" min="1" max="40" step="0.5"></label>
+              <label>Soglia cerchi (più bassa = più rilevamenti) <input id="visivo-soglia" type="number" min="10" max="80" value="30"></label>
+            </div>
+            <div class="email-azioni">
+              <button type="button" id="visivo-salva" class="bottone">Salva impostazioni</button>
+              <button type="button" id="visivo-marcatori" class="bottone">Stampa marcatori</button>
+              <button type="button" id="visivo-area" class="bottone">Indica i 4 angoli interni</button>
+              <button type="button" id="visivo-auto-area" class="bottone">Torna al bordo automatico</button>
+              <button type="button" id="visivo-calibra-aperta" class="bottone">Memorizza riferimento aperto</button>
+              <button type="button" id="visivo-calibra-chiusa" class="bottone">Memorizza riferimento con coperchio</button>
+            </div>
+            <p>Indica gli angoli in senso orario iniziando in alto a sinistra. I marcatori della scatola devono restare visibili anche con il coperchio. Per il riferimento chiuso posiziona correttamente coperchio e agganci. Senza marcatori, i riflessi della plastica possono rendere il controllo non determinabile.</p>
+          </details>
+          <div class="email-azioni">
+            <label class="campo">Videocamera <select id="visivo-camera" aria-label="Videocamera del sigillo"><option value="">Predefinita</option></select></label>
+            <button type="button" class="bottone bottone--sobrio" id="visivo-aggiorna-camera">Aggiorna videocamere</button>
+            <button type="button" class="bottone" id="visivo-avvia">Attiva webcam</button>
+            <button type="button" class="bottone" id="visivo-ferma">Spegni webcam</button>
+            <button type="button" class="bottone" id="visivo-correggi">Correggi i marcatori</button>
+            <button type="button" class="bottone" id="visivo-conferma-correzioni" hidden>Conferma marcatori corretti</button>
+          </div>
+          <p>Seleziona la webcam da usare. Se l'elenco è vuoto, premi Attiva webcam e consenti l'accesso: poi potrai cambiarla dal menu.</p>
+          <div class="visivo-video" id="visivo-video-box" hidden>
+            <video id="visivo-video" autoplay muted playsinline></video>
+            <canvas id="visivo-overlay" aria-label="Conteggio e perimetro scatola"></canvas>
+          </div>
+          <p id="visivo-stato" role="status">Controllo non avviato.</p>
+          <p id="visivo-conteggi" class="visivo-conteggi">Attesi — · Visibili — · RFID —</p>
+          <p id="visivo-istruzioni">Il recupero RFID parte automaticamente quando il conteggio visivo è stabile e coincide con la distinta. Puoi fermarlo in qualsiasi momento.</p>
+          <div class="email-azioni">
+            <button type="button" class="bottone" id="visivo-recupera">Ripeti letture RFID</button>
+            <button type="button" class="bottone" id="visivo-interrompi">Interrompi recupero</button>
+            <button type="button" class="bottone bottone--primario" id="visivo-foto" disabled>Contenuto OK: fotografa</button>
+            <button type="button" class="bottone bottone--primario" id="visivo-conferma-foto" hidden>Confermo questa foto e il conteggio</button>
+            <button type="button" class="bottone" id="visivo-coperchio">Verifica e fotografa il coperchio</button>
+            <button type="button" class="bottone" id="visivo-nuovo">Ho spostato / riaperto la scatola</button>
+            <button type="button" class="bottone" id="visivo-salta">Salta controllo e continua</button>
+          </div>
+          <details><summary>Passate RFID e tag recuperati</summary><div id="visivo-passate"></div></details>
+          <button type="button" class="bottone" id="visivo-prova">Mostra prova conservata</button>
+          <div id="visivo-foto-salvate"></div>
+        </div>
+      </section>
       <div class="sigillo">
 
         <!-- Vista dall'alto: la scatola chiusa sulle due antenne di lettura.
@@ -466,15 +568,22 @@
         </figure>
 
         <aside class="verdetto" id="verdetto" data-esito="attesa">
-          <span class="etichetta">Trovati sui contenitori attesi</span>
+          <span class="etichetta">Tag attesi rilevati nell'area di lettura</span>
           <p class="cifra verdetto__conteggio" id="verdetto-conteggio">— / —</p>
           <p class="verdetto__esito" id="verdetto-esito">Nessuna lettura ancora fatta.</p>
 
           <dl class="verdetto__dettagli" id="verdetto-dettagli"></dl>
 
+          <div id="presenza-contenuto" hidden>
+            <p class="tenue" id="presenza-orario" role="status"></p>
+            <ul id="presenza-elenco"></ul>
+            <p class="tenue">La lettura preliminare non certifica la chiusura. Tieni la scatola sulle antenne e allontana i tag esterni.</p>
+          </div>
+
           <div class="verdetto__azioni">
             <span class="pastiglia" id="stato-spedizione">bozza</span>
-            <button class="bottone bottone--radio" id="sigilla">Chiudo la scatola e certifico</button>
+            <button class="bottone bottone--sobrio" id="verifica-contenuto" hidden>Verifica di nuovo il contenuto</button>
+            <button class="bottone bottone--radio" id="sigilla" disabled>Chiudo la scatola e certifico</button>
             <button class="bottone bottone--sobrio" id="interrompi" hidden>Interrompi</button>
             <button class="bottone bottone--primario" id="stampa-distinta" disabled>Stampa la distinta</button>
             <button class="bottone" id="esporta" disabled>Esporta la distinta cifrata</button>
@@ -519,6 +628,46 @@
         <p class="tenue prova__nota" id="prova-nota"></p>
       </details>
     </div>
+    <div class="pannello">
+    <details class="prova" id="invii-email">
+      <summary>Invia più colli via email</summary>
+      <p class="tenue">Seleziona i colli chiusi diretti alla stessa sede. Ogni collo mantiene la propria distinta cifrata.</p>
+      <details>
+        <summary>Casella mittente e invio Gmail / SMTP</summary>
+        <div class="email-campi">
+          <label class="campo">Mittente <input id="email-sender" type="email" placeholder="magazzino@gmail.com"></label>
+          <label class="campo">Utente SMTP <input id="email-username" type="email" placeholder="uguale al mittente"></label>
+          <label class="campo">Server SMTP <input id="email-smtp_host" value="smtp.gmail.com"></label>
+          <label class="campo">Porta <input id="email-smtp_port" type="number" value="587"></label>
+          <label class="campo">Cifratura <select id="email-smtp_mode"><option value="starttls">STARTTLS</option><option value="ssl">SSL/TLS</option></select></label>
+          <label class="campo">Variabile della password <input id="email-password_env" value="RFID_MAIL_PASSWORD"></label>
+        </div>
+        <label><input id="email-enabled" type="checkbox"> Abilita l'invio dal programma</label>
+        <p class="tenue">Per Gmail usa una password per app con verifica in due passaggi. La password va nella variabile d'ambiente indicata, prima dell'avvio del programma. Non inserirla qui. Puoi preparare la bozza anche senza abilitare l'invio.</p>
+        <button class="bottone" id="email-salva" type="button">Salva casella</button>
+        <span id="email-config-nota" role="status"></span>
+      </details>
+      <button class="bottone" id="email-aggiorna" type="button">Aggiorna colli e invii</button>
+      <div class="email-lista" id="email-colli"></div>
+      <button class="bottone bottone--primario" id="email-prepara" type="button">Prepara email per i colli selezionati</button>
+      <div id="email-anteprima" hidden>
+        <dl class="distinta" id="email-intestazione"></dl>
+        <pre id="email-testo" class="email-testo"></pre>
+        <ul id="email-allegati"></ul>
+        <div class="email-azioni">
+          <button class="bottone" id="email-copia" type="button">Copia testo per la webmail</button>
+          <button class="bottone" id="email-eml" type="button">Scarica email con allegati (.eml)</button>
+          <button class="bottone" id="email-zip" type="button">Scarica tutte le distinte (.zip)</button>
+          <button class="bottone bottone--primario" id="email-invia" type="button">Invia email</button>
+          <button class="bottone" id="email-manuale" type="button">Conferma invio dalla webmail</button>
+        </div>
+        <p class="tenue">La bozza scaricata non è un invio. Il server SMTP può accettare l'email senza provarne la consegna; la partenza e l'arrivo dei colli si confermano separatamente.</p>
+      </div>
+      <p id="email-esito" role="status"></p>
+      <h3>Ultimi invii preparati</h3>
+      <div class="email-lista" id="email-storico"></div>
+    </details>
+    </div>
   </section>
 
   <section class="schermata" id="schermata-ricezione">
@@ -532,35 +681,55 @@
       </header>
 
       <div class="importa">
-        <label class="bottone" for="file-distinta">Apri la distinta…</label>
-        <input id="file-distinta" type="file" accept=".rfidman,application/octet-stream" hidden>
+        <label class="bottone" for="file-distinta">Importa distinte o pacchetti ZIP…</label>
+        <input id="file-distinta" type="file" accept=".rfidman,.zip,application/octet-stream,application/zip" multiple hidden>
         <span class="tenue" id="errore-distinta" role="alert"></span>
       </div>
 
-      <!-- La strada che non passa da nessun file: il pacco arriva col foglio
-           attaccato e si legge il QR. Il lettore 2D si comporta da tastiera e
-           chiude con Invio, quindi il campo si accontenta di ricevere il
-           testo — nessun driver, nessuna fotocamera. -->
-      <div class="scansione">
-        <label class="campo campo--largo">
-          <span class="etichetta">Oppure leggi il QR sul foglio</span>
-          <input id="scansione-qr" autocomplete="off" spellcheck="false"
-                 placeholder="appoggia il lettore sul codice e premi il grilletto">
-          <small class="campo__nota tenue" id="scansione-nota">
-            Se il foglio porta più codici, leggili uno dopo l’altro.
-          </small>
-        </label>
+      <p class="tenue">Importa anche tutte le distinte prima dell'arrivo. Presenta poi un collo alla volta oppure seleziona la distinta dall'elenco. Massimo 50 distinte e 2 MiB per importazione.</p>
+      <div class="email-azioni">
+        <button class="bottone bottone--primario" id="riconosci-collo" type="button">Leggi il collo e trova la distinta</button>
+        <button class="bottone" id="aggiorna-distinte" type="button">Aggiorna distinte ricevute</button>
+      </div>
+      <ul id="importazione-esiti" aria-live="polite"></ul>
+      <div class="email-lista" id="distinte-attese"></div>
+
+      <div class="scansione" id="qr-webcam">
+        <h3>Acquisisci la distinta con la webcam</h3>
+        <p class="tenue">Inquadra il QR del foglio. Quando il bordo diventa verde, premi
+          <strong>Acquisisci</strong> oppure la <strong>barra spaziatrice</strong>.
+          Se ci sono più QR, acquisiscili uno alla volta.</p>
+        <div class="email-azioni">
+          <button class="bottone" id="qr-camera-avvia" type="button">Attiva webcam</button>
+          <label class="campo">Videocamera <select id="qr-camera-scelta" aria-label="Videocamera" disabled>
+            <option value="">Predefinita</option></select></label>
+          <button class="bottone" id="qr-camera-ferma" type="button" disabled>Spegni webcam</button>
+          <button class="bottone bottone--primario" id="qr-camera-acquisisci" type="button" disabled>Acquisisci [Spazio]</button>
+          <button class="bottone bottone--sobrio" id="qr-camera-nuova" type="button">Nuova scansione</button>
+        </div>
+        <div class="qr-camera-anteprima" id="qr-camera-riquadro" hidden>
+          <video id="qr-camera-video" autoplay muted playsinline aria-label="Anteprima webcam"></video>
+          <canvas id="qr-camera-bordi" aria-hidden="true"></canvas>
+        </div>
+        <p id="qr-camera-stato" role="status">Webcam spenta.</p>
+        <p class="tenue" id="scansione-nota">I dati vengono caricati solo dopo l'acquisizione di tutte le parti.</p>
         <ul class="scansione__parti" id="scansione-parti"></ul>
         <span class="tenue" id="errore-scansione" role="alert"></span>
+        <details id="qr-camera-dati" hidden><summary>Dati estratti dal QR</summary>
+          <div class="qr-camera-tabella" id="qr-camera-tabella"></div>
+        </details>
       </div>
 
       <dl class="distinta" id="distinta" hidden></dl>
+      <button type="button" class="bottone" id="visivo-ricevuta">Mostra foto e controllo visivo del mittente</button>
+      <div id="visivo-ricevuta-foto"></div>
 
-      <!-- Chi è atteso nella scatola, con nome e campione: è quello che
-           l'operatore confronta con i vasetti che ha in mano. -->
-      <div class="mancanti mancanti--atteso" id="contenitore-atteso" hidden>
-        <h3 class="mancanti__titolo">Campioni attesi</h3>
-        <ul class="mancanti__elenco" id="elenco-atteso"></ul>
+      <!-- Chi è atteso nella scatola, raggruppato per paziente: è quello che
+           l'operatore confronta con i vasetti che ha in mano. Dopo la lettura
+           ogni riga dice il suo esito — arrivato o mancante. -->
+      <div class="checklist" id="contenitore-atteso" hidden aria-live="polite">
+        <h3 class="checklist__titolo" id="atteso-titolo">Campioni attesi</h3>
+        <div class="checklist__gruppi" id="elenco-atteso"></div>
       </div>
     </div>
 
@@ -808,6 +977,33 @@
 
     <div class="scheda scheda--attiva" id="scheda-configurazione" role="tabpanel">
 
+    <div class="pannello" id="config-operativita">
+      <header class="pannello__testa"><h2>Sede e profili tag</h2>
+        <p class="tenue">L'EPC collega ogni contenitore alla sua riga nel database e quindi al paziente.
+          Funziona anche con tag piccoli senza USER memory. Salva un profilo per ciascun modello in valutazione.</p>
+      </header>
+      <div class="modulo__griglia">
+        <label class="campo"><span class="etichetta">Funzione della sede</span>
+          <select id="station-mode"><option value="entrambe">Spedizione e ricezione</option>
+            <option value="spedizione">Solo spedizione</option><option value="ricezione">Solo ricezione</option></select></label>
+        <label class="campo"><span class="etichetta">Prototipazione</span>
+          <span><input id="prototype-mode" type="checkbox"> Consenti il riuso dei tag senza conferme ripetute</span></label>
+        <label class="campo"><span class="etichetta">Profili salvati</span><select id="tag-profiles"><option value="">Configurazione corrente</option></select></label>
+        <label class="campo"><span class="etichetta">Nome del profilo da salvare</span><input id="tag-profile-name" maxlength="80" placeholder="Modello / dimensioni del tag"></label>
+        <label class="campo"><span class="etichetta">Capacità USER del modello (byte)</span><input id="tag-user-bytes" type="number" min="0" max="8192" step="2"></label>
+      </div>
+      <table class="tabella"><thead><tr><th>Memoria</th><th>Leggere</th><th>Scrivere</th><th>Uso</th></tr></thead><tbody>
+        <tr><th>EPC</th><td><input id="memory-read-epc" type="checkbox" checked disabled aria-label="Leggere EPC"></td><td><input id="memory-write-epc" type="checkbox" checked disabled aria-label="Scrivere EPC"></td><td>Identificativo obbligatorio; riscrivibile durante le prove.</td></tr>
+        <tr><th>TID</th><td><input id="memory-read-tid" type="checkbox" aria-label="Leggere TID"></td><td><input id="memory-write-tid" type="checkbox" disabled aria-label="Scrivere TID non disponibile"></td><td>Identità del chip se disponibile; richiesto per autenticare USER.</td></tr>
+        <tr><th>USER</th><td><input id="memory-read-user" type="checkbox" aria-label="Leggere USER"></td><td><input id="memory-write-user" type="checkbox" aria-label="Scrivere USER"></td><td>Payload cifrato facoltativo. La scrittura comprende sempre la verifica.</td></tr>
+      </tbody></table>
+      <p class="tenue">Senza TID univoco il registro segue l'EPC, ma non può riconoscere con certezza il chip fisico riutilizzato.
+        Le scelte diventano operative solo dopo il salvataggio.</p>
+      <div class="modulo__azioni"><button class="bottone bottone--primario" id="salva-operativita">Salva sede e profilo tag</button>
+        <span id="esito-operativita" role="status"></span></div>
+    </div>
+    <div id="config-tag-rilevamento"></div>
+
     <!-- Questo laboratorio ----------------------------------------------- -->
     <div class="pannello">
       <header class="pannello__testa">
@@ -1027,7 +1223,38 @@
       <div class="modulo__azioni">
         <button class="bottone bottone--radio" id="applica-collegamento">Collega con questi parametri</button>
         <button class="bottone bottone--primario" id="salva-collegamento">Salva come predefinito</button>
+        <button class="bottone" id="applica-radio">Applica configurazione radio salvata</button>
         <span class="tenue" id="esito-collegamento" role="status"></span>
+      </div>
+    </div>
+
+    <!-- Antenne: chi legge e chi scrive ---------------------------------- -->
+    <div class="pannello">
+      <header class="pannello__testa">
+        <h2>Antenne — chi legge e chi scrive</h2>
+        <p class="tenue">
+          Quali porte usa il programma per <strong>leggere</strong> (accettazione,
+          riempimento, sigillo, profilatura del tag) e quali per
+          <strong>scrivere</strong>. Al banco le due cose stanno su antenne diverse
+          apposta: si scrive su una postazione lontana, dove c'è
+          <strong>un tag solo</strong>, perché la scrittura agisce sul primo che
+          risponde. Una porta può leggere e scrivere. Il rilevamento è diagnostico:
+          puoi assegnare manualmente una porta non rilevata. In sola ricezione
+          non serve selezionare antenne di scrittura.
+        </p>
+      </header>
+
+      <table class="tabella tabella--modificabile" id="tabella-antenne">
+        <thead>
+          <tr><th>Porta</th><th>Stato</th><th>Lettura</th><th>Scrittura</th><th>Potenze</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <p class="tenue" id="antenne-nota"></p>
+
+      <div class="modulo__azioni">
+        <button class="bottone bottone--primario" id="salva-antenne">Applica e salva</button>
+        <span class="tenue" id="esito-antenne" role="status"></span>
       </div>
     </div>
 
@@ -1554,12 +1781,11 @@
 
       <div class="spiega">
         <p>
-          <b>Perché va fatta per prima.</b> Quanti dati entrano in un tag lo decide il
-          chip, non il lettore. I datasheet dichiarano spesso la memoria «fino a», e i
-          lotti variano: questa misura legge davvero, parola per parola, fino a dove la
-          memoria finisce. Il numero che esce va riportato in
-          <span class="hex">lims.user_memory_bytes</span>, altrimenti la scrittura
-          fallisce a metà sul primo campione vero.
+          <b>Misura facoltativa, su comando.</b> La capacità dipende dal modello di tag.
+          Approva il risultato e salvalo con un nome in «Sede e profili tag».
+          I tag senza USER funzionano in solo EPC; non occorre una misura per
+          ogni collegamento o per ogni contenitore. Un errore radio non dimostra
+          che la memoria sia assente.
         </p>
         <p>
           <b>Il TID serializzato.</b> È il numero di serie di fabbrica, immutabile. Il
@@ -1709,7 +1935,7 @@
         <h2>Hardware installato</h2>
         <p class="tenue">
           Che cosa è collegato davvero, chiesto al modulo e non dedotto dal
-          datasheet. Si rileva da solo appena ci si collega, perché
+          datasheet. Usa il pulsante Rileva hardware quando serve:
           <strong>quali misure siano possibili dipende da questo esemplare</strong>.
         </p>
       </header>
@@ -1734,7 +1960,7 @@
       </div>
 
       <div class="modulo__azioni">
-        <button class="bottone bottone--primario" id="rileva-hardware">Rileva di nuovo</button>
+        <button class="bottone bottone--primario" id="rileva-hardware">Rileva hardware</button>
         <span class="tenue" id="esito-hardware" role="status"></span>
       </div>
 
@@ -1882,6 +2108,8 @@
     </table>
 
     <p class="foglio__nota" id="foglio-nota"></p>
+    <p id="foglio-visivo-riepilogo"></p>
+    <details class="no-stampa"><summary>Fotografie del controllo visivo</summary><div id="foglio-visivo-foto"></div></details>
 
     <footer class="foglio__piede">
       <div class="foglio__firma">
@@ -1944,5 +2172,10 @@
 
 <script src="scena.js"></script>
 <script src="app.js"></script>
+<script src="accettazione.js"></script>
+<script src="exchange.js"></script>
+<script src="camera.js"></script>
+<script src="qr-camera.js"></script>
+<script src="visual.js"></script>
 </body>
 </html>

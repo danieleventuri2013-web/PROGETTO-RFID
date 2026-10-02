@@ -19,6 +19,7 @@ Uso diretto:
   python run.py lims       -> accettazione e ricezione campioni
   python run.py campaign   -> campagna di misura: tara potenza e parametri radio
   python run.py diario     -> rilegge il diario di prototipazione (nessun hardware)
+  python run.py qr-webcam --distinta <file.rfidman> -> prova QR con la webcam
   python run.py webui --simulato [file] -> interfaccia su lettore simulato
   python run.py webui --config <file>   -> con un'altra configurazione
 
@@ -129,6 +130,12 @@ def run_campaign() -> int:
 
     sys.argv = ["read_campaign.py", "--config", str(SRC / "app" / "config.yaml"), *sys.argv[2:]]
     return read_campaign.main()
+
+
+def run_qr_webcam() -> int:
+    from app.qr_webcam import main
+
+    return main(sys.argv[2:])
 
 
 def run_lims() -> int:
@@ -403,9 +410,11 @@ def run_tests() -> int:
         test_config_misura,
         test_dense_inventory,
         test_diario,
+        test_exchange,
         test_extended_protocol,
         test_flusso_continuo,
         test_gen2_config,
+        test_giornata,
         test_lims_campaign,
         test_lims_codec,
         test_lims_crypto,
@@ -421,7 +430,9 @@ def run_tests() -> int:
         test_lims_sealing,
         test_lims_tagio,
         test_lock,
+        test_operativita,
         test_protocol,
+        test_qr_webcam,
         test_reader,
         test_rpc,
         test_scenario,
@@ -429,11 +440,13 @@ def run_tests() -> int:
         test_service,
         test_strumenti,
         test_transports,
+        test_visual,
         test_webui,
     )
 
     for mod in (
         test_protocol,
+        test_qr_webcam,
         test_reader,
         test_transports,
         test_service,
@@ -441,6 +454,7 @@ def run_tests() -> int:
         test_client,
         test_lock,
         test_extended_protocol,
+        test_exchange,
         test_gen2_config,
         test_select_embedded,
         test_dense_inventory,
@@ -463,7 +477,10 @@ def run_tests() -> int:
         test_diario,
         test_scenario,
         test_strumenti,
+        test_operativita,
+        test_giornata,
         test_flusso_continuo,
+        test_visual,
     ):
         # Un modulo ripetuto per distrazione gonfierebbe il totale dei test
         # superati senza che nulla segnali l'errore.
@@ -488,6 +505,7 @@ ACTIONS = {
     "9": ("Campagna di misura della lettura", run_campaign),
     "10": ("GUI di controllo Tkinter (collaudo)", run_gui),
     "11": ("Diario di prototipazione (rilegge l'ultima sessione)", run_diario),
+    "12": ("Prova QR della distinta con webcam", run_qr_webcam),
 }
 
 
@@ -519,6 +537,7 @@ def main() -> int:
         "lims": run_lims,
         "campaign": run_campaign,
         "diario": run_diario,
+        "qr-webcam": run_qr_webcam,
     }
     if len(sys.argv) > 1 and sys.argv[1].lower() in direct:
         return direct[sys.argv[1].lower()]()

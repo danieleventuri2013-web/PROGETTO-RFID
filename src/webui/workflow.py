@@ -18,6 +18,7 @@ Riproduce le stesse guardie della GUI Tkinter, che non sono formalita':
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import datetime as dt
 import hashlib
@@ -32,12 +33,8 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-# Solo la tabella dei nomi delle bande: nessun I/O, nessun trasporto. La
-# copia locale divergerebbe dalla fonte alla prima aggiunta di regione.
-from rfid_silion.protocol import nome_regione
-
-from lims.codec import FIXATIVES, MATERIALS, SITES, SpecimenFlags, TagPayload
-from lims.codec import PAYLOAD_FIXED_SIZE
+from lims.acceptance import AcceptanceStore
+from lims.codec import FIXATIVES, MATERIALS, PAYLOAD_FIXED_SIZE, SITES, SpecimenFlags, TagPayload
 from lims.crypto import (
     Keyring,
     PayloadAuthenticationError,
@@ -45,7 +42,7 @@ from lims.crypto import (
     UnknownKeyError,
     max_plaintext_bytes,
 )
-from lims.db import LimsDatabase
+from lims.db import LimsDatabase, NotFoundError
 from lims.labels import LabelTemplate, NetworkLabelPrinter, content_from_record, render_zpl
 from lims.manifest import (
     MANIFEST_MAGIC,
@@ -64,31 +61,23 @@ from lims.model import (
     ShipmentState,
     Specimen,
     TagState,
-    validate_codice_fiscale,
 )
 from lims.pec import PecConfig, PecError, PecTransport, resolve_secret
-from lims.qr import Correzione, codifica as codifica_qr, svg as qr_svg
-from lims.riscontro import (
-    Riscontro,
-    apri_riscontro,
-    costruisci_riscontro,
-    sigilla_riscontro,
-)
+from lims.qr import Correzione
+from lims.qr import codifica as codifica_qr
+from lims.qr import svg as qr_svg
 from lims.riempimento import (
     Esito,
     SessioneRiempimento,
     politica_da_config,
     potenza_da_config,
 )
-from lims.sealing import ClosureProof, SealingPolicy, SealingSession, default_passes
-from lims.tabella import (
-    COLONNE,
-    TabellaError,
-    codifica_tabella,
-    decodifica_tabella,
-    per_stampa,
-    righe_da_contenuto,
+from lims.riscontro import (
+    apri_riscontro,
+    costruisci_riscontro,
+    sigilla_riscontro,
 )
+from lims.sealing import ClosureProof, SealingPolicy, SealingSession, default_passes
 from lims.secure_manifest import (
     certificate_fingerprint,
     load_certificate,
@@ -96,9 +85,22 @@ from lims.secure_manifest import (
     open_secure_manifest,
     seal_secure_manifest,
 )
+from lims.tabella import (
+    COLONNE,
+    TabellaError,
+    codifica_tabella,
+    per_stampa,
+    righe_da_contenuto,
+)
 from lims.tagio import MODALITA_PAYLOAD, MODALITA_SOLO_EPC, TagIO
 from rfid_silion.protocol import RF_MODE_MAX_SENSITIVITY as P_RF_MODE_MAX_SENSITIVITY
+
+# Solo la tabella dei nomi delle bande: nessun I/O, nessun trasporto. La
+# copia locale divergerebbe dalla fonte alla prima aggiunta di regione.
+from rfid_silion.protocol import nome_regione
 from rfid_silion.service import AntennaPower, Gen2Settings, ReaderSettings
+from webui.exchange import ExchangeMixin
+from webui.visual import VisualMixin
 
 __all__ = ["Workflow", "WorkflowError"]
 
@@ -122,6 +124,61 @@ def _intero_o_nulla(valore: Any) -> int | None:
     if valore is None or valore == "":
         return None
     return int(valore)
+
+
+def _descrizione_trasporto(valore: Any) -> str:
+    """Il trasporto in chiaro, qualunque forma abbia risposto il backend.
+
+    Il contratto del driver e' `Transport.describe() -> str` («serial
+    COM5@115200»), ma un backend puo' descriversi con un dizionario. Saper
+    leggere una forma sola significa far cadere il censimento sull'altra —
+    ed e' esattamente quello che succedeva con il lettore vero attaccato,
+    perche' il banco simulato usava il dizionario e l'hardware la stringa.
+    """
+    if isinstance(valore, Mapping):
+        return str(valore.get("description", ""))
+    return str(valore or "")
+
+
+def _porte_antenne(dati: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Tutte le porte antenna del modulo, popolate o no.
+
+    Il lettore dichiara una coppia `(id, stato)` per **ogni** porta che
+    possiede: quante se ne possono installare e' quindi un dato misurato, non
+    una costante. Su un modulo a 4 porte con tre antenne attaccate qui
+    arrivano quattro voci, di cui una libera.
+
+    Un servizio piu' vecchio non manda `antenna_ports`: in quel caso si
+    ricostruisce il minimo indispensabile dalle sole collegate, senza
+    inventare porte che non sappiamo se esistono.
+    """
+    porte = dati.get("antenna_ports")
+    if isinstance(porte, list) and porte:
+        lette: dict[int, bool] = {}
+        for voce in porte:
+            if isinstance(voce, Mapping) and voce.get("id") is not None:
+                lette[int(voce["id"])] = bool(voce.get("connected"))
+        if lette:
+            return [
+                {"id": i, "collegata": lette[i]} for i in sorted(lette)
+            ]
+    collegate = sorted({int(a) for a in (dati.get("antennas_connected") or [])})
+    return [{"id": i, "collegata": True} for i in collegate]
+
+
+def _nome_modulo(firmware: Mapping[str, Any]) -> str:
+    """Come si chiama il modulo, con le chiavi che il lettore usa davvero.
+
+    `boot_firmware` (0x03) risponde con `hardware_version` e
+    `firmware_version`: `model` e `version` non esistono, sono le chiavi del
+    banco simulato. Cercare solo quelle faceva scrivere «sconosciuto» sotto
+    un modulo che si era appena presentato con nome e cognome.
+    """
+    nome = str(firmware.get("model") or firmware.get("version") or "").strip()
+    if nome:
+        return nome
+    hardware = str(firmware.get("hardware_version") or "").strip()
+    return f"hw {hardware}" if hardware else "sconosciuto"
 
 
 def _etichetta_operatore(voce: Mapping[str, Any]) -> str:
@@ -305,12 +362,14 @@ def _voci_attive(elenco: Any) -> list[dict[str, Any]]:
     return voci
 
 
-class Workflow:
+class Workflow(ExchangeMixin, VisualMixin):
     """Stato e operazioni di una postazione.
 
     Una sola istanza per processo: possiede l'archivio, il portachiavi e il
     contesto di lavoro corrente (accettazione in corso, spedizione in corso).
     """
+
+    exchange_error = WorkflowError
 
     def __init__(
         self,
@@ -338,7 +397,9 @@ class Workflow:
         #: Cosa e' collegato davvero. Si riempie al primo collegamento
         #: (`_rileva_hardware`) e da li' in poi guida cosa l'interfaccia
         #: puo' offrire: prima si sa solo che non si sa.
-        self.hardware: dict[str, Any] = {"rilevato": False, "motivo": "mai collegato"}
+        self.hardware: dict[str, Any] = {"rilevato": False, "motivo": "da rilevare"}
+        self.radio_configurata = bool(getattr(backend, "ready", False))
+        self.ultimo_profilo: dict[str, Any] | None = None
 
         self.operatore = ""
 
@@ -352,6 +413,7 @@ class Workflow:
         # Spedizione in corso
         self.shipment_id: int | None = None
         self.sealing_record: Any = None
+        self._visual_init()
         # Riempimento in corso: vive solo in memoria. Dopo un riavvio si
         # ricostruisce dal contenuto della scatola, che invece e' nell'archivio.
         self.riempimento: SessioneRiempimento | None = None
@@ -369,6 +431,119 @@ class Workflow:
         self._ripristina_contesto()
 
     # -- infrastruttura -----------------------------------------------------
+    @property
+    def station_mode(self) -> str:
+        valore = self.lims_cfg.get("station_mode", "entrambe")
+        if valore not in ("spedizione", "ricezione", "entrambe"):
+            raise WorkflowError("ruolo della sede non valido: correggere le Impostazioni")
+        return valore
+
+    def politica_memorie(self) -> dict[str, bool]:
+        payload = self.modalita_scrittura == MODALITA_PAYLOAD
+        return {
+            "read_epc": True, "write_epc": True, "write_tid": False,
+            "read_tid": True, "read_user": payload,
+            **(self.lims_cfg.get("tag_memory") or {}),
+            "write_user": payload,
+        }
+
+    def impostazioni_operative(self) -> dict[str, Any]:
+        return {
+            "station_mode": self.station_mode,
+            "prototype_mode": bool(self.lims_cfg.get("prototype_mode", False)),
+            "memorie": self.politica_memorie(),
+            "user_memory_bytes": int(self.lims_cfg.get("user_memory_bytes", 64)),
+            "profilo_approvato": self.lims_cfg.get("tag_misurato"),
+            "tag_profiles": self.lims_cfg.get("tag_profiles", {}),
+            "active_tag_profile": self.lims_cfg.get("active_tag_profile", ""),
+            "radio_configurata": self.radio_configurata,
+        }
+
+    def salva_operativita(self, dati: Mapping[str, Any]) -> dict[str, Any]:
+        """Convalida e salva le scelte prima di renderle visibili al flusso."""
+        ruolo = dati.get("station_mode", self.station_mode)
+        if ruolo not in ("spedizione", "ricezione", "entrambe"):
+            raise WorkflowError("scegliere spedizione, ricezione o entrambe")
+        if ruolo != self.station_mode and (
+            any(not v.get("epc") for v in self.pending)
+            or self.riempimento is not None
+            or (self.shipment_id is not None and self.db.shipment_row(self.shipment_id).get("state") not in ("sent", "cancelled"))
+            or (self.inbound_id is not None and not self.db.inbound_row(self.inbound_id).get("confirmed_at"))
+        ):
+            raise WorkflowError("completare o annullare l'attivita' in corso prima di cambiare ruolo")
+        memorie = {**self.politica_memorie(), **dict(dati.get("memorie") or {})}
+        if set(memorie) != {"read_epc", "write_epc", "read_tid", "write_tid", "read_user", "write_user"}:
+            raise WorkflowError("parametri delle memorie non riconosciuti")
+        if any(type(v) is not bool for v in memorie.values()):
+            raise WorkflowError("le scelte delle memorie devono essere box booleani")
+        if not memorie["read_epc"] or not memorie["write_epc"] or memorie["write_tid"]:
+            raise WorkflowError("EPC obbligatorio; il TID non viene scritto")
+        if not memorie["read_tid"] and (memorie["read_user"] or memorie["write_user"]):
+            raise WorkflowError("TID necessario per autenticare la USER memory")
+        capacita = dati.get("user_memory_bytes", self.lims_cfg.get("user_memory_bytes", 64))
+        if type(capacita) is not int or capacita < 0 or capacita > 8192 or capacita % 2:
+            raise WorkflowError("capacita' USER: indicare byte pari fra 0 e 8192")
+        if memorie["write_user"] and max_plaintext_bytes(capacita) < PAYLOAD_FIXED_SIZE:
+            raise WorkflowError("USER memory insufficiente per il payload cifrato")
+        prototipo = dati.get("prototype_mode", self.lims_cfg.get("prototype_mode", False))
+        if type(prototipo) is not bool:
+            raise WorkflowError("modalita' prototipo non valida")
+        nuova = copy.deepcopy(self.config)
+        nuova.setdefault("lims", {}).update(
+            station_mode=ruolo, prototype_mode=prototipo, tag_memory=memorie,
+            user_memory_bytes=capacita,
+            modalita_scrittura=MODALITA_PAYLOAD if memorie["write_user"] else MODALITA_SOLO_EPC,
+        )
+        nome_profilo = str(dati.get("profile_name", "")).strip()
+        if len(nome_profilo) > 80:
+            raise WorkflowError("nome del profilo troppo lungo (massimo 80 caratteri)")
+        if nome_profilo:
+            nuova["lims"].setdefault("tag_profiles", {})[nome_profilo] = {
+                "memorie": memorie, "user_memory_bytes": capacita,
+            }
+            nuova["lims"]["active_tag_profile"] = nome_profilo
+        self._scrivi_config(nuova)
+        self.config = nuova
+        self.lims_cfg = dict(nuova["lims"])
+        self.db.log_event("operativita", ok=True, operator=self.operatore,
+                          detail=json.dumps(self.impostazioni_operative(), ensure_ascii=False))
+        return self.impostazioni_operative()
+
+    def applica_radio(self) -> dict[str, Any]:
+        self.radio_configurata = False
+        risposta = self.backend.configure(self._reader_settings())
+        self.radio_configurata = bool(risposta.ok)
+        return {"configurazione_ok": bool(risposta.ok),
+                "configurazione_errore": (risposta.error or {}).get("message", "")}
+
+    OPERAZIONI_SPEDIZIONE = frozenset({
+        "controllo_visivo", "recupera_visivo",
+        "colli_email", "prepara_invio_email", "dettaglio_email", "file_email", "invia_email", "conferma_email_manuale",
+        "salva_bozza", "seleziona_accettazione", "sospendi_accettazione", "annulla_bozza",
+        "registra", "conferma_conteggio", "correggi_conteggio", "sorveglia", "scrivi",
+        "annulla_accettazione", "nuova_accettazione", "annulla_contenitore",
+        "prepara_spedizione", "riapri_spedizione", "annulla_spedizione",
+        "avvia_riempimento", "sorveglia_scatola", "togli_dalla_scatola",
+        "chiudi_riempimento", "verifica_contenuto", "sigilla", "invia_distinta_pec", "aggiorna_ricevute_pec",
+        "conferma_invio", "importa_riscontro", "stampa_etichetta", "esporta_distinta",
+    })
+    OPERAZIONI_RICEZIONE = frozenset({
+        "foto_visiva_ricevuta",
+        "importa_distinte", "distinte_attese", "seleziona_distinta", "riconosci_collo",
+        "importa_distinta", "leggi_qr_distinta", "decodifica_qr_camera", "leggi_volume", "conferma_ricezione", "esporta_riscontro",
+    })
+
+    def verifica_operazione(self, nome: str) -> None:
+        if ((self.station_mode == "ricezione" and nome in self.OPERAZIONI_SPEDIZIONE)
+                or (self.station_mode == "spedizione" and nome in self.OPERAZIONI_RICEZIONE)):
+            raise WorkflowError(f"operazione non disponibile nella sede di sola {self.station_mode}")
+
+    def antenne_lettura(self) -> tuple[int, ...]:
+        antenne = tuple(self.lims_cfg.get("read_antennas", (1, 2)))
+        if not antenne:
+            raise WorkflowError("nessuna antenna di lettura configurata")
+        return antenne
+
     def _carica_portachiavi(self) -> Keyring:
         percorso = Path(self.lims_cfg.get("keyring", "logs/lims_keys.json"))
         if percorso.exists():
@@ -473,10 +648,16 @@ class Workflow:
         }
 
     def _tagio(self, *, scrittura: bool) -> TagIO:
-        chiave = "write_antennas" if scrittura else "read_antennas"
-        antenne = self.lims_cfg.get(chiave) or [
-            antenna["id"] for antenna in self.config.get("antennas", [])
-        ]
+        if scrittura:
+            # In scrittura non esiste ripiego: o si sa quale antenna e' la
+            # postazione, o non si scrive. Vedi `antenne_scrittura`.
+            antenne = self.antenne_scrittura()
+        else:
+            antenne = self.lims_cfg.get("read_antennas", [
+                antenna["id"] for antenna in self.config.get("antennas", [])
+            ])
+            if not antenne:
+                raise WorkflowError("nessuna antenna di lettura configurata")
         accesso = self.config.get("tag_access", {}) or {}
         return TagIO(
             self.backend,
@@ -489,6 +670,8 @@ class Workflow:
             db=self.db,
             operator=self.operatore,
             modalita=self.modalita_scrittura,
+            read_tid=self.politica_memorie()["read_tid"],
+            read_user=self.politica_memorie()["read_user"],
         )
 
     @property
@@ -541,6 +724,117 @@ class Workflow:
         risposta = self.backend.configure_gen2(gen2)
         if not risposta.ok:
             raise WorkflowError("ripristino dei parametri Gen2 non riuscito")
+
+    #: Assetto Gen2 dei comandi di accesso (lettura mirata, cambio EPC, scrittura
+    #: della USER memory, lock). **Sessione S0, target A statico.**
+    #:
+    #: Il manuale EX10 2024-12 lo dice due volte, identico, per il cambio EPC
+    #: (§6.1 p.101) e per la lettura (§6.5 p.121): *«If Target A-B is set, the
+    #: module will use Target A»*. Cioe' ogni comando di accesso interroga
+    #: **solo** i tag con il flag di inventario su A. In sessione S2 quel flag
+    #: resta su B finche' il tag e' alimentato, e ogni giro di inventario ce lo
+    #: mette: il comando che segue non trova piu' niente e risponde «0x0400 No
+    #: tag found» su un tag fermo davanti all'antenna. In S0 il flag decade
+    #: quando il tag perde alimentazione, NON necessariamente fra due comandi:
+    #: con RF continua puo' restare B. S0 limita il problema ma non garantisce
+    #: il successo; ogni scrittura richiede comunque una verifica effettiva.
+    #:
+    #: Misurato al banco il 27/08/2026: con S2 + target A-B il cambio EPC
+    #: fallisce 5 volte su 5 e la lettura del TID riesce circa una volta su due;
+    #: il giorno prima, con S0 e target statico, riusciva 6 volte su 6 sulla
+    #: stessa antenna e con le stesse potenze.
+    ASSETTO_ACCESSO = Gen2Settings(session=0, target=0, target_dynamic=False)
+
+    def antenne_scrittura(self) -> tuple[int, ...]:
+        """Le antenne della postazione di scrittura, e nessun'altra.
+
+        In questa fase deve trasmettere **solo** l'antenna di scrittura: le
+        antenne di lettura inquadrano il banco, dove stanno i contenitori gia'
+        scritti e la scatola in riempimento. Se rispondessero anche loro, la
+        guardia «un solo tag in campo» vedrebbe mezzo tavolo e la scrittura
+        colpirebbe il contenitore sbagliato.
+
+        Se `lims.write_antennas` manca, ci si ferma. Il ripiego su *tutte* le
+        antenne configurate era il modo silenzioso di accendere anche quelle di
+        lettura proprio nel momento in cui non devono trasmettere.
+        """
+        antenne = tuple(int(a) for a in (self.lims_cfg.get("write_antennas") or ()))
+        if not antenne:
+            raise WorkflowError(
+                "nessuna antenna di scrittura configurata: impostarla in "
+                "Impostazioni prima di scrivere un tag (lims.write_antennas)"
+            )
+        return antenne
+
+    def _potenze_solo(self, antenne: tuple[int, ...]) -> ReaderSettings:
+        """Potenze della sola postazione indicata, con i valori di configurazione."""
+        per_id = {int(a["id"]): a for a in self.config.get("antennas", [])}
+        return ReaderSettings(
+            region=self.config.get("reader", {}).get("region", 0x08),
+            powers=tuple(
+                AntennaPower(
+                    antenna_id=antenna,
+                    read_power_cdbm=int(per_id.get(antenna, {}).get("read_power", 2000)),
+                    write_power_cdbm=int(per_id.get(antenna, {}).get("write_power", 2000)),
+                )
+                for antenna in antenne
+            ),
+        )
+
+    @contextlib.contextmanager
+    def _assetto_accesso(self, antenne: tuple[int, ...]):
+        """Porta il modulo nell'assetto dei comandi di accesso, e lo rimette com'era.
+
+        Due cose insieme, per la durata dell'operazione: l'assetto Gen2 qui sopra
+        e le potenze delle **sole** antenne di quella postazione.
+
+        Lo fanno gia' il sigillo e la campagna, ognuno con il proprio assetto: la
+        postazione di scrittura era l'unico flusso che non lo faceva, e quindi
+        ereditava quello che l'ultimo pannello di misura aveva lasciato sul
+        modulo. Un pulsante premuto in Impostazioni non deve poter rompere la
+        scrittura dei tag.
+
+        `q` e `rf_mode` restano a `None`: non si tocca cio' che l'operatore ha
+        tarato a mano, e per i comandi di accesso il modulo usa comunque Q=2
+        (manuale §6.1, prima nota).
+
+        Un backend che non espone le leve Gen2 non ha questo problema: si procede
+        senza, invece di rifiutare l'operazione.
+        """
+        applica = getattr(self.backend, "configure_gen2", None)
+        legge = getattr(self.backend, "read_gen2_settings", None)
+        if applica is None or legge is None:
+            yield None
+            return
+        precedente = self._snapshot_gen2()
+        potenze = self.backend.configure(self._potenze_solo(antenne))
+        if not potenze.ok:
+            self.radio_configurata = False
+            raise WorkflowError(
+                (potenze.error or {}).get(
+                    "message", "potenze della postazione non applicate"
+                )
+            )
+        risposta = applica(self.ASSETTO_ACCESSO)
+        if not risposta.ok:
+            self.radio_configurata = False
+            # Le potenze sono gia' cambiate: rimetterle prima di uscire.
+            self._restore_radio(precedente)
+            raise WorkflowError(
+                (risposta.error or {}).get(
+                    "message", "assetto radio della postazione non applicato"
+                )
+            )
+        try:
+            yield precedente
+        finally:
+            # Il ripristino non deve poter nascondere l'errore che ha
+            # interrotto l'operazione: si registra e si va avanti.
+            try:
+                self._restore_radio(precedente)
+            except Exception:  # noqa: BLE001
+                self.radio_configurata = False
+                log.exception("Ripristino dell'assetto radio dopo l'accesso non riuscito")
 
     def chiudi(self) -> None:
         self.db.close()
@@ -602,11 +896,11 @@ class Workflow:
                         "specimen_id": self._reperto_di(record.container_id),
                         "index": record.index,
                         "total": record.total,
-                        "epc": record.epc,
+                        "epc": record.epc if record.state != ContainerState.PLANNED.value else "",
                         "tid": record.tid,
-                        "stato": "scritto" if record.epc else "da_scrivere",
+                        "stato": "scritto" if record.epc and record.state != ContainerState.PLANNED.value else "da_scrivere",
                         "payload": TagPayload(
-                            codice_fiscale=riga["codice_fiscale"],
+                            codice_fiscale=riga["codice_fiscale"] or "",
                             accession_id=self.accession_id,
                             container_index=record.index,
                             container_total=record.total,
@@ -671,6 +965,7 @@ class Workflow:
         webui = self.config.get("webui", {}) or {}
         return {
             "hardware": self.hardware,
+            "operativita": self.impostazioni_operative(),
             "lab_id": self.lims_cfg.get("lab_id", 0),
             "laboratorio": self.laboratorio(),
             "operatori": [
@@ -771,21 +1066,17 @@ class Workflow:
 
     # -- lifecycle del lettore ----------------------------------------------
     def connetti(self) -> dict[str, Any]:
+        self.radio_configurata = False
         avvio = self.backend.start()
         if not avvio.ok:
             raise WorkflowError(
                 (avvio.error or {}).get("message", "avvio del lettore non riuscito")
             )
-        configurazione = self.backend.configure(self._reader_settings())
-        # Il censimento si fa **qui**, una volta, appena il modulo risponde:
-        # quali misure siano possibili dipende dall'esemplare, non dal
-        # datasheet, e senza saperlo l'interfaccia proporrebbe procedure che
-        # questo firmware rifiuta. Da qui in poi il resto si adatta.
-        self._rileva_hardware()
+        configurazione = self.applica_radio()
+        self.hardware = {**self.hardware, "rilevato": False, "motivo": "da rilevare"}
         return {
             "avvio": avvio.to_dict(),
-            "configurazione_ok": bool(configurazione.ok),
-            "configurazione_errore": (configurazione.error or {}).get("message", ""),
+            **configurazione,
             "hardware": self.hardware,
         }
 
@@ -808,8 +1099,18 @@ class Workflow:
             }
             return self.hardware
 
-        dati = dict((risposta.to_dict().get("data") or {}))
-        self.hardware = self._leggi_censimento(dati)
+        try:
+            dati = dict((risposta.to_dict().get("data") or {}))
+            self.hardware = self._leggi_censimento(dati)
+        except Exception as exc:  # noqa: BLE001 - vale quanto detto sopra
+            # Anche *interpretare* il censimento sta sotto la stessa regola.
+            # Prima no: un campo di forma inattesa faceva fallire `connetti()`
+            # con il lettore gia' avviato e le antenne gia' viste, e
+            # l'operatore leggeva «collegamento non riuscito» davanti a un
+            # modulo perfettamente vivo (con la porta seriale tenuta aperta).
+            log.exception("Censimento non interpretabile")
+            self.hardware = {"rilevato": False, "motivo": str(exc)}
+            return self.hardware
         log.info(
             "Hardware rilevato: %s | bande %s | antenne %s",
             self.hardware.get("modulo", "?"),
@@ -836,6 +1137,13 @@ class Workflow:
         firmware = dati.get("firmware_info") or {}
         bande = sorted(int(b) for b in (dati.get("regions_available") or []))
         antenne = dati.get("antennas_connected")
+        porte = _porte_antenne(dati)
+        collegate = {p["id"] for p in porte if p["collegata"]}
+        # I ruoli assegnati oggi, confrontati con quello che c'e' davvero
+        # attaccato: un'antenna di scrittura su una porta vuota e' il guasto
+        # che si scopre col tag in mano, non prima.
+        lettura = [int(a) for a in (self.lims_cfg.get("read_antennas") or [])]
+        scrittura = [int(a) for a in (self.lims_cfg.get("write_antennas") or [])]
         configurata = int(self.config.get("reader", {}).get("region", 0x08))
         # Una banda sola vuol dire modulo monoregione. Piu' d'una vuol dire
         # certificazione Cina, l'unica che permette anche le frequenze singole.
@@ -843,12 +1151,22 @@ class Workflow:
 
         return {
             "rilevato": True,
-            "modulo": firmware.get("model") or firmware.get("version") or "sconosciuto",
+            "modulo": _nome_modulo(firmware),
             "firmware": firmware,
-            "trasporto": (dati.get("transport") or {}).get("description", ""),
+            "trasporto": _descrizione_trasporto(dati.get("transport")),
             "seriale": dati.get("serial_number") or "",
             "temperatura_c": dati.get("temperature_c"),
             "antenne_collegate": antenne,
+            "antenne_porte": porte,
+            # Quante se ne possono installare: il numero che l'operatore
+            # cerca quando si chiede se puo' aggiungerne una quarta.
+            "antenne_massime": len(porte),
+            "antenne_lettura": lettura,
+            "antenne_scrittura": scrittura,
+            # Ruoli assegnati a porte che il modulo dichiara vuote.
+            "antenne_ruoli_scollegati": sorted(
+                {a for a in lettura + scrittura if collegate and a not in collegate}
+            ),
             "antenne_configurate": sorted(
                 {int(a.get("id")) for a in (self.config.get("antennas") or []) if a.get("id")}
             ),
@@ -872,12 +1190,106 @@ class Workflow:
         }
 
     def disconnetti(self) -> dict[str, Any]:
+        self.radio_configurata = False
+        self.hardware = {**self.hardware, "rilevato": False, "motivo": "rilevamento precedente"}
         return {"stop": self.backend.stop().to_dict()}
 
     def stato(self) -> dict[str, Any]:
         return self.backend.snapshot()
 
     # -- accettazione --------------------------------------------------------
+    def accettazioni_giorno(self, dati: Mapping[str, Any]) -> dict[str, Any]:
+        try:
+            return AcceptanceStore(self.db).giornata(dati.get("data"), str(dati.get("query", "")), str(dati.get("filtro", "tutti")))
+        except (ValueError, TypeError) as exc:
+            raise WorkflowError(str(exc)) from exc
+
+    def dettaglio_accettazione(self, patient_id: Any) -> dict[str, Any]:
+        try:
+            return AcceptanceStore(self.db).dettaglio(int(patient_id))
+        except (ValueError, TypeError, NotFoundError) as exc:
+            raise WorkflowError(str(exc)) from exc
+
+    def salva_bozza(self, dati: Mapping[str, Any]) -> dict[str, Any]:
+        """Salva il lavoro senza selezionarlo sulla radio e senza avviarla."""
+        self._require_operator("salvare un'accettazione")
+        try:
+            persona = Patient(
+                id=int(dati["patient_id"]) if dati.get("patient_id") is not None else None,
+                nome=str(dati.get("nome", "")), cognome=str(dati.get("cognome", "")),
+                codice_fiscale=str(dati.get("codice_fiscale") or "").strip(),
+                sesso=Sex(str(dati.get("sesso", "X"))), data_nascita=_data_o_nulla(dati.get("data_nascita")),
+            )
+            if not isinstance(dati.get("reperti", []), list):
+                raise WorkflowError("i campioni devono essere un elenco")
+            reperti = _reperti_richiesti(dati) if dati.get("reperti") else []
+            for r in reperti:
+                for campo, codebook in (("material_code", MATERIALS), ("site_code", SITES), ("fixative_code", FIXATIVES)):
+                    if r[campo] not in codebook:
+                        raise WorkflowError(f"{campo}: valore non riconosciuto")
+            prelievo = _data_o_nulla(dati.get("data_prelievo"))
+            puliti = {**dati, "data_prelievo": prelievo.isoformat() if prelievo else None,
+                      "ora_prelievo": _ora_pulita(dati.get("ora_prelievo"))}
+            with self._scrittura:
+                risposta = AcceptanceStore(self.db).salva(persona, puliti, reperti)
+            # Una modifica a una bozza selezionata invalida la selezione radio,
+            # altrimenti resterebbero in memoria i vecchi ID dei contenitori.
+            if self.accession_id == risposta["accession_id"]:
+                self.specimen_id = None  # il vecchio reperto è già stato sostituito
+                self.sospendi_accettazione()
+            self.db.log_event("acceptance_draft", ok=True, operator=self.operatore,
+                              detail=f"paziente {risposta['patient_id']}; accettazione {risposta['accession_id']}")
+            return {**risposta, **self.dettaglio_accettazione(risposta["patient_id"])}
+        except (ValueError, TypeError) as exc:
+            raise WorkflowError(str(exc)) from exc
+
+    def sospendi_accettazione(self) -> dict[str, Any]:
+        precedente = self.accession_id
+        self._salva_contesto()
+        self.specimen_id = self.accession_id = None
+        self.pending = []
+        self.external_ref = ""
+        self.conteggio_confermato = False
+        self._salva_contesto()
+        return {"ok": True, "accettazione_precedente": precedente}
+
+    def seleziona_accettazione(self, accession_id: Any) -> dict[str, Any]:
+        self._require_operator("preparare la scrittura")
+        try:
+            codice = int(accession_id)
+        except (ValueError, TypeError) as exc:
+            raise WorkflowError("accettazione non valida") from exc
+        caso = self.db.connection.execute("SELECT * FROM cases WHERE accession_id=?", (codice,)).fetchone()
+        if caso is None or caso["cancelled_at"]:
+            raise WorkflowError("accettazione inesistente o annullata")
+        prima = self.db.connection.execute("SELECT s.id FROM specimens s JOIN containers c ON c.specimen_id=s.id WHERE s.case_id=? AND c.state<>'voided' ORDER BY c.idx LIMIT 1", (caso["id"],)).fetchone()
+        if prima is None:
+            raise WorkflowError("aggiungere almeno un campione prima di scrivere")
+        self._salva_contesto()
+        self.specimen_id = prima["id"]
+        self.accession_id = codice
+        self.conteggio_confermato = bool(caso["count_confirmed"])
+        self._salva_contesto()
+        self._ripristina_contesto()
+        return self.stato_accettazione()
+
+    def annulla_bozza(self, accession_id: Any) -> dict[str, Any]:
+        self._require_operator("annullare una bozza")
+        try:
+            codice = int(accession_id)
+        except (ValueError, TypeError) as exc:
+            raise WorkflowError("accettazione non valida") from exc
+        with self.db.connection:
+            c = self.db.connection.execute("SELECT * FROM cases WHERE accession_id=?", (codice,)).fetchone()
+            if c is None or c["frozen_at"]:
+                raise WorkflowError("si possono annullare da qui solo bozze non avviate")
+            self.db.connection.execute("UPDATE cases SET cancelled_at=? WHERE id=?", (dt.datetime.now().astimezone().isoformat(), c["id"]))
+            self.db.connection.execute("UPDATE containers SET state='voided', voided_at=?, voided_reason='bozza annullata' WHERE specimen_id IN (SELECT id FROM specimens WHERE case_id=?)", (dt.datetime.now().astimezone().isoformat(), c["id"]))
+        if self.accession_id == codice:
+            self.sospendi_accettazione()
+        self.db.log_event("acceptance_cancel", ok=True, operator=self.operatore, detail=f"bozza {codice}")
+        return {"ok": True}
+
     def registra_accettazione(self, dati: Mapping[str, Any]) -> dict[str, Any]:
         """Registra paziente, accettazione e reperto; pianifica i contenitori."""
         self._require_operator("registrare un'accettazione")
@@ -888,7 +1300,7 @@ class Workflow:
             )
         try:
             paziente = Patient(
-                codice_fiscale=validate_codice_fiscale(str(dati.get("codice_fiscale", ""))),
+                codice_fiscale=str(dati.get("codice_fiscale", "")).strip(),
                 cognome=str(dati.get("cognome", "")),
                 nome=str(dati.get("nome", "")),
                 sesso=Sex(str(dati.get("sesso", "X")).upper()),
@@ -1097,6 +1509,8 @@ class Workflow:
         """Cambia il numero di contenitori finche' e' ancora possibile."""
         if self.specimen_id is None:
             raise WorkflowError("registrare prima un'accettazione")
+        if self.db.connection.execute("SELECT 1 FROM cases WHERE accession_id=? AND frozen_at IS NOT NULL", (self.accession_id,)).fetchone():
+            raise WorkflowError("lotto già avviato: i nuovi campioni richiedono una nuova accettazione")
         with self._scrittura:
             try:
                 esito = self.db.adjust_container_count(self.specimen_id, int(nuovo_totale))
@@ -1130,9 +1544,9 @@ class Workflow:
                     "specimen_id": self._reperto_di(record.container_id),
                     "index": record.index,
                     "total": record.total,
-                    "epc": record.epc or "",
+                    "epc": (record.epc or "") if record.state != ContainerState.PLANNED.value else "",
                     "tid": record.tid or "",
-                    "stato": "scritto" if record.epc else "da_scrivere",
+                    "stato": "scritto" if record.epc and record.state != ContainerState.PLANNED.value else "da_scrivere",
                     "payload": replace(
                         base,
                         container_index=record.index,
@@ -1181,7 +1595,14 @@ class Workflow:
         from lims.responses import inventory_epcs
         from rfid_silion.service import InventoryRequest
 
-        antenne = tuple(self.lims_cfg.get("write_antennas") or (1,))
+        # La stessa lista che usera' la scrittura: la sorveglianza guarda la
+        # postazione, non il banco. Qui una configurazione mancante non e' un
+        # errore da sollevare: la sorveglianza gira due volte al secondo, e
+        # farla morire lascerebbe la scena ferma senza dire perche'. Lo dice.
+        try:
+            antenne = self.antenne_scrittura()
+        except WorkflowError as exc:
+            return {"stato": "errore", "epcs": [], "messaggio": str(exc)}
         risposta = self.backend.inventory(
             InventoryRequest(antennas=antenne, timeout_ms=400)
         )
@@ -1205,9 +1626,12 @@ class Workflow:
         *,
         on_step: Callable[[str], None] | None = None,
         authorized_rewrite: bool = False,
+        expected_accession_id: int | None = None,
     ) -> dict[str, Any]:
         """Scrive il prossimo contenitore in attesa."""
         self._require_operator("scrivere un tag")
+        if expected_accession_id is not None and expected_accession_id != self.accession_id:
+            raise WorkflowError("la selezione è cambiata in un'altra finestra: riaprire l'accettazione dall'elenco")
         if not self.conteggio_confermato:
             raise WorkflowError(
                 "prima di scrivere serve la conferma del numero di campioni"
@@ -1217,12 +1641,21 @@ class Workflow:
             raise WorkflowError("non ci sono contenitori in attesa di scrittura")
 
         tagio = self._tagio(scrittura=True)
-        esito = tagio.provision(
-            voce["payload"],
-            container_id=voce["container_id"],
-            on_step=on_step,
-            authorized_rewrite=authorized_rewrite,
+        self.db.connection.execute(
+            "UPDATE cases SET frozen_at=COALESCE(frozen_at,?), edit_version=edit_version+1 WHERE accession_id=?",
+            (dt.datetime.now().astimezone().isoformat(), self.accession_id),
         )
+        self.db.connection.commit()
+        # La postazione si porta il proprio assetto radio e le proprie antenne,
+        # e li restituisce com'erano: quello che un pannello di misura ha
+        # lasciato sul modulo non deve poter decidere se un tag si scrive.
+        with self._assetto_accesso(tagio.antennas):
+            esito = tagio.provision(
+                voce["payload"],
+                container_id=voce["container_id"],
+                on_step=on_step,
+                authorized_rewrite=authorized_rewrite or bool(self.lims_cfg.get("prototype_mode", False)),
+            )
         if esito.ok:
             voce["epc"] = esito.epc
             voce["tid"] = esito.tid
@@ -1230,10 +1663,14 @@ class Workflow:
         else:
             voce["stato"] = "errore"
 
+        self.db.connection.execute("UPDATE containers SET last_write_error=? WHERE id=?",
+                                   ("" if esito.ok else esito.error, voce["container_id"]))
+        self.db.connection.commit()
         self._salva_contesto()
 
         risposta = self.stato_accettazione()
         risposta["scrittura"] = esito.to_dict()
+        risposta["radio_configurata"] = self.radio_configurata
         risposta["campione"] = voce["payload"].describe()
         return risposta
 
@@ -1418,7 +1855,7 @@ class Workflow:
         return SessioneRiempimento(
             self.backend,
             self.db,
-            antenne=tuple(self.lims_cfg.get("read_antennas") or (1, 2)),
+            antenne=self.antenne_lettura(),
             politica=politica_da_config(self.lims_cfg),
             potenza_cdbm=potenza_da_config(self.lims_cfg),
             region=int(self.config.get("reader", {}).get("region", 0x08)),
@@ -1559,6 +1996,51 @@ class Workflow:
             detail=f"scatola {self.shipment_id}: {quanti} contenitori",
         )
         return self.stato_spedizione()
+
+    def verifica_contenuto(self, shipment_id: int) -> dict[str, Any]:
+        """Fotografia radio recente degli attesi, senza certificare la scatola.
+
+        Ogni richiesta riparte da zero: i tag inseriti in precedenza non sono
+        una prova di presenza attuale. Due inventari brevi riducono i mancati
+        rilevamenti occasionali. Il risultato non cambia spedizione o sigillo.
+        """
+        from lims.codec import epc_kind
+        from lims.responses import inventory_epcs
+        from rfid_silion.service import InventoryRequest
+
+        if self.shipment_id is None or shipment_id != self.shipment_id:
+            raise WorkflowError("la spedizione attiva e' cambiata: riaprire la scatola")
+        if self.db.shipment_row(self.shipment_id)["state"] != "open":
+            raise WorkflowError("la verifica preliminare richiede una spedizione aperta")
+        if self.riempimento is not None:
+            raise WorkflowError("terminare l'inserimento prima di verificare il contenuto")
+        contenuto = self.db.shipment_contents(self.shipment_id)
+        attesi = {r.epc for r in contenuto if r.epc}
+        if not attesi:
+            raise WorkflowError("la spedizione non contiene tag attesi")
+        antenne = self.antenne_lettura()
+        visti: set[str] = set()
+        with self._assetto_accesso(antenne):
+            for _ in range(2):
+                risposta = self.backend.inventory(InventoryRequest(antennas=antenne, timeout_ms=500))
+                if not risposta.ok:
+                    raise WorkflowError((risposta.error or {}).get("message", "lettura del contenuto non riuscita"))
+                visti.update(inventory_epcs(risposta))
+        if not self.radio_configurata:
+            raise WorkflowError("ripristino radio non riuscito: riapplicare la configurazione")
+        trovati = attesi & visti
+        estranei = sorted(epc for epc in visti - attesi if epc_kind(epc) != "box")
+        return {
+            "shipment_id": self.shipment_id,
+            "verificato_il": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
+            "antenne": list(antenne), "attesi": len(attesi), "trovati": len(trovati),
+            "completo": trovati == attesi and not estranei,
+            "estranei": estranei,
+            "contenitori": [
+                {"epc": r.epc, "etichetta": r.label, "rilevato": r.epc in trovati}
+                for r in contenuto if r.epc
+            ],
+        }
 
     def stato_spedizione(self) -> dict[str, Any]:
         if self.shipment_id is None:
@@ -1719,7 +2201,7 @@ class Workflow:
         if not attesi:
             raise WorkflowError("la spedizione non contiene contenitori con EPC assegnato")
 
-        antenne = tuple(self.lims_cfg.get("read_antennas") or (1, 2))
+        antenne = self.antenne_lettura()
         potenze = tuple(self.lims_cfg.get("seal_powers_cdbm") or (2000, 2500, 2900))
         gen2_precedente = self._snapshot_gen2()
         sessione = SealingSession(
@@ -1763,6 +2245,11 @@ class Workflow:
         )
         if record.ok:
             self.db.set_shipment_state(self.shipment_id, ShipmentState.SEALED)
+
+        try:
+            self.visual_finalizza(record)
+        except Exception:  # noqa: BLE001
+            log.exception("Aggiornamento della prova visiva facoltativa non riuscito")
 
         risposta = self.stato_spedizione()
         risposta["sigillo"] = record.to_dict()
@@ -1841,6 +2328,7 @@ class Workflow:
             box_epc=box_epc,
         )
         distinta.manifest_uuid = identificativo
+        distinta.visual_check = self.visual_documento()
         distinta.source_code = source_code
         distinta.destination_code = destination_code
         firmatario = ""
@@ -2002,6 +2490,7 @@ class Workflow:
                 ),
             },
             "codici": codici,
+            "visual_check": self.visual_documento(),
         }
 
     def _chiave_qr(self) -> bytes | None:
@@ -2024,23 +2513,43 @@ class Workflow:
         attaccato, si legge il codice e la lista dei campioni attesi c'e'.
         """
         self._require_operator("leggere una distinta")
+        self.verifica_operazione("leggi_qr_distinta")
         if isinstance(scansioni, str):
             scansioni = [scansioni]
         if not isinstance(scansioni, (list, tuple)) or not scansioni:
             raise WorkflowError("nessun codice letto")
+        if len(scansioni) > 9 or any(not isinstance(v, str) or len(v) > 10000 for v in scansioni):
+            raise WorkflowError("scansioni QR non valide: massimo nove parti")
         try:
-            letta = decodifica_tabella(
-                [str(voce) for voce in scansioni], chiave=self._chiave_qr()
-            )
+            from app.qr_webcam import RaccoltaQR
+
+            raccolta = RaccoltaQR(tuple(self.keyring.require(i) for i in self.keyring.key_ids))
+            letta = raccolta.acquisisci(scansioni)
+            if letta is None:
+                return {"completa": False, "parti_acquisite": sorted(raccolta.parti),
+                        "parti": raccolta.totale, "messaggio": raccolta.avanzamento}
         except TabellaError as exc:
             raise WorkflowError(str(exc)) from exc
 
         self.distinta_qr = letta
         risposta = letta.describe()
+        risposta["completa"] = True
         risposta["righe"] = per_stampa(letta.righe)
+        from app.qr_webcam import confronta
+
+        if self.distinta is not None and self.inbound_id is not None and confronta(letta, self.distinta)["ok"]:
+            risposta["ricezione"] = self.stato_ricezione()
+        else:
+            # Un foglio diverso non deve usare la conferma della distinta che
+            # era selezionata prima. RFQ1 non contiene l'identità della spedizione.
+            self.inbound_id = None
+            self.distinta = None
+            self._salva_contesto()
+            risposta["ricezione"] = None
         return risposta
 
     def esporta_distinta(self) -> tuple[bytes, str]:
+        self.verifica_operazione("esporta_distinta")
         """Restituisce sempre gli stessi byte della distinta archiviata."""
         self._require_operator("esportare la distinta")
         record = self._garantisci_distinta_archiviata()
@@ -2181,7 +2690,7 @@ class Workflow:
         destinatario = stato.get("destinatario") or {}
         laboratorio = self.laboratorio()
         contenitori = stato.get("attesi", 0)
-        nome_file = f"distinta_{self.shipment_id}_{_oggi():%Y%m%d}.rfidman"
+        nome_file = self.db.outbound_manifest(self.shipment_id)["filename"]
 
         righe = [
             f"Spedizione {self.shipment_id} del {_oggi():%d/%m/%Y}"
@@ -2217,7 +2726,7 @@ class Workflow:
         }
 
     # -- ricezione -----------------------------------------------------------
-    def importa_distinta(self, blob: bytes) -> dict[str, Any]:
+    def importa_distinta(self, blob: bytes, *, attiva: bool = True) -> dict[str, Any]:
         """Carica la distinta del mittente.
 
         I tre errori restano distinti perche' all'operatore servono tre azioni
@@ -2279,14 +2788,15 @@ class Workflow:
         if distinta.shipment_id is None:
             raise WorkflowError("la distinta non contiene il numero di spedizione")
         impronta = hashlib.sha256(bytes(blob)).hexdigest()
-        if self.inbound_id is not None:
-            attiva = self.db.inbound_row(self.inbound_id)
-            if attiva["state"] != "received" and attiva["manifest_hash"] != impronta:
-                raise WorkflowError(
-                    "c'e' gia' una ricezione aperta: completarla prima di importarne un'altra"
-                )
+        if schema != MANIFEST_SCHEMA_V2:
+            # Le distinte legacy condividono una chiave: verificare anche la sede
+            # quando è configurata. Le v2 la verificano nel documento firmato.
+            laboratorio = self.laboratorio()
+            destinazioni = {str(laboratorio.get(k, "")).strip() for k in ("nome", "codice")} - {""}
+            if destinazioni and distinta.destination not in destinazioni:
+                raise WorkflowError("distinta destinata a un'altra sede")
         try:
-            self.inbound_id, gia_nota = self.db.import_inbound_manifest(
+            inbound_id, gia_nota = self.db.import_inbound_manifest(
                 origin_lab_id=distinta.lab_id,
                 origin_shipment_id=int(distinta.shipment_id),
                 manifest_hash=impronta,
@@ -2298,7 +2808,14 @@ class Workflow:
             )
         except Exception as exc:  # noqa: BLE001
             raise WorkflowError(str(exc)) from exc
+        with self.db.connection:
+            self.db.connection.execute("UPDATE inbound_shipments SET box_epc=?, item_count=? WHERE id=?",
+                (distinta.box_epc.strip().upper(), len(distinta.entries), inbound_id))
+        if not attiva:
+            return {"inbound_id": inbound_id, "gia_importata": gia_nota}
+        self.inbound_id = inbound_id
         self.distinta = distinta
+        self.distinta_qr = None
         self._salva_contesto()
         risposta = self.stato_ricezione()
         risposta["gia_importata"] = gia_nota
@@ -2339,6 +2856,7 @@ class Workflow:
                 "stato": riga["state"],
                 "importata": riga["imported_at"],
                 "confermata": riga["confirmed_at"],
+                "lettura_valida": bool(riga["scan_valid"]),
                 "motivo_non_conformita": riga["nonconformity_reason"],
                 "verifica_documento": {
                     "ok": None
@@ -2361,12 +2879,41 @@ class Workflow:
     def leggi_volume(self) -> dict[str, Any]:
         """Legge la scatola arrivata e la confronta con la distinta."""
         self._require_operator("controllare una ricezione")
-        attesi = list(self.distinta.epcs) if self.distinta is not None else None
+        self._invalida_lettura_ricezione()
+        attesi = (list(self.distinta.epcs) if self.distinta is not None
+                  else self.distinta_qr.epc if self.distinta_qr is not None else None)
         rilievo = self._tagio(scrittura=False).survey_field(expected_epcs=attesi)
+        return self._riconcilia_rilievo(rilievo)
+
+    def _riconcilia_rilievo(self, rilievo) -> dict[str, Any]:
+        """Usa anche la lettura che ha identificato il collo, senza rifare l'inventory."""
+        from lims.codec import epc_kind
+
+        if rilievo.error:
+            raise WorkflowError(f"lettura non riuscita: {rilievo.error}")
         risposta: dict[str, Any] = {"rilievo": rilievo.to_dict()}
+        if self.distinta is None and self.distinta_qr is not None:
+            attesi = {epc.upper() for epc in self.distinta_qr.epc}
+            letti = {o.epc.upper() for o in rilievo.observations if epc_kind(o.epc) != "box"}
+            mancanti, inattesi = sorted(attesi - letti), sorted(letti - attesi)
+            risposta["riconciliazione"] = {
+                "ok": bool(attesi) and not mancanti and not inattesi,
+                "attesi": len(attesi), "arrivati": len(attesi & letti),
+                "mancanti": mancanti, "inattesi": inattesi,
+            }
+            risposta["solo_qr"] = True
+            risposta["mancanti_descritti"] = [
+                {"epc": r.epc, "etichetta": r.etichetta, "paziente": r.paziente,
+                 "codice_fiscale": r.codice_fiscale}
+                for r in self.distinta_qr.righe if r.epc.upper() in mancanti]
         if self.distinta is not None:
+            epcs = [osservazione.epc.upper() for osservazione in rilievo.observations]
+            scatole = {epc for epc in epcs if epc_kind(epc) == "box"}
+            attesa = self.distinta.box_epc.strip().upper()
+            if scatole and scatole != {attesa}:
+                raise WorkflowError("il tag del collo non corrisponde alla distinta selezionata, oppure ci sono più colli")
             riconciliazione = reconcile(
-                self.distinta, [osservazione.epc for osservazione in rilievo.observations]
+                self.distinta, [epc for epc in epcs if epc != attesa]
             )
             risposta["riconciliazione"] = riconciliazione.to_dict()
             risposta["mancanti_descritti"] = [
@@ -2388,12 +2935,22 @@ class Workflow:
                     missing=riconciliazione.missing,
                     unexpected=riconciliazione.unexpected,
                 )
+                with self.db.connection:
+                    # La nuova prova richiede una nuova conferma dell'operatore:
+                    # il verbale non deve certificare il confronto appena letto
+                    # usando la conferma del confronto precedente.
+                    self.db.connection.execute("""UPDATE inbound_shipments
+                        SET scan_valid=1, state='open', confirmed_at=NULL,
+                            confirmed_by='', nonconformity_reason='' WHERE id=?""",
+                        (self.inbound_id,))
         return risposta
 
     def conferma_ricezione(self, motivo_non_conformita: str = "") -> dict[str, Any]:
         self._require_operator("confermare una ricezione")
         if self.inbound_id is None:
             raise WorkflowError("importare prima la distinta")
+        if not self.db.inbound_row(self.inbound_id)["scan_valid"]:
+            raise WorkflowError("eseguire una nuova lettura del collo prima di confermare")
         try:
             self.db.confirm_inbound_receipt(
                 self.inbound_id,
@@ -2412,6 +2969,7 @@ class Workflow:
         Senza questo, il mittente sa solo di aver spedito: le ricevute PEC
         provano che il documento e' arrivato, non che le provette ci siano.
         """
+        self.verifica_operazione("esporta_riscontro")
         self._require_operator("esportare un verbale di riscontro")
         if self.inbound_id is None:
             raise WorkflowError("non c'e' nessuna ricezione da certificare")
@@ -2829,7 +3387,7 @@ class Workflow:
         cicli = int(cicli)
         if not 1 <= cicli <= 40:
             raise WorkflowError("i cicli della prova devono essere fra 1 e 40")
-        antenne = tuple(self.lims_cfg.get("read_antennas") or (1, 2))
+        antenne = self.antenne_lettura()
 
         conteggi: dict[str, int] = {}
         rssi: dict[str, list[int]] = {}
@@ -3139,12 +3697,21 @@ class Workflow:
         from lims.profiler import profile_tag, summarize
 
         accesso = self.config.get("tag_access", {}) or {}
-        profilo = profile_tag(
-            self.backend,
-            antennas=tuple(self.lims_cfg.get("write_antennas") or (1,)),
-            access_password_hex=accesso.get("access_password_hex", "00000000"),
-            timeout_ms=accesso.get("timeout_ms", 1000),
-        )
+        antenne = (self.antenne_scrittura() if self.lims_cfg.get("write_antennas")
+                   else tuple(self.lims_cfg.get("read_antennas") or ()))
+        if not antenne:
+            raise WorkflowError("configurare almeno un'antenna per esaminare il tag")
+        # La profilazione e' tutta fatta di comandi di accesso: senza l'assetto
+        # della postazione misurerebbe zero byte di USER memory su un tag sano,
+        # perche' in sessione S2 le letture rispondono «0x0400 No tag found».
+        with self._assetto_accesso(antenne):
+            profilo = profile_tag(
+                self.backend,
+                antennas=antenne,
+                access_password_hex=accesso.get("access_password_hex", "00000000"),
+                timeout_ms=accesso.get("timeout_ms", 1000),
+            )
+        self.ultimo_profilo = profilo.to_dict() if profilo.ok else None
         return {
             "profilo": profilo.to_dict(),
             "riassunto": summarize(profilo),
@@ -3201,66 +3768,29 @@ class Workflow:
         }
 
     def applica_profilo(self, dati: Mapping[str, Any]) -> dict[str, Any]:
-        """Scrive in `config.yaml` quello che la profilazione ha misurato.
-
-        Si appoggia a `app.config_misura`, che modifica il file **riga per
-        riga**: `config.yaml` e' pieno di commenti che spiegano ogni parametro,
-        e riscriverlo con `yaml.safe_dump` li cancellerebbe tutti.
-        """
+        """Approva l'ultima misura riuscita senza applicare valori inviati dal browser."""
         self._require_operator("cambiare la configurazione dei tag")
-        if self.config_path is None:
-            raise WorkflowError(
-                "questa postazione non ha un file di configurazione da aggiornare"
-            )
-        from app.config_misura import Misura, scrivi_misura
-
-        modalita = str(dati.get("modalita_scrittura", "")).strip() or None
-        if modalita is not None and modalita not in (MODALITA_PAYLOAD, MODALITA_SOLO_EPC):
-            raise WorkflowError(f"modalita' sconosciuta: {modalita}")
-
-        byte = _intero_o_nulla(dati.get("user_memory_bytes"))
-        esito = None
-        if byte is not None:
-            esito = scrivi_misura(
-                self.config_path,
-                Misura(
-                    user_bytes=int(byte),
-                    tid_serializzato=bool(dati.get("tid_serializzato", False)),
-                    chip=str(dati.get("chip", "")),
-                    epc=str(dati.get("epc", "")),
-                ),
-                forza=bool(dati.get("forza", False)),
-                modalita_scrittura=modalita,
-            )
-        elif modalita is not None:
-            esito = scrivi_misura(
-                self.config_path, None, modalita_scrittura=modalita
-            )
-
-        # La configurazione in memoria segue il file, altrimenti l'interfaccia
-        # direbbe una cosa e il prossimo tag ne farebbe un'altra.
-        if modalita is not None:
-            self.lims_cfg["modalita_scrittura"] = modalita
-            self.config.setdefault("lims", {})["modalita_scrittura"] = modalita
-        if byte is not None and esito is not None and esito.scritto:
-            self.lims_cfg["user_memory_bytes"] = int(esito.dopo or byte)
-            self.config.setdefault("lims", {})["user_memory_bytes"] = int(esito.dopo or byte)
-
-        self.db.log_event(
-            "tag_profile_apply",
-            ok=True,
-            operator=self.operatore,
-            detail=(
-                f"modalita' {self.modalita_scrittura}, "
-                f"user_memory_bytes {self.lims_cfg.get('user_memory_bytes')}"
-                + (f"; {esito.motivo}" if esito is not None else "")
-            ),
-        )
+        profilo = self.ultimo_profilo
+        if not profilo or not profilo.get("ok"):
+            raise WorkflowError("eseguire prima una rilevazione riuscita del tag")
+        nuova = copy.deepcopy(self.config)
+        lims = nuova.setdefault("lims", {})
+        lims["user_memory_bytes"] = int(profilo["user_bytes"])
+        lims["tag_misurato"] = copy.deepcopy(profilo)
+        # La misura non abilita da sola USER: scegliere i box e salvare il profilo.
+        if max_plaintext_bytes(lims["user_memory_bytes"]) < PAYLOAD_FIXED_SIZE:
+            lims["modalita_scrittura"] = MODALITA_SOLO_EPC
+            memoria = {**self.politica_memorie(), "read_user": False, "write_user": False}
+            lims["tag_memory"] = memoria
+        self._scrivi_config(nuova)
+        self.config = nuova
+        self.lims_cfg = dict(lims)
+        self.db.log_event("tag_profile_apply", ok=True, operator=self.operatore,
+                          detail=f"USER misurata: {lims['user_memory_bytes']} byte")
         return {
             "modalita_scrittura": self.modalita_scrittura,
-            "user_memory_bytes": int(self.lims_cfg.get("user_memory_bytes", 64)),
-            "scritto": bool(esito.scritto) if esito is not None else False,
-            "motivo": esito.motivo if esito is not None else "niente da cambiare",
+            "user_memory_bytes": lims["user_memory_bytes"],
+            "scritto": True, "motivo": "misura approvata; configurare i box per il modello scelto",
         }
 
     def rileva_controllo(self, posizione: str) -> dict[str, Any]:
@@ -3275,7 +3805,7 @@ class Workflow:
 
         if posizione not in ("dentro", "fuori"):
             raise WorkflowError("posizione deve essere 'dentro' o 'fuori'")
-        antenne = tuple(self.lims_cfg.get("read_antennas") or (1, 2))
+        antenne = self.antenne_lettura()
         risposta = self.backend.inventory(
             InventoryRequest(antennas=antenne, timeout_ms=1000)
         )
@@ -3316,7 +3846,7 @@ class Workflow:
         cicli = int(cicli)
         if not 1 <= cicli <= 100:
             raise WorkflowError("i cicli dell'inventario iniziale devono essere fra 1 e 100")
-        antenne = tuple(self.lims_cfg.get("read_antennas") or (1, 2))
+        antenne = self.antenne_lettura()
         if not antenne:
             raise WorkflowError("nessuna antenna di lettura configurata")
 
@@ -3460,7 +3990,7 @@ class Workflow:
                 "prima va rilevato il contenuto del contenitore: senza, non c'e' "
                 "niente da cercare"
             )
-        antenne = tuple(self.lims_cfg.get("read_antennas") or (1, 2))
+        antenne = self.antenne_lettura()
         potenze = tuple(
             int(round(float(p) * 100)) for p in parametri.get("potenze_dbm", [15, 20, 25, 30])
         )
@@ -3531,6 +4061,7 @@ class Workflow:
         taratura = dict(self.config.get("tuning") or {})
         return {
             "trasporto_attivo": "tcp" if "tcp" in self.config else "seriale",
+            "operativita": self.impostazioni_operative(),
             "salvabile": self.config_path is not None,
             "percorso_config": str(self.config_path) if self.config_path else "",
             "seriale": {
@@ -3629,6 +4160,9 @@ class Workflow:
             raise WorkflowError("questo backend non consente di cambiare configurazione")
 
         self.backend.stop()
+        self.radio_configurata = False
+        self.hardware = {"rilevato": False, "motivo": "da rilevare"}
+        self.ultimo_profilo = None
         risposta = sostituzione(nuova)
         if not risposta.ok:
             raise WorkflowError((risposta.error or {}).get("message", "config rifiutata"))
@@ -3640,13 +4174,150 @@ class Workflow:
             raise WorkflowError(
                 (avvio.error or {}).get("message", "il lettore non risponde con questi parametri")
             )
-        configurazione = self.backend.configure(self._reader_settings())
+        configurazione = self.applica_radio()
         return {
             "trasporto": "tcp" if "tcp" in nuova else "seriale",
             "avvio": avvio.to_dict(),
-            "configurazione_ok": bool(configurazione.ok),
-            "configurazione_errore": (configurazione.error or {}).get("message", ""),
+            **configurazione,
         }
+
+    #: Porte SMA di un SIM7200. Serve solo quando il censimento non e'
+    #: disponibile: se il modulo ha parlato, comanda quello che ha detto lui.
+    PORTE_NOTE = 4
+
+    def antenne_ruoli(self) -> dict[str, Any]:
+        """Chi legge, chi scrive, e cosa c'e' davvero attaccato.
+
+        Le due liste stanno in `lims.read_antennas` / `lims.write_antennas` ed
+        erano gia' usate da tutto il flusso (accettazione, profilazione,
+        riempimento, sigillo): quello che mancava era il modo di cambiarle
+        senza aprire il file di configurazione.
+        """
+        porte = (self.hardware.get("antenne_porte") or []) if self.hardware.get("rilevato") else []
+        if not porte:
+            porte = [{"id": i, "collegata": None} for i in range(1, self.PORTE_NOTE + 1)]
+        potenze = {
+            int(a["id"]): a
+            for a in (self.config.get("antennas") or [])
+            if a.get("id") is not None
+        }
+        lettura = [int(a) for a in (self.lims_cfg.get("read_antennas") or [])]
+        scrittura = [int(a) for a in (self.lims_cfg.get("write_antennas") or [])]
+        return {
+            "porte": [
+                {
+                    "id": int(p["id"]),
+                    "collegata": p.get("collegata"),
+                    "lettura": int(p["id"]) in lettura,
+                    "scrittura": int(p["id"]) in scrittura,
+                    "potenza_lettura": round(
+                        potenze.get(int(p["id"]), {}).get("read_power", 2000) / 100
+                    ),
+                    "potenza_scrittura": round(
+                        potenze.get(int(p["id"]), {}).get("write_power", 2000) / 100
+                    ),
+                }
+                for p in porte
+            ],
+            "lettura": lettura,
+            "scrittura": scrittura,
+            "rilevato": bool(self.hardware.get("rilevato")),
+            "massime": len(porte),
+        }
+
+    def salva_antenne(self, dati: Mapping[str, Any]) -> dict[str, Any]:
+        """Assegna le porte a lettura e scrittura, e le rende operative.
+
+        Una porta puo' fare tutt'e due le cose (al banco a un'antenna sola e'
+        il caso normale), ma **non puo' essere vuota**: assegnare un ruolo a
+        una porta che il modulo dichiara libera vuol dire scoprire il guasto
+        col tag in mano, a scrittura gia' tentata. Se il censimento non e'
+        disponibile non si vieta niente — e' il modulo a dire di no, non noi.
+        """
+        lettura = self._porte_richieste(dati.get("lettura"), "lettura")
+        scrittura = self._porte_richieste(dati.get("scrittura"), "scrittura",
+                                         vuota=self.station_mode == "ricezione")
+
+        porte = (self.hardware.get("antenne_porte") or []) if self.hardware.get("rilevato") else []
+        note = {int(p["id"]) for p in porte}
+        if note:
+            fuori = sorted({a for a in lettura + scrittura if a not in note})
+            if fuori:
+                raise WorkflowError(
+                    f"il modulo ha {len(note)} porte: "
+                    f"{', '.join(str(a) for a in fuori)} non esiste"
+                )
+            # La diagnosi di connessione non e' sempre affidabile: i ruoli
+            # esplicitamente scelti restano validi anche su una porta non vista.
+
+        nuova = copy.deepcopy(self.config)
+        lims = dict(nuova.get("lims") or {})
+        lims["read_antennas"] = lettura
+        lims["write_antennas"] = scrittura
+        nuova["lims"] = lims
+        # Una porta senza riga in `antennas` non riceverebbe potenza da
+        # `configure`: si aggiunge al minimo prudente, che poi il pannello
+        # delle misure alza se serve.
+        esistenti = {
+            int(a["id"]) for a in (nuova.get("antennas") or []) if a.get("id") is not None
+        }
+        for antenna in sorted(set(lettura + scrittura) - esistenti):
+            nuova.setdefault("antennas", []).append(
+                {
+                    "id": antenna,
+                    "role": "assegnata dall'interfaccia",
+                    "read_power": 2000,
+                    "write_power": 2000,
+                }
+            )
+        nuova["antennas"] = sorted(
+            nuova.get("antennas") or [], key=lambda a: int(a.get("id", 0))
+        )
+
+        # L'inventario cicla sulle antenne di lettura: senza questo il
+        # cambiamento varrebbe per i comandi mirati e non per la sorveglianza.
+        nuova.setdefault("inventory", {})["antennas"] = list(lettura)
+        salvato = ""
+        if self.config_path is not None:
+            self._scrivi_config(nuova)
+            salvato = str(self.config_path)
+        self.config = nuova
+        self.lims_cfg = dict(nuova.get("lims", {}) or {})
+        applicata = self.applica_radio() if self.backend.ready else {
+            "configurazione_ok": False, "configurazione_errore": "da applicare al collegamento"}
+        self.db.log_event(
+            "antenne_ruoli",
+            ok=True,
+            operator=self.operatore,
+            detail=f"lettura={lettura} scrittura={scrittura}",
+        )
+        log.info("Antenne: lettura %s, scrittura %s", lettura, scrittura)
+        return {
+            "lettura": lettura,
+            "scrittura": scrittura,
+            "salvato": salvato,
+            **applicata,
+        }
+
+    def _porte_richieste(self, valore: Any, ruolo: str, *, vuota: bool = False) -> list[int]:
+        """Una lista di porte, ordinata e senza doppioni, o un errore chiaro."""
+        if valore is None:
+            raise WorkflowError(f"indicare almeno un'antenna di {ruolo}")
+        if not isinstance(valore, (list, tuple, set)):
+            valore = [valore]
+        porte: set[int] = set()
+        for voce in valore:
+            try:
+                porte.add(int(voce))
+            except (TypeError, ValueError):
+                raise WorkflowError(
+                    f"antenna di {ruolo} non valida: {voce!r}"
+                ) from None
+        if not porte and not vuota:
+            raise WorkflowError(f"indicare almeno un'antenna di {ruolo}")
+        if any(p < 1 or p > self.PORTE_NOTE for p in porte):
+            raise WorkflowError(f"le antenne si contano da 1 (ruolo {ruolo})")
+        return sorted(porte)
 
     def imposta_avanzate(self, dati: Mapping[str, Any]) -> dict[str, Any]:
         """Regione radio, timeout del driver e taratura del trasmettitore."""
@@ -3847,19 +4518,30 @@ class Workflow:
                 "questa sessione non ha un file di configurazione: le modifiche "
                 "valgono solo fino alla chiusura"
             )
+        nuova = self._config_trasporto(dati) if dati.get("trasporto") else copy.deepcopy(self.config)
+        self._scrivi_config(nuova)
+        self.config = nuova
+        self.lims_cfg = dict(self.config.get("lims", {}) or {})
+        return {"salvato": str(self.config_path)}
+
+    def _scrivi_config(self, nuova: Mapping[str, Any]) -> None:
+        """Il file di configurazione, scritto in due tempi.
+
+        Un'interruzione a meta' lascerebbe il laboratorio senza configurazione
+        invece che con quella vecchia: si scrive di fianco e si sostituisce.
+        """
+        if self.config_path is None:
+            raise WorkflowError(
+                "questa sessione non ha un file di configurazione: le modifiche "
+                "valgono solo fino alla chiusura"
+            )
         import yaml
 
-        nuova = self._config_trasporto(dati) if dati.get("trasporto") else copy.deepcopy(self.config)
-        testo = yaml.safe_dump(nuova, sort_keys=False, allow_unicode=True)
-        # Scrittura in due tempi: un'interruzione a meta' lascerebbe il
-        # laboratorio senza configurazione invece che con quella vecchia.
+        testo = yaml.safe_dump(dict(nuova), sort_keys=False, allow_unicode=True)
         provvisorio = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
         provvisorio.write_text(testo, encoding="utf-8")
         provvisorio.replace(self.config_path)
-        self.config = nuova
-        self.lims_cfg = dict(self.config.get("lims", {}) or {})
         log.info("Configurazione salvata in %s", self.config_path)
-        return {"salvato": str(self.config_path)}
 
     # -- archivio pazienti ---------------------------------------------------
     #: Quanti pazienti per pagina. Cinquanta stanno in una schermata da scorrere

@@ -1,0 +1,2 @@
+# Ambiente separato; riusa le dipendenze del banco SAM 2 tramite sam2-locale.pth.
+openvino==2026.4.1

@@ -422,6 +422,63 @@ def test_riscrittura_autorizzata_lascia_traccia() -> None:
         assert "authorized_rewrite" in operazioni, "la deroga deve restare nella traccia"
 
 
+def test_la_guardia_di_riscrittura_ha_un_codice_suo() -> None:
+    """L'interfaccia deve poter offrire la deroga senza leggere il messaggio.
+
+    E' l'unico errore di `provision` a cui l'operatore possa rispondere
+    qualcosa; tutti gli altri sono guasti o condizioni radio. Riconoscerlo dal
+    testo significherebbe che migliorare una frase spegne un bottone.
+    """
+    with LimsDatabase() as db:
+        container_id = _contenitore(db, CF_A, 100)
+        backend = FakeTagBackend(
+            [SimulatedTag(VERGINE, tid=bytes.fromhex(TID), user_bytes=64)]
+        )
+        tagio = TagIO(
+            backend, Keyring({0: CHIAVE}), lab_id=0x00A5, antennas=(1, 2), db=db
+        )
+        assert tagio.provision(_payload(CF_A), container_id=container_id).ok is True
+
+        rifiutato = tagio.provision(_payload(CF_B), container_id=_contenitore(db, CF_B, 200))
+        assert rifiutato.ok is False
+        assert rifiutato.error_code == "tag_gia_scritto"
+
+
+def test_riscrivere_senza_annullare_non_lascia_due_assegnazioni_aperte() -> None:
+    """Il caso della prototipazione: lo stesso chip riscritto piu' volte di fila.
+
+    La memoria EPC di un tag Gen2 si riscrive centomila volte, quindi al banco
+    si riusa sempre lo stesso. Ma senza chiudere l'assegnazione precedente
+    resterebbero due righe vive per lo stesso TID, e `active_assignment` non
+    saprebbe piu' quale delle due e' quella buona.
+    """
+    with LimsDatabase() as db:
+        backend = FakeTagBackend(
+            [SimulatedTag(VERGINE, tid=bytes.fromhex(TID), user_bytes=64)]
+        )
+        tagio = TagIO(
+            backend, Keyring({0: CHIAVE}), lab_id=0x00A5, antennas=(1, 2), db=db,
+            operator="collaudo",
+        )
+        primo = tagio.provision(_payload(CF_A), container_id=_contenitore(db, CF_A, 100))
+        assert primo.ok is True, primo.error
+
+        secondo_contenitore = _contenitore(db, CF_B, 200)
+        secondo = tagio.provision(
+            _payload(CF_B), container_id=secondo_contenitore, authorized_rewrite=True
+        )
+        assert secondo.ok is True, secondo.error
+        assert secondo.epc != primo.epc, "ogni scrittura si prende uno pseudonimo nuovo"
+
+        aperte = db.connection.execute(
+            "SELECT container_id FROM tag_assignments WHERE tid=? AND released_at IS NULL",
+            (primo.tid,),
+        ).fetchall()
+        assert len(aperte) == 1, f"una sola assegnazione viva: {aperte}"
+        assert aperte[0][0] == secondo_contenitore
+        assert db.active_assignment(primo.tid)["epc"] == secondo.epc
+
+
 def test_uno_sblocco_permanente_e_rifiutato() -> None:
     # Sarebbe irreversibile nel senso opposto: la banca non tornerebbe piu'
     # proteggibile.

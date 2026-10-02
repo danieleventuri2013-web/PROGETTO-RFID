@@ -1301,11 +1301,18 @@ class RFIDService:
                         "cambio EPC bloccato: l'ultimo inventory non contiene "
                         f"solo l'EPC atteso {request.expected_epc}"
                     )
+                # Il filtro Select punta l'EPC atteso: la guardia qui sopra
+                # ha appena preteso che sia l'unico osservato, quindi il dato
+                # c'e' gia' e non costa niente essere espliciti. Senza filtro il
+                # comando colpirebbe «il primo tag che risponde», che con un
+                # secondo contenitore appoggiato per sbaglio sul piatto sarebbe
+                # l'errore peggiore possibile in una catena di custodia.
                 results = reader.write_epc_try_all_antennas(
                     list(request.antennas),
                     new_epc_bytes,
                     password,
                     request.timeout_ms,
+                    bytes.fromhex(request.expected_epc),
                 )
                 success_antenna = next(
                     (antenna for antenna, result in results.items() if result.get("ok")),
@@ -1408,6 +1415,17 @@ class RFIDService:
                     ("regions_available", reader.get_available_regions),
                     ("serial_number", reader.get_serial_number),
                     ("temperature_c", reader.get_module_temperature),
+                    # Lista, non dizionario: le chiavi intere di
+                    # `get_antenna_ports` diventerebbero stringhe passando da
+                    # JSON-RPC, e il confine del servizio promette DTO che
+                    # sopravvivono al giro senza cambiare forma.
+                    (
+                        "antenna_ports",
+                        lambda: [
+                            {"id": i, "connected": s}
+                            for i, s in sorted(reader.get_antenna_ports().items())
+                        ],
+                    ),
                     ("antennas_connected", reader.get_antenna_connection),
                 ):
                     try:

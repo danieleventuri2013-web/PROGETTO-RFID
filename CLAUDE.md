@@ -2,6 +2,17 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Memoria di lavoro aggiornata
+
+Prima di riprendere, leggere [NOTE_SESSIONE_2026-10-01.md](NOTE_SESSIONE_2026-10-01.md),
+in particolare la ripresa dopo il limite: email con più colli, distinte attese,
+SQLite schema 9. La successiva app `qr-webcam` è ora integrata nella Ricezione:
+735/735 test superati, guida `docs/QR_WEBCAM.md`. Webcam nella Ricezione
+confermata funzionante dall'utente («ok funziona»); limiti del collaudo nelle note.
+La [sessione del 6 settembre](NOTE_SESSIONE_2026-09-06.md) documenta l'accettazione
+giornaliera confermata dall'utente. Le note storiche sottostanti vanno lette insieme
+a questi aggiornamenti e ai rispettivi limiti del collaudo.
+
 ## What this is
 
 A cross-platform Python driver + apps to control a **Silion SIM7200** UHF RFID reader
@@ -166,6 +177,24 @@ The everyday interface. Tkinter GUIs stay as bench tools.
   that may not have happened.
 - **The write station polls the pad** (`sorveglia`) so no button says "I've put it
   down". That inventory is needed anyway — the write guard demands exactly one tag.
+- **The write station carries its own radio posture, and only its own antennas.**
+  Sealing, filling and the campaign each set their Gen2 before every pass; the
+  write station did not, so it inherited whatever the last measurement panel had
+  left on the module — and "Metti i valori consigliati" leaves S2, which stops
+  tag writing dead (see the Target-A note below). `Workflow._assetto_accesso`
+  applies session S0 + static target A **and the powers of the write antennas
+  alone**, restoring both in `finally` (tested on the failure path). `q` and
+  `rf_mode` are left untouched: they are the operator's tuning, and access
+  commands use Q=2 regardless. `antenne_scrittura()` refuses to fall back to
+  "every antenna" — during a write only the station may transmit, or the
+  one-tag-in-field guard would be looking at half the bench.
+- **`authorized_rewrite` is reachable from the UI**, as a button that appears
+  only when `ProvisionResult.error_code == "tag_gia_scritto"` — a code, not a
+  message match, so improving the wording can't silently remove the button. It
+  is the prototype's answer to burning a tag per test: Gen2 EPC memory rewrites
+  ~10⁵ times, the guard is ours. `db.assign_tag` closes the previous open
+  assignment when the rewrite is authorised, or the tag's history would have two
+  live rows and `active_assignment` would stop meaning anything.
 - **`LimsDatabase(single_thread=False)`** in the workflow: every HTTP request lands on
   a different thread. `Workflow._scrittura` (RLock) wraps the multi-row sequences
   (intake, count change, void, shipment prep); single statements rely on SQLite's own
@@ -414,7 +443,25 @@ The everyday interface. Tkinter GUIs stay as bench tools.
   `ReadRequest.select_epc` (service) → `read_try_all_antennas(select_epc=)` → the Select
   filter targets one EPC among many. `TagIO.survey_field` uses it whenever more than one
   tag is in the field: without it a full box would attribute every payload to whichever
-  tag answered first, and the count would still add up.
+  tag answered first, and the count would still add up. **`0x23` takes the filter too**
+  (§6.1, Tag Singulation "same as command 0x22", example 3) — `service.write_epc` passes
+  `expected_epc`, which the observed-EPC guard has already required anyway.
+- **Access commands always query Target A, and that is what breaks writing in S2.**
+  EX10 2024-12 says it twice, identically, for Write EPC §6.1 p.101 and Read §6.5
+  p.121: *"If Target A-B is set, the module will use Target A"*. In session **S2**
+  the tag's inventoried flag stays on B while it is powered, and every inventory
+  round puts it there — so the next access command finds nothing and answers
+  `0x0400 "No tag found"` about a tag sitting still in front of the antenna. In
+  **S0** the flag does not persist and the problem disappears. Measured
+  2026-08-27: with S2 + dynamic A↔B the EPC write failed 5/5 and the TID read
+  succeeded about half the time; the day before, in S0, it wrote 6/6 on the same
+  antenna at the same power. Re-inventorying before the access does **not** fix
+  it (it is what sets the flag to B); `Workflow._assetto_accesso` does, by
+  putting the module in S0 for the length of the operation.
+- **Writing needs more power than reading** — the manual states it flatly (p.99,
+  "Required power: Writing tag > Reading tag"). Worth remembering when the write
+  station is the lowest-powered antenna on the bench and the SLP1027 is tuned
+  902–928 MHz but used at 865–867.
 - **Inventory metadata flags `0x0007`** = ReadCount|RSSI|AntennaID; this is what makes per-antenna
   RSSI available. RSSI is a signed byte. The GUI estimates tag position as an RSSI-weighted
   (linear-power) centroid of the reading antennas.

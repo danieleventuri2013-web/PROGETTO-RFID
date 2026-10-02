@@ -751,8 +751,18 @@ class SIM7200Reader:
         check_status(resp.status)
         log.info("Antenna powers set: %s", powers)
 
-    def get_antenna_connection(self) -> list[int]:
-        """0x61 option 0x05 - ritorna lista di antenna id connesse fisicamente."""
+    def get_antenna_ports(self) -> dict[int, bool]:
+        """0x61 option 0x05 - **tutte** le porte del modulo, con il loro stato.
+
+        La risposta elenca una coppia `(id, stato)` per ogni porta che il
+        modulo possiede: quante ce ne sono e' quindi un dato che il lettore
+        dichiara, non una costante da indovinare. Un SIM7200 a 4 porte con tre
+        antenne attaccate risponde quattro coppie, di cui una a zero.
+
+        `get_antenna_connection` tiene solo le connesse; questa serve quando la
+        domanda e' «quante se ne possono installare», che e' diversa da
+        «quante ce ne sono adesso».
+        """
         resp = self._command(P.CMD_GET_ANTENNA_PORTS, bytes([0x05]))
         check_status(resp.status)
         d = resp.data
@@ -764,15 +774,24 @@ class SIM7200Reader:
             self._raise_frame_error(
                 f"Get antenna response con coppia incompleta: {d.hex().upper()}"
             )
-        connected = []
+        porte: dict[int, bool] = {}
         for i in range(1, len(d), 2):
             ant_id, state = d[i], d[i + 1]
             if ant_id not in _ANTENNA_IDS or state not in (0, 1):
                 self._raise_frame_error(
                     f"Get antenna response non valida: antenna={ant_id} state={state}"
                 )
-            if state:
-                connected.append(ant_id)
+            porte[ant_id] = bool(state)
+        log.info(
+            "Antenna ports: %s",
+            ", ".join(f"{i}={'collegata' if s else 'libera'}" for i, s in sorted(porte.items()))
+            or "-",
+        )
+        return porte
+
+    def get_antenna_connection(self) -> list[int]:
+        """0x61 option 0x05 - ritorna lista di antenna id connesse fisicamente."""
+        connected = [ant for ant, stato in sorted(self.get_antenna_ports().items()) if stato]
         log.info("Connected antennas: %s", connected)
         return connected
 
@@ -992,18 +1011,35 @@ class SIM7200Reader:
         check_status(resp.status)
 
     def write_tag_epc(
-        self, epc: bytes, access_password: bytes = b"\x00\x00\x00\x00", timeout_ms: int = 1000
+        self,
+        epc: bytes,
+        access_password: bytes = b"\x00\x00\x00\x00",
+        timeout_ms: int = 1000,
+        select_epc: bytes | None = None,
     ) -> None:
-        """0x23 - scrive l'EPC (aggiorna automaticamente il PC)."""
+        """0x23 - scrive l'EPC (aggiorna automaticamente il PC).
+
+        Senza `select_epc` usa Option 0x05 (password, nessun filtro) e colpisce
+        il **primo tag che risponde**. Con `select_epc` il comando punta quel
+        preciso EPC: il manuale EX10 2024-12 §6.1 lo prevede (campo Tag
+        Singulation, «meaning is the same as command 0x22») e lo mostra
+        nell'esempio 3. E' l'unico modo di essere certi di riscrivere il tag che
+        si e' appena letto, e non un altro entrato in campo nel frattempo.
+        """
         if not epc or len(epc) % 2 != 0 or len(epc) > 62:
             raise ValueError(f"epc must be non-empty, even-length, max 62 bytes (got {len(epc)})")
         _check_timeout(timeout_ms)
         if len(access_password) != 4:
             raise ValueError("access_password must be 4 bytes")
+        option, singulation = P.build_tag_singulation(
+            P.SELECT_PASSWORD_ONLY if select_epc is None else P.SELECT_BY_EPC_ID,
+            access_password,
+            select_data=b"" if select_epc is None else bytes(select_epc),
+        )
         data = bytearray()
         data += timeout_ms.to_bytes(2, "big")
-        data += bytes([0x05])  # Option: password, no select
-        data += access_password
+        data += bytes([option])
+        data += singulation
         data += epc
         resp = self._command(
             P.CMD_WRITE_TAG_EPC,
@@ -1134,13 +1170,18 @@ class SIM7200Reader:
         epc: bytes,
         access_password: bytes = b"\x00\x00\x00\x00",
         timeout_ms: int = 1000,
+        select_epc: bytes | None = None,
     ) -> dict:
-        """Prova il cambio EPC in ordine e si ferma al primo successo."""
+        """Prova il cambio EPC in ordine e si ferma al primo successo.
+
+        Con `select_epc` ogni tentativo punta quell'EPC preciso invece del
+        primo tag che risponde.
+        """
         results = {}
         for ant in antennas:
             try:
                 self.set_antenna_for_access(ant, ant)
-                self.write_tag_epc(epc, access_password, timeout_ms)
+                self.write_tag_epc(epc, access_password, timeout_ms, select_epc)
                 results[ant] = {"ok": True}
                 break
             except SilionError as exc:

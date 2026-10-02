@@ -5,6 +5,135 @@ Sezioni: Added / Changed / Fixed / Security / Diagnostics / Documentation.
 
 ## [Unreleased]
 
+### Added — GPU Intel e confronto Qwen dalla webcam
+
+- SAM 2 con OpenVINO su Intel GPU, ambiente separato, dispositivi effettivi
+  dichiarati e conversione eager verificata numericamente. Sei foto:
+  media 40,06 s; limite preesistente della ROI nella seconda foto documentato.
+- Qwen3.8 27B tramite OpenRouter selezionabile accanto a SAM 2 nella prova
+  webcam; ritaglio/rettifica conservati, centri numerati e rianalisi dello
+  stesso scatto. Chiave soltanto nel server; errori API senza falsi zeri.
+  Confronto su sei foto, due richieste ciascuna: 12/12 conteggi corretti,
+  media 3,44 s. Guide `docs/SAM2_OPENVINO.md` e `docs/OPENROUTER_VISION.md`.
+
+### Added — prova SAM 2 locale assistita
+
+- Pagina `sam2-auto.html`: area della webcam salvata per dispositivo, ritaglio
+  oppure quattro angoli con correzione prospettica, campi facoltativi in cm
+  per larghezza/lunghezza/altezza camera. Uno scatto avvia bordo e conteggio
+  automatici senza indicare i campioni; tempi e contorni sovrapposti.
+  Rettifica del piano tramite omografia, senza fingere compensazioni della
+  lente/parallasse in altezza. Tre prove del motore/API: 8,8,6, 87–127 s,
+  media 101 s. Test geometrici, HTTP e UI automatici superati.
+- Perimetro sperimentale della borsa/scatola esterna nelle foto con quattro
+  riferimenti fissi sulle pareti (`tools/rileva_borsa_sam2.py`). Sei foto
+  analizzate, contorno azzurro e lati prossimi al ritaglio arancioni; contorni
+  dei campioni precedenti sovrapposti senza cambiare la ROI di conteggio.
+  Report locale, maschere e coordinate JSON; 4/4 test dei criteri geometrici.
+- Conteggio sperimentale da cartella di foto con SAM automatico, filtri
+  geometrici e deduplicazione (`tools/conta_foto_sam2.py`). Corretta la griglia
+  per il ridimensionamento quadrato del modello su foto rettangolari.
+  Sei foto reali verificate: 8,8,8,8,6,5, senza prompt manuali sui contenitori;
+  finestra di ricerca comune, tempi CPU 68–102 s. Report e PNG numerati locali.
+- SAM 2.1 Tiny su CPU in ambiente Python separato: foto ferma Full HD,
+  clic distinti per campione, contorni sovrapposti e correzioni con punti
+  positivi/negativi. Il numero indicato resta distinto dalle regioni ottenute.
+- Servizio ottico su localhost:8772 con token proprio, immagini in memoria
+  e riuso della codifica della stessa foto; nessun RFID o database.
+  Guida `docs/SAM2_LOCALE.md`. Segnalati contorni duplicati o troppo estesi.
+- Test UI/HTTP superati e inferenza reale offline su immagine sintetica Full HD:
+  8 regioni da 8 prompt, 18,7 secondi sulla CPU della postazione. Il risultato
+  non attesta il riconoscimento della borsa reale né il conteggio automatico.
+
+### Added — prova ottica autonoma dei campioni
+
+- Risoluzione selezionabile Full HD/HD, predefinita 1920×1080, con risoluzione
+  effettiva, fotogramma analizzato e tempo mostrati. Rimosso il ridimensionamento
+  fisso a 720p; JPEG a qualità 96% con limite di dimensione. Test ottico Full HD
+  con 8 cerchi e regressioni UI del cambio risoluzione superati.
+- Campionamento lento regolabile (predefinito 1,5 secondi), cerchi confermati
+  dopo tre fotogrammi e sovrapposizione sull'immagine effettivamente analizzata.
+  Calibrazione dei raggi tramite indicazione del campione più piccolo/grande.
+- `python src/app/vision_preview.py`: webcam, bordo della borsa e cerchi verdi
+  numerati sovrapposti al video, con conteggio indipendente dal numero atteso.
+  Funziona senza procedura di spedizione, database o lettore RFID.
+- Area manuale facoltativa e parametri cerchi regolabili; guida
+  `docs/PROVA_RICONOSCIMENTO.md`. Test HTTP con 8 cerchi sintetici e test UI
+  della sovrapposizione superati. Il motore restituisce anche i raggi rilevati.
+
+### Fixed — scelta webcam nella sigillatura
+
+- Menu Videocamera visibile accanto ad Attiva webcam, con aggiornamento
+  dell'elenco anche prima dell'avvio. Il cambio selezione riapre la webcam
+  attiva sul dispositivo scelto e azzera gli angoli manuali della precedente.
+- Gestiti dispositivo assente, accesso negato e consenso tardivo durante il
+  cambio. Regressioni simulate in `test_visual_ui.cjs`.
+
+### Fixed — aggiornamento archivio ricezioni
+
+- L'elenco delle distinte aggiorna lo stato dopo la conferma e la rilettura,
+  senza richiedere un cambio schermata o un aggiornamento manuale.
+- Un errore nel rinnovo dell'elenco viene segnalato separatamente dall'esito
+  dell'operazione già salvata; regressioni in `test_exchange_ui.cjs`.
+
+### Added — webcam nella Ricezione
+
+- Sostituito il campo per la pistola QR con anteprima del browser, scelta
+  videocamera, bordo verde e acquisizione tramite pulsante o Spazio.
+- Raccolta multiparte e tabella dei dati estratti; confronto degli EPC attesi
+  con la lettura del volume. Il solo QR non abilita la conferma e il verbale:
+  serve la distinta cifrata della spedizione. Un foglio diverso deseleziona
+  la ricezione precedente.
+- Decodifica locale dei JPEG in memoria, senza immagini nel diario;
+  spegnimento della webcam al completamento o all'uscita dalla schermata.
+
+### Added — prova QR con webcam
+
+- `python run.py qr-webcam --distinta <file.rfidman>`: finestra con anteprima,
+  riquadro sui QR leggibili e acquisizione manuale con Spazio/Invio.
+- Raccolta di QR multiparte, firma verificata con le chiavi del circuito e
+  confronto dei dati con la distinta cifrata. Nessun accesso al lettore RFID
+  o scrittura nel database. Prova da immagini con `--immagine`.
+- Dipendenze facoltative in `requirements-qr.txt`; guida in `docs/QR_WEBCAM.md`.
+
+### Added — invii email con più colli e distinte attese
+
+- In Sigillo, selezione di più colli per la stessa sede e anteprima del messaggio
+  con una distinta cifrata per collo. Bozza `.eml`, pacchetto `.zip`, testo per
+  webmail e invio SMTP con TLS; credenziale in variabile d'ambiente.
+- Archivio degli invii con blocco del reinvio quando l'esito SMTP è incerto.
+  Preparazione, accettazione SMTP, partenza fisica e ricezione restano stati distinti.
+- In Ricezione, importazione di più distinte o ZIP, selezione manuale e
+  riconoscimento tramite EPC del collo. Duplicati, colli estranei, letture ambigue
+  e distinte destinate a un'altra sede sono gestiti senza confondere le ricezioni.
+- SQLite schema 9 con migrazione transazionale; guida in
+  `docs/CONFIGURAZIONE_OPERATIVA.md`.
+- Rilettura di una ricezione con nuova conferma obbligatoria prima del verbale;
+  una lettura fallita invalida la prova precedente per la conferma anche dopo riavvio.
+  Le richieste da finestre con una distinta superata vengono rifiutate.
+- Suite completa: 724/724; SMTP e lettore simulati. Controllo visivo della ripresa
+  non eseguito per indisponibilità dell'integrazione browser.
+
+### Changed — rifinitura UX dei due flussi quotidiani (`src/webui/static/`)
+
+- **Ricezione — checklist degli attesi per paziente**: la lista «Campioni
+  attesi» raggruppa i contenitori per paziente (nome, codice fiscale,
+  accettazione) con etichetta, materiale ed EPC. Compare ora con **ogni**
+  percorso di import (file `.rfidman`, QR sul foglio, ripristino dopo ricarica)
+  — con l'import da file prima non appariva. Dopo la lettura ogni riga prende
+  il suo esito: **✓ Arrivato** o **✗ Mancante**, e il titolo riassume il
+  conteggio. I punti della scatola e gli elenchi «Non arrivati» / «non in
+  distinta» restano come avviso operativo.
+- **Accettazione — gli arretrati si vedono subito**: quando ci sono tag dei
+  giorni precedenti ancora da scrivere, un avviso in testa alla giornata dice
+  quanti pazienti e quanti tag restano, con un pulsante che apre il primo da
+  completare. Il totale dei tag da scrivere (giornata più arretrati) compare
+  come badge numerico sulla voce **Accettazione** della barra di navigazione.
+  La sezione «Da completare» è ora distinta in ambra.
+- **Il motivo di annullamento di un contenitore** si scrive in un dialogo
+  modale coerente con gli altri (`chiediTesto()`), non più in un `prompt()`
+  nativo del browser.
+
 ### Added — interfaccia operativa nel browser (`src/webui/`)
 
 - **`python run.py webui`**: la postazione di lavoro, che sostituisce le due GUI

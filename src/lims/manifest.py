@@ -108,6 +108,7 @@ class Manifest:
     manifest_uuid: str = ""
     source_code: str = ""
     destination_code: str = ""
+    visual_check: dict[str, Any] | None = None
 
     @property
     def epcs(self) -> tuple[str, ...]:
@@ -128,6 +129,7 @@ class Manifest:
             "destination_code": self.destination_code,
             "entries": [asdict(voce) for voce in self.entries],
             "sealing": self.sealing,
+            "visual_check": self.visual_check,
         }
 
     @classmethod
@@ -149,6 +151,7 @@ class Manifest:
             destination_code=str(value.get("destination_code", "")),
             entries=[ManifestEntry.from_mapping(voce) for voce in value.get("entries", [])],
             sealing=value.get("sealing"),
+            visual_check=value.get("visual_check"),
         )
 
 

@@ -80,6 +80,7 @@ class _Postazione:
         )
         self.server.workflow.imposta_operatore("TEST")
         self.server.start_background()
+        assert self.server.call("connetti", {})[0] == 200
 
     def __enter__(self) -> "_Postazione":
         return self
@@ -171,9 +172,8 @@ def test_una_chiamata_alla_radio_fallita_resta_col_suo_motivo():
 
 def test_il_backend_tracciato_resta_trasparente():
     """Avvolgere non deve cambiare cosa il backend sembra essere."""
-    from webui.server import _is_service
-
     from rfid_silion.service import RFIDService
+    from webui.server import _is_service
 
     servizio = RFIDService({"serial": {"port": "COM99"}, "reader": {"region": 8}})
     avvolto = BackendTracciato(servizio, Diario.spento())
@@ -226,6 +226,18 @@ def test_il_diario_del_browser_non_tocca_la_radio():
             assert occupato == 409
         finally:
             posto.server._release()
+
+
+def test_i_fotogrammi_webcam_non_finiscono_nel_diario():
+    from unittest.mock import patch
+
+    with _Postazione(_tmp("webcam")) as posto:
+        before = len(posto.record())
+        with patch("webui.qr_camera.decodifica_fotogramma", return_value={"codici": []}):
+            code, _ = posto.post("/api/decodifica_qr_camera", {"immagine_base64": "FOTOGRAMMA_PRIVATO"})
+            assert code == 200
+        assert len(posto.record()) == before
+        assert "FOTOGRAMMA_PRIVATO" not in posto.diario.percorso.read_text(encoding="utf-8")
 
 
 def test_un_pin_non_finisce_nel_diario():

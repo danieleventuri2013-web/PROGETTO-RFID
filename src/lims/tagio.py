@@ -24,6 +24,8 @@ individuano da un solo inventory, senza decifrare nulla e senza possedere la chi
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
+import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Protocol
@@ -61,6 +63,7 @@ __all__ = [
     "FieldSurvey",
     "MissingContainer",
     "ProvisionResult",
+    "TagGiaScrittoError",
     "TagIO",
     "TagObservation",
 ]
@@ -81,6 +84,15 @@ MODALITA_SOLO_EPC = "solo_epc"
 # (`reader.py:429`). La lettura ne consente 192 per volta (`reader.py:29`).
 MAX_WRITE_BYTES = 64
 MAX_READ_WORDS = 96
+
+
+class TagGiaScrittoError(ServiceCallError):
+    """Il tag e' gia' stato scritto e la riscrittura non e' stata autorizzata.
+
+    Ha una classe propria perche' e' l'unico errore di `provision` a cui
+    l'operatore possa rispondere qualcosa: tutti gli altri sono guasti o
+    condizioni radio. L'interfaccia la riconosce dal codice, non dal testo.
+    """
 
 
 class _Backend(Protocol):
@@ -109,6 +121,10 @@ class ProvisionResult:
     blocks_written: int = 0
     antenna: int | None = None
     error: str = ""
+    #: Perche' e' fallita, in una parola che l'interfaccia possa riconoscere
+    #: senza leggere il messaggio. Un testo cambia quando lo si migliora; un
+    #: bottone che compare al momento giusto non deve dipenderne.
+    error_code: str = ""
     steps: list[str] = field(default_factory=list)
     timestamp: str = field(default_factory=_now)
 
@@ -123,6 +139,7 @@ class ProvisionResult:
             "blocks_written": self.blocks_written,
             "antenna": self.antenna,
             "error": self.error,
+            "error_code": self.error_code,
             "steps": list(self.steps),
             "timestamp": self.timestamp,
         }
@@ -228,6 +245,104 @@ class FieldSurvey:
         }
 
 
+def _spiega_errore(messaggio: str, epc_visto: str) -> tuple[str, str]:
+    """Traduce l'errore del modulo in qualcosa su cui si possa agire.
+
+    Un solo caso, ma e' quello che al banco ha fatto perdere una giornata: il
+    modulo risponde «0x0400 No tag found» a un comando di accesso rivolto a un
+    tag che l'inventario, un decimo di secondo prima, aveva visto benissimo. Il
+    messaggio e' esatto dal punto di vista del modulo e fuorviante da quello di
+    chi guarda lo schermo: manda a cercare un tag caduto, o un chip rotto, o
+    un'antenna scollegata — cose che non c'entrano.
+
+    Le due cause vere, in ordine di frequenza:
+
+    * il modulo e' in una **sessione Gen2 persistente** (S2): i comandi di
+      accesso interrogano solo il target A (manuale EX10 2024-12 §6.1 e §6.5) e
+      dopo ogni inventario il flag del tag e' su B;
+    * la **potenza di scrittura** non basta: scrivere richiede piu' campo che
+      leggere, e il manuale lo mette per iscritto a p.99.
+    """
+    if "0x0400" not in messaggio and "No tag found" not in messaggio:
+        return "", messaggio
+    quale = f" {epc_visto}" if epc_visto else ""
+    return "tag_muto_all_accesso", (
+        f"{messaggio}. Il tag{quale} risponde all'inventario ma non ai comandi di "
+        "accesso: verificare l'assetto radio (sessione Gen2 S2/S0 e target), "
+        "la persistenza del flag con RF continua e la potenza di scrittura "
+        "sull'antenna della postazione. Controllare anche posizione e collegamento: "
+        "il solo silenzio non dimostra che il chip sia guasto."
+    )
+
+
+def _stesso_tag_del_tentativo(tentativo: dict[str, Any], epc_visto: str, tid_visto: str) -> bool:
+    """Dice se il tag presente e' quello su cui era iniziato un tentativo rimasto a meta'.
+
+    Con un TID registrato decide soltanto il TID: e' l'identita' di fabbrica
+    del chip, mentre l'EPC e' proprio cio' che il tentativo stava cambiando e
+    puo' essere rimasto in uno stato qualunque. Al banco, l'11/09/2026, un
+    «0x0400 No tag found» durante il cambio EPC ha lasciato il chip con le
+    prime tre word nuove e le ultime tre vecchie (0100010000000001B72AEEEC, fra
+    E280F30200000001B72AEEEC e 010001000000020203FEB92C): confrontare solo
+    l'EPC di partenza e quello di arrivo rifiutava proprio il tag giusto, e con
+    lui ogni altro, perche' il tentativo resta legato al suo chip.
+
+    Senza TID resta l'EPC: quello di partenza, quello di arrivo, oppure un misto
+    word per word dei due, che e' quanto lascia una scrittura interrotta.
+    """
+    tid_atteso = str(tentativo.get("tid") or "")
+    if tid_atteso:
+        return tid_visto == tid_atteso
+    prima, dopo = str(tentativo["previous_epc"]), str(tentativo["epc"])
+    if len(epc_visto) != len(prima) or len(epc_visto) != len(dopo) or len(epc_visto) % 4:
+        return False
+    return all(
+        epc_visto[i : i + 4] in (prima[i : i + 4], dopo[i : i + 4])
+        for i in range(0, len(epc_visto), 4)
+    )
+
+
+def _tag_diverso_dal_tentativo(tentativo: dict[str, Any], epc_visto: str, tid_visto: str) -> str:
+    """Spiega quale tag rimettere: «non coincide con quello originale» non lo diceva."""
+    if tentativo.get("tid"):
+        originale = f"TID {tentativo['tid']}"
+        presente = f"il tag con TID {tid_visto}" if tid_visto else "un tag di cui non si e' letto il TID"
+    else:
+        originale = f"EPC {tentativo['previous_epc']}"
+        presente = f"il tag con EPC {epc_visto}"
+    return (
+        f"tentativo incompleto: la scrittura di questo contenitore e' iniziata sul tag con {originale}, "
+        f"sulla postazione c'e' {presente}. Rimettere quel tag per completarla; se non e' piu' "
+        "disponibile, usare «Contenitore rotto o tag guasto»."
+    )
+
+
+def _impronta_scrittura(payload: TagPayload, modalita: str, capacita: int, revision: int) -> str:
+    """Identifica i dati del tentativo nel formato persistito, anche storico."""
+    return hashlib.sha256(json.dumps({
+        "payload": payload.describe(), "modalita": modalita,
+        "capacita": capacita, "revision": revision,
+    }, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _profilo_tentativo_compatibile(
+    registrata: str, impronta: str, payload: TagPayload, modalita: str, revision: int,
+) -> bool:
+    """In solo EPC la capacita' USER non cambia i dati scritti sul tag.
+
+    I vecchi tentativi includevano anche questa capacita' nell'hash. Per
+    riconoscerli si ricostruiscono le impronte con i valori ammessi dai profili
+    (byte pari fra 0 e 8192). Payload, modalita' e revisione restano identici:
+    nessuna compatibilita' viene concessa passando da USER a solo EPC.
+    """
+    if registrata == impronta:
+        return True
+    return modalita == MODALITA_SOLO_EPC and any(
+        registrata == _impronta_scrittura(payload, modalita, capacita, revision)
+        for capacita in range(0, 8193, 2)
+    )
+
+
 class TagIO:
     """Operazioni di alto livello sul tag, sopra il contratto del servizio."""
 
@@ -244,6 +359,8 @@ class TagIO:
         db: Any = None,
         operator: str = "",
         modalita: str = MODALITA_PAYLOAD,
+        read_tid: bool = True,
+        read_user: bool | None = None,
     ):
         self.backend = backend
         self.keyring = keyring
@@ -257,6 +374,8 @@ class TagIO:
         if modalita not in (MODALITA_PAYLOAD, MODALITA_SOLO_EPC):
             raise ValueError(f"modalita' di scrittura sconosciuta: {modalita}")
         self.modalita = modalita
+        self.read_tid = read_tid
+        self.read_user = not self.solo_epc if read_user is None else read_user
 
     @property
     def solo_epc(self) -> bool:
@@ -289,6 +408,44 @@ class TagIO:
         return self.backend.inventory(
             InventoryRequest(antennas=self.antennas, timeout_ms=self.timeout_ms)
         )
+
+    def _leggi_rimettendo_in_gioco(self, richiesta, contesto: str):
+        """Una lettura preceduta dall'inventario che la rende possibile.
+
+        Stessa regola di `_risingolarizza`, ma qui non si puo' pretendere un tag
+        solo: davanti c'e' una scatola piena. Il filtro Select dice *quale* tag
+        deve rispondere, non lo rimette in gioco: sono due cose diverse e
+        servono tutt'e due.
+        """
+        self._inventory()
+        return raise_for_status(self.backend.read(richiesta), contesto)
+
+    def _risingolarizza(self, atteso: str, contesto: str) -> None:
+        """Rimette il tag in gioco prima di un accesso, e controlla che sia lui.
+
+        Serve prima di tutto alla **guardia del servizio**: `write_epc` pretende
+        un inventory recente con il solo EPC atteso, e il cambio di EPC la
+        consuma. Gratis, verifica anche che davanti ci sia ancora quel tag e uno
+        solo: fra due passi di una scrittura l'operatore potrebbe averne
+        cambiato uno.
+
+        Attenzione a cosa **non** e'. Questo non e' il rimedio alla sessione
+        Gen2 S2: li' il flag di inventario resta su B finche' il tag e'
+        alimentato, e i comandi di accesso interrogano solo il target A
+        (manuale EX10 2024-12 §6.1 e §6.5) — un inventario in piu' mette il flag
+        su B, cioe' peggiora le cose invece di curarle. Il rimedio e' non stare
+        in S2 mentre si accede, ed e' la postazione a garantirlo
+        (`webui.workflow.Workflow._assetto_accesso`, sessione S0).
+        """
+        presenti = inventory_epcs(
+            raise_for_status(self._inventory(), f"inventory prima di {contesto}")
+        )
+        if presenti != [atteso]:
+            raise ServiceCallError(
+                f"prima di {contesto} il campo mostra "
+                f"{', '.join(presenti) if presenti else 'nessun tag'} "
+                f"invece del solo {atteso}"
+            )
 
     @property
     def payload_capacity(self) -> int:
@@ -337,6 +494,8 @@ class TagIO:
 
         esito = ProvisionResult(revision=revision)
         key_id = self.keyring.default_key_id if key_id is None else key_id
+        tentativo = None
+        registro_tentativi = self.db is not None and container_id is not None and hasattr(self.db, "provision_attempt")
 
         def passo(testo: str) -> None:
             esito.steps.append(testo)
@@ -349,7 +508,7 @@ class TagIO:
                     log.exception("Callback on_step fallita")
 
         try:
-            chiave = self.keyring.require(key_id)
+            chiave = self.keyring.require(key_id) if not self.solo_epc else b""
 
             # 1. un solo tag nel campo: con l'opzione 0x05 la scrittura
             #    colpirebbe altrimenti un contenitore a caso.
@@ -364,26 +523,48 @@ class TagIO:
             passo(f"tag riconosciuto: {esito.previous_epc}")
 
             # 2. TID: identita' di fabbrica su cui ancorare l'autenticazione.
-            lettura_tid = raise_for_status(
-                self.backend.read(self._read_request(MemoryBank.TID, 0, TID_AAD_WORDS)),
-                "lettura TID",
-            )
-            antenna, tid_bytes = first_read(lettura_tid)
-            if len(tid_bytes) < TID_AAD_BYTES:
+            antenna, tid_bytes = self.antennas[0], b""
+            if self.read_tid or not self.solo_epc:
+                try:
+                    lettura_tid = raise_for_status(
+                        self.backend.read(self._read_request(MemoryBank.TID, 0, TID_AAD_WORDS)),
+                        "lettura TID",
+                    )
+                    antenna, tid_bytes = first_read(lettura_tid)
+                except ServiceCallError:
+                    if not self.solo_epc:
+                        raise
+                    passo("TID non disponibile: identificazione tramite EPC e database")
+            if not self.solo_epc and len(tid_bytes) < TID_AAD_BYTES:
                 raise ServiceCallError(
                     f"TID di {len(tid_bytes)} byte: ne servono {TID_AAD_BYTES} per legare "
                     "il payload al chip"
                 )
             tid_bytes = tid_bytes[:TID_AAD_BYTES]
+            if self.solo_epc and tid_bytes:
+                from .profiler import decode_tid
+                if len(tid_bytes) < TID_AAD_BYTES or not decode_tid(tid_bytes).serialized:
+                    passo("TID non univoco: identificazione tramite EPC e database")
+                    tid_bytes = b""
             esito.tid = tid_bytes.hex().upper()
             esito.antenna = antenna
-            passo(f"TID letto su antenna {antenna}: {esito.tid}")
+            if esito.tid:
+                passo(f"TID letto su antenna {antenna}: {esito.tid}")
 
             # Si valida lo spazio PRIMA di cambiare l'EPC. In precedenza il
             # controllo avveniva dopo: con una configurazione troppo prudente
             # il tag restava con il nuovo EPC ma senza payload, cioe' a meta'
             # della procedura mostrata all'operatore.
-            chiaro = pack_payload(payload, max_bytes=self.payload_capacity)
+            #
+            # In «solo EPC» non c'e' nessun payload da far stare: il campione
+            # viaggia sulla distinta stampata, ed e' proprio il caso dei chip
+            # senza USER memory utilizzabile. Misurare quel tag dava zero byte
+            # utili, e il controllo bocciava la scrittura di un tag che il
+            # flusso aveva appena dichiarato scrivibile — la modalita' ridotta
+            # esiste per non fermarsi qui.
+            chiaro = b""
+            if not self.solo_epc:
+                chiaro = pack_payload(payload, max_bytes=self.payload_capacity)
 
             # Scrittura unica: il chip si interroga PRIMA di toccarlo.
             # Un archivio che non tiene il registro dei tag equivale a non averlo:
@@ -395,12 +576,12 @@ class TagIO:
                     "L'archivio non espone get_tag: impossibile verificare che il "
                     "tag non sia gia' stato scritto"
                 )
-            if interroga is not None:
+            if interroga is not None and esito.tid:
                 gia_noto = interroga(esito.tid)
                 stato = (gia_noto or {}).get("state")
                 if gia_noto is not None and stato != "free":
                     if not authorized_rewrite:
-                        raise ServiceCallError(
+                        raise TagGiaScrittoError(
                             f"il tag {esito.tid} risulta gia' scritto (stato '{stato}'): "
                             "riscriverlo sovrascriverebbe i dati di un altro campione. "
                             "Annullare il contenitore e usarne uno nuovo, oppure "
@@ -413,6 +594,12 @@ class TagIO:
                         detail=f"riscrittura autorizzata di un tag in stato '{stato}'",
                     )
                     passo(f"riscrittura autorizzata (stato precedente: {stato})")
+
+            if not esito.tid and self.db is not None:
+                cerca = getattr(self.db, "find_container_by_epc", None)
+                precedente = cerca(esito.previous_epc) if cerca else None
+                if precedente is not None and precedente.container_id != container_id and not authorized_rewrite:
+                    raise TagGiaScrittoError("EPC gia' assegnato: abilitare il prototipo o autorizzare la riscrittura")
 
             # 3. nuovo pseudonimo, diverso da quello attuale.
             nuovo_epc = build_epc(
@@ -431,13 +618,43 @@ class TagIO:
             esito.epc = nuovo_epc.hex().upper()
 
             if self.db is not None and container_id is not None:
+                if registro_tentativi:
+                    # USER non partecipa alla scrittura in modalita' solo EPC.
+                    impronta = _impronta_scrittura(
+                        payload, self.modalita,
+                        0 if self.solo_epc else self.user_memory_bytes, revision,
+                    )
+                    tentativo = self.db.provision_attempt(container_id)
+                    if tentativo:
+                        if not _profilo_tentativo_compatibile(
+                            tentativo["fingerprint"], impronta, payload, self.modalita, revision,
+                        ):
+                            raise ServiceCallError("tentativo incompleto: ripristinare il profilo originale prima di riprovare")
+                        if not _stesso_tag_del_tentativo(tentativo, esito.previous_epc, esito.tid):
+                            raise ServiceCallError(
+                                _tag_diverso_dal_tentativo(tentativo, esito.previous_epc, esito.tid)
+                            )
+                        esito.epc = tentativo["epc"]
+                        nuovo_epc = bytes.fromhex(esito.epc)
+                        passo("tentativo precedente riconciliato con il tag presente")
+                        if esito.previous_epc not in (tentativo["previous_epc"], tentativo["epc"]):
+                            # Il cambio EPC si e' interrotto a meta': si riparte
+                            # dall'EPC che il chip mostra adesso, verso lo stesso
+                            # EPC gia' prenotato per questo contenitore.
+                            passo(f"EPC rimasto a meta' dal tentativo precedente ({esito.previous_epc}): si completa")
+                    else:
+                        self.db.begin_provision(container_id, esito.previous_epc, esito.epc, esito.tid, impronta)
                 # Prenota l'EPC prima di toccare il tag: un duplicato scoperto
                 # dopo la scrittura lascerebbe due contenitori indistinguibili.
                 self.db.assign_epc(container_id, esito.epc, esito.tid, revision)
 
             # 4. cambio EPC (azzera la guardia del servizio).
-            raise_for_status(
-                self.backend.write_epc(
+            # La lettura del TID qui sopra ha gia' consumato la
+            # singolarizzazione del passo 1: senza rimettere il tag in gioco la
+            # scrittura fallisce con «0x0400 No tag found».
+            self._risingolarizza(esito.previous_epc, "il cambio EPC")
+            if esito.previous_epc != esito.epc:
+                raise_for_status(self.backend.write_epc(
                     WriteEpcRequest(
                         new_epc=esito.epc,
                         expected_epc=esito.previous_epc,
@@ -445,9 +662,9 @@ class TagIO:
                         access_password_hex=self.access_password_hex,
                         timeout_ms=self.timeout_ms,
                     )
-                ),
-                "cambio EPC",
-            )
+                ), "cambio EPC")
+            if registro_tentativi:
+                self.db.provision_phase(container_id, "epc_scritto")
             passo(f"EPC scritto: {esito.epc}")
 
             # 5. nuovo inventory: riarma la guardia e conferma il cambio.
@@ -459,6 +676,8 @@ class TagIO:
                     f"invece del solo {esito.epc}"
                 )
             passo("nuovo EPC confermato")
+            if registro_tentativi:
+                self.db.provision_phase(container_id, "epc_verificato")
 
             if self.solo_epc:
                 # 6-8 non hanno oggetto: questo chip non ha una USER memory in
@@ -468,16 +687,22 @@ class TagIO:
                 esito.payload_bytes = 0
                 esito.blocks_written = 0
                 if self.db is not None and container_id is not None:
-                    self.db.mark_provisioned(container_id, esito.tid, revision)
-                    self.db.assign_tag(
-                        esito.tid,
-                        container_id,
-                        esito.epc,
-                        revision,
-                        allow_rewrite=authorized_rewrite,
-                    )
-                    self.db.clear_tag_failures(esito.tid)
+                    if esito.tid:
+                        self.db.assign_tag(
+                            esito.tid, container_id, esito.epc, revision,
+                            allow_rewrite=authorized_rewrite,
+                            provisioned=True,
+                        )
+                        self.db.clear_tag_failures(esito.tid)
+                    else:
+                        self.db.mark_provisioned(container_id, "", revision)
+                    if authorized_rewrite:
+                        self._log("prototype_rewrite", ok=True, epc=esito.epc,
+                                  tid=esito.tid, container_id=container_id,
+                                  detail=f"EPC precedente {esito.previous_epc}; EPC verificato {esito.epc}")
                 esito.ok = True
+                if registro_tentativi:
+                    self.db.provision_phase(container_id, "verificata")
                 self._log(
                     "provision",
                     ok=True,
@@ -512,11 +737,12 @@ class TagIO:
             passo(f"payload scritto: {len(sigillato)} byte in {esito.blocks_written} {blocchi}")
 
             # 8. rilettura di verifica: senza questa la scrittura resta un'ipotesi.
-            self._verify_blocks(sigillato)
+            self._verify_blocks(sigillato, esito.epc)
             passo("payload riletto e verificato")
+            if registro_tentativi:
+                self.db.provision_phase(container_id, "payload_verificato")
 
             if self.db is not None and container_id is not None:
-                self.db.mark_provisioned(container_id, esito.tid, revision)
                 # Il chip entra nel registro solo ORA, a scrittura verificata:
                 # un tag marcato come usato per una scrittura poi fallita
                 # sarebbe buttato via per niente.
@@ -526,10 +752,13 @@ class TagIO:
                     esito.epc,
                     revision,
                     allow_rewrite=authorized_rewrite,
+                    provisioned=True,
                 )
                 self.db.clear_tag_failures(esito.tid)
 
             esito.ok = True
+            if registro_tentativi:
+                self.db.provision_phase(container_id, "verificata")
             self._log(
                 "provision",
                 ok=True,
@@ -542,16 +771,20 @@ class TagIO:
             log.info("Contenitore scritto: EPC %s, %d byte", esito.epc, esito.payload_bytes)
         except (ServiceCallError, CryptoError, ValueError) as exc:
             esito.ok = False
-            esito.error = str(exc)
+            if isinstance(exc, TagGiaScrittoError):
+                esito.error_code = "tag_gia_scritto"
+                esito.error = str(exc)
+            else:
+                esito.error_code, esito.error = _spiega_errore(str(exc), esito.previous_epc)
             self._log(
                 "provision",
                 ok=False,
                 epc=esito.epc or esito.previous_epc,
                 tid=esito.tid,
                 container_id=container_id,
-                detail=str(exc),
+                detail=esito.error,
             )
-            log.warning("Scrittura del contenitore non riuscita: %s", exc)
+            log.warning("Scrittura del contenitore non riuscita: %s", esito.error)
         return esito
 
     def _write_blocks(self, data: bytes, expected_epc: str) -> int:
@@ -561,6 +794,7 @@ class TagIO:
         scritti = 0
         for offset in range(0, len(data), MAX_WRITE_BYTES):
             blocco = data[offset : offset + MAX_WRITE_BYTES]
+            self._risingolarizza(expected_epc, f"la scrittura a word {offset // 2}")
             raise_for_status(
                 self.backend.write(
                     WriteRequest(
@@ -578,7 +812,7 @@ class TagIO:
             scritti += 1
         return scritti
 
-    def _verify_blocks(self, expected: bytes) -> None:
+    def _verify_blocks(self, expected: bytes, expected_epc: str) -> None:
         """Rilegge e confronta, a blocchi se il payload supera una lettura sola."""
         from rfid_silion.service import MemoryBank
 
@@ -586,6 +820,7 @@ class TagIO:
         for offset in range(0, len(expected), limite):
             atteso = expected[offset : offset + limite]
             richiesta = self._read_request(MemoryBank.USER, offset // 2, len(atteso) // 2)
+            self._risingolarizza(expected_epc, f"la rilettura a word {offset // 2}")
             raise_for_status(
                 self.backend.verify(richiesta, atteso.hex().upper()),
                 f"verifica del blocco a word {offset // 2}",
@@ -609,6 +844,7 @@ class TagIO:
             nuova = bytes.fromhex("".join(new_password_hex.split()))
             if len(nuova) != 4:
                 raise ValueError("la password di accesso deve essere di 4 byte")
+            self._risingolarizza(esito.epc, "la scrittura della password")
             raise_for_status(
                 self.backend.write(
                     WriteRequest(
@@ -658,6 +894,7 @@ class TagIO:
         modo = "unlock" if unlock else ("permalock" if permanent else "lock")
         esito = ProvisionResult(epc=expected_epc.strip().upper())
         try:
+            self._risingolarizza(esito.epc, "il lock")
             raise_for_status(
                 self.backend.lock(
                     LockRequest(
@@ -816,17 +1053,18 @@ class TagIO:
         from rfid_silion.service import MemoryBank
 
         select = observation.epc if isolate else ""
-        if self.solo_epc:
+        if not self.read_user:
             # Un tag senza payload non e' un tag rotto. Chiamarlo «illeggibile»
             # manderebbe l'operatore a cercare un guasto che non c'e', e a
             # buttare via un chip che funziona.
             observation.status = "solo_epc"
             observation.detail = "questo circuito non porta il campione: sta sulla distinta"
+            observation.detail = "controllo EPC; payload USER non letto ne' autenticato"
+            if not self.read_tid:
+                return
             try:
-                lettura_tid = raise_for_status(
-                    self.backend.read(
-                        self._read_request(MemoryBank.TID, 0, TID_AAD_WORDS, select)
-                    ),
+                lettura_tid = self._leggi_rimettendo_in_gioco(
+                    self._read_request(MemoryBank.TID, 0, TID_AAD_WORDS, select),
                     "lettura TID",
                 )
                 _, tid_bytes = first_read(lettura_tid)
@@ -837,10 +1075,8 @@ class TagIO:
                 observation.status = "estraneo"
             return
         try:
-            lettura_tid = raise_for_status(
-                self.backend.read(
-                    self._read_request(MemoryBank.TID, 0, TID_AAD_WORDS, select)
-                ),
+            lettura_tid = self._leggi_rimettendo_in_gioco(
+                self._read_request(MemoryBank.TID, 0, TID_AAD_WORDS, select),
                 "lettura TID",
             )
             _, tid_bytes = first_read(lettura_tid)
@@ -848,8 +1084,8 @@ class TagIO:
             observation.tid = tid_bytes.hex().upper()
 
             parole = min(MAX_READ_WORDS, max(1, self.user_memory_bytes // 2))
-            lettura = raise_for_status(
-                self.backend.read(self._read_request(MemoryBank.USER, 0, parole, select)),
+            lettura = self._leggi_rimettendo_in_gioco(
+                self._read_request(MemoryBank.USER, 0, parole, select),
                 "lettura USER",
             )
             _, dati = first_read(lettura)

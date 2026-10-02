@@ -102,6 +102,38 @@ def test_misura_user_memory_di_64_byte() -> None:
     assert profilo.suitable is True
 
 
+def test_la_profilazione_regge_la_sessione_S2() -> None:
+    """Il caso che si e' presentato al banco, non un caso di scuola.
+
+    Il lettore arriva in sessione Gen2 **S2**: il flag di inventario resta su B
+    finche' il tag e' alimentato, quindi dopo il primo accesso il chip smette di
+    rispondere e ogni lettura successiva torna «0x0400 No tag found». Misurato
+    sul banco vero con un tag fermo davanti all'antenna 3 a -41 dBm: una lettura
+    riuscita e cinque fallite di fila. La profilazione moriva li' dicendo «il tag
+    ha smesso di rispondere», che era vero e insieme fuorviante — il tag stava
+    fermo e si leggeva benissimo.
+    """
+    backend = _backend(64)
+    backend.sessione_persistente = True
+    profilo = profile_tag(backend, antennas=(1, 2))
+    assert profilo.ok is True, profilo.error
+    assert profilo.user_bytes == 64
+
+
+def test_senza_ri_singolarizzare_la_sessione_S2_ferma_tutto() -> None:
+    """La prova che la difesa serve: il banco senza inventario davanti fallisce."""
+    from rfid_silion.service import ReadRequest
+
+    backend = _backend(64)
+    backend.sessione_persistente = True
+    backend.inventory({"antennas": (1, 2), "timeout_ms": 100})
+    richiesta = {"bank": 2, "address": 0, "word_count": 6, "antennas": (1, 2)}
+    assert backend.read(ReadRequest.from_mapping(richiesta)).ok is True
+    seconda = backend.read(ReadRequest.from_mapping(richiesta))
+    assert seconda.ok is False
+    assert "No tag found" in (seconda.error or {}).get("message", "")
+
+
 def test_misura_dimensioni_diverse() -> None:
     for user_bytes in (2, 8, 30, 64, 128, 256, 512):
         profilo = profile_tag(_backend(user_bytes))

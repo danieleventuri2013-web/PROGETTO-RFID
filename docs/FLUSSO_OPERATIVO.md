@@ -176,10 +176,18 @@ distinta da mandare, partenza da confermare. Si riprendono da lì.
 
 ## 8. Il giro si chiude quando la roba è arrivata
 
-**Al destinatario.** Si apre la distinta (dal file, oppure leggendo il QR sul
-foglio con un lettore di codici a barre 2D), si appoggia la scatola **ancora
-chiusa** sulle antenne e si legge. Il confronto dice cosa è arrivato e cosa no.
+**Al destinatario.** Si apre la distinta dal file oppure con **Attiva webcam**:
+si inquadra il QR sul foglio e si preme **Acquisisci** o **Spazio** quando il
+bordo è verde. Se il foglio ha più codici, si acquisiscono tutte le parti.
+Poi si appoggia la scatola **ancora
+chiusa** sulle antenne e si legge. La lista **Campioni attesi** mostra i
+contenitori raggruppati per paziente, con etichetta e materiale: dopo la
+lettura ogni riga si marca **✓ Arrivato** o **✗ Mancante**, così il confronto
+con la distinta si legge riga per riga prima ancora di aprire la scatola.
 Poi *Conferma la ricezione* e ***Esporta il verbale per il mittente***.
+Questi ultimi passaggi richiedono la distinta cifrata selezionata: il QR da solo
+carica e confronta i contenitori, ma non identifica completamente la spedizione.
+Guida alla webcam: [QR_WEBCAM.md](QR_WEBCAM.md).
 
 **Al mittente.** Schermata Archivio → *Importa un verbale*. Solo allora quella
 spedizione smette di essere «partita» e diventa «arrivata».

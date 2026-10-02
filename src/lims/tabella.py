@@ -268,7 +268,7 @@ def righe_da_tabella(testo: str) -> list[RigaDistinta]:
         campi = grezza.split(_SEP_CAMPO)
         # Una riga piu' corta del previsto viene da una versione precedente del
         # formato: si legge quello che c'e' invece di rifiutare tutto.
-        valori = dict(zip((chiave for chiave, _ in COLONNE), campi))
+        valori = dict(zip((chiave for chiave, _ in COLONNE), campi, strict=False))
         righe.append(RigaDistinta(**valori))
     return righe
 

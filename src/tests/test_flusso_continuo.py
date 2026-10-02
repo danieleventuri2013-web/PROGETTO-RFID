@@ -84,6 +84,7 @@ class _Postazione:
         self.server = WebUIServer(_config(tmp), self.backend, host="127.0.0.1", port=0)
         self.server.workflow.imposta_operatore("TEST")
         self.server.start_background()
+        assert self.server.call("connetti", {})[0] == 200
 
     def __enter__(self) -> "_Postazione":
         return self
@@ -706,7 +707,7 @@ def test_il_foglio_si_stampa_solo_di_una_spedizione_esistente():
 
 def test_l_ora_del_prelievo_si_accetta_in_tutte_le_grafie():
     with _Postazione(_tmp("ore")) as posto:
-        for scritta, attesa in (("14:30", "14:30"), ("1430", "14:30"), ("930", "09:30")):
+        for scritta, _attesa in (("14:30", "14:30"), ("1430", "14:30"), ("930", "09:30")):
             stato, _ = posto.trascrivi(CF_UNO, "Della Valle", ora_prelievo=scritta)
             assert stato == 200, scritta
             posto.post("/api/annulla_accettazione", {"motivo": "prova"})

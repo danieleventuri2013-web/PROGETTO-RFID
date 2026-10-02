@@ -89,6 +89,7 @@ class _Postazione:
         self.server = WebUIServer(_config(tmp), self.backend, host="127.0.0.1", port=0)
         self.server.workflow.imposta_operatore("TEST")
         self.server.start_background()
+        assert self.server.call("connetti", {})[0] == 200
 
     @property
     def base(self) -> str:
@@ -744,6 +745,59 @@ def test_il_sigillo_ripristina_potenze_e_gen2():
         assert stato == 200 and esito["sigillo"]["ok"] is True
         assert posto.backend.gen2 == precedente
         assert posto.backend.read_power_cdbm == 2900
+
+
+def test_verifica_contenuto_attuale_non_accumula_ne_certifica():
+    tags = [_tag_vergine(i) for i in range(1, 4)]
+    with _Postazione(_tmp("presenza_attuale"), tags) as posto:
+        _accetta(posto, totale=3)
+        _scrivi_tutti(posto, tags)
+        _, spedizione = _prepara(posto, "Lab B")
+        richiesta = {"shipment_id": spedizione["shipment_id"]}
+        precedente = dict(posto.backend.gen2)
+        for numero in (3, 2, 0, 3):
+            posto.backend.tags[:] = tags[:numero]
+            status, r = posto.post("/api/verifica_contenuto", richiesta)
+            assert status == 200, r
+            assert r["trovati"] == numero and r["attesi"] == 3
+            assert r["completo"] is (numero == 3)
+            assert sum(c["rilevato"] for c in r["contenitori"]) == numero
+            assert r["antenne"] == [1, 2] and r["verificato_il"]
+            assert posto.backend.gen2 == precedente
+            _, attuale = posto.post("/api/stato_spedizione")
+            assert attuale["stato"] == "open" and attuale["sigillo"] is None
+            assert attuale["contenitori"] == spedizione["contenitori"]
+
+
+def test_verifica_contenuto_segnala_estranei_ed_errori():
+    tags = [_tag_vergine(1)]
+    with _Postazione(_tmp("presenza_errori"), tags) as posto:
+        _accetta(posto, totale=1)
+        _scrivi_tutti(posto, tags)
+        _, spedizione = _prepara(posto, "Lab B")
+        richiesta = {"shipment_id": spedizione["shipment_id"]}
+        estraneo = _tag_vergine(9)
+        posto.backend.tags.append(estraneo)
+        status, r = posto.post("/api/verifica_contenuto", richiesta)
+        assert status == 200 and r["trovati"] == 1 and not r["completo"]
+        assert r["estranei"] == [estraneo.epc_hex]
+        originale = posto.backend.inventory
+        precedente = dict(posto.backend.gen2)
+        posto.backend.inventory = lambda r: posto.backend._ko("inventory", "lettore silenzioso")
+        status, r = posto.post("/api/verifica_contenuto", richiesta)
+        assert status == 400 and "lettore silenzioso" in r["errore"]
+        assert "trovati" not in r
+        assert posto.backend.gen2 == precedente
+        posto.backend.inventory = originale
+        assert posto.post("/api/verifica_contenuto", {"shipment_id": 9999})[0] == 400
+        assert posto.post("/api/verifica_contenuto", richiesta, token=None)[0] == 401
+        posto.server._acquire("altra operazione")
+        try:
+            assert posto.post("/api/verifica_contenuto", richiesta)[0] == 409
+        finally:
+            posto.server._release()
+        posto.server.workflow.lims_cfg["station_mode"] = "ricezione"
+        assert posto.post("/api/verifica_contenuto", richiesta)[0] == 400
 
 
 def test_variazione_del_numero_di_contenitori_in_corso_dopera():
@@ -1495,6 +1549,101 @@ def test_il_duty_cycle_va_impostato_a_coppie():
         assert "superare" in str(exc)
 
     assert ReaderTuning(duty_cycle_full_ms=100, duty_cycle_period_ms=400).duty_cycle_full_ms == 100
+
+
+def test_email_multicollo_e_selezione_ricezione_via_http():
+    from test_exchange import _collo, _survey
+
+    with _Postazione(_tmp("email_mittente")) as partenza, _Postazione(_tmp("email_arrivo")) as arrivo:
+        mittente = partenza.server.workflow
+        destinatario = arrivo.server.workflow
+        destinatario.keyring = mittente.keyring
+        mittente.config["email"] = {"sender": "magazzino@example.test"}
+        mittente.config["destinatari"] = [{"nome": "Distretto B", "email": "ricezione@example.test"}]
+        destinatario.config["laboratorio"] = {"nome": "Distretto B"}
+        a, b = _collo(mittente, 1), _collo(mittente, 2)
+        status, draft = partenza.post("/api/prepara_invio_email", {"shipment_ids": [a[0], b[0]]})
+        assert status == 200 and len(draft["allegati"]) == 2
+        status, file = partenza.post("/api/file_email", {"id": draft["id"], "formato": "zip"})
+        assert status == 200
+        status, imported = arrivo.post("/api/importa_distinte", {"files": [file]})
+        assert status == 200 and len(imported["distinte"]) == 2
+        assert destinatario.inbound_id is None
+        _survey(destinatario, [b[1], b[2]])
+        status, result = arrivo.post("/api/riconosci_collo")
+        assert status == 200 and result["riconciliazione"]["ok"]
+        active = result["distinta"]["inbound_id"]
+        for operation in ("leggi_volume", "conferma_ricezione"):
+            status, error = arrivo.post("/api/" + operation, {"inbound_id": active + 1000})
+            assert status == 400 and "cambiata" in error["errore"]
+        assert destinatario.stato_ricezione()["lettura_valida"]
+        status, receipt = arrivo.post("/api/conferma_ricezione", {"inbound_id": active})
+        assert status == 200 and receipt["confermata"]
+        status, archive = arrivo.post("/api/distinte_attese")
+        assert status == 200 and sum(r["state"] == "received" for r in archive["distinte"]) == 1
+
+
+def test_webcam_richiede_token_operatore_e_ruolo_ricezione():
+    from unittest.mock import patch
+
+    with _Postazione(_tmp("webcam_accesso")) as posto:
+        with patch("webui.qr_camera.decodifica_fotogramma", return_value={"codici": []}) as decoder:
+            assert posto.post("/api/decodifica_qr_camera", token=None)[0] == 401
+            posto.server.workflow.operatore = ""
+            assert posto.post("/api/decodifica_qr_camera")[0] == 400
+            posto.server.workflow.operatore = "TEST"
+            posto.server.workflow.lims_cfg["station_mode"] = "spedizione"
+            assert posto.post("/api/decodifica_qr_camera")[0] == 400
+            decoder.assert_not_called()
+            posto.server.workflow.lims_cfg["station_mode"] = "ricezione"
+            assert posto.post("/api/decodifica_qr_camera")[0] == 200
+            decoder.assert_called_once()
+
+
+def test_qr_multiparte_cambia_la_ricezione_solo_quando_completo():
+    from test_exchange import _collo, _survey
+
+    from lims.tabella import codifica_tabella, righe_da_manifest
+
+    with _Postazione(_tmp("webcam_ricezione")) as posto:
+        w = posto.server.workflow
+        a = _collo(w, 1)
+        w.shipment_id = a[0]
+        blob, _ = w.esporta_distinta()
+        precedente = w.importa_distinta(blob)
+        righe = righe_da_manifest(w.distinta)
+        chiave = w.keyring.default_key
+        # Stesso foglio: resta collegato al documento cifrato già selezionato.
+        code, letta = posto.post("/api/leggi_qr_distinta", {
+            "scansioni": codifica_tabella(righe, chiave=chiave)})
+        assert code == 200 and letta["completa"] and letta["firma_verificata"]
+        assert letta["ricezione"]["inbound_id"] == precedente["inbound_id"]
+        righe[0].epc = "010001000000020101AABBCC"
+        parti = codifica_tabella(righe, identificativo="ABCDEF01", chiave=chiave, caratteri_per_qr=90)
+        assert len(parti) > 1
+        code, parziale = posto.post("/api/leggi_qr_distinta", {"scansioni": [parti[-1]]})
+        assert code == 200 and not parziale["completa"]
+        assert parziale["parti_acquisite"] == [len(parti)]
+        assert w.inbound_id == precedente["inbound_id"]
+        code, _ = posto.post("/api/leggi_qr_distinta", {"scansioni": [parti[-1], "estraneo"]})
+        assert code == 400 and w.inbound_id == precedente["inbound_id"]
+        code, letta = posto.post("/api/leggi_qr_distinta", {"scansioni": list(reversed(parti))})
+        assert code == 200 and letta["completa"] and letta["ricezione"] is None
+        assert w.inbound_id is None and w.distinta is None
+        _survey(w, [righe[0].epc, a[2]])
+        code, confronto = posto.post("/api/leggi_volume", {"inbound_id": None})
+        assert code == 200 and confronto["solo_qr"] and confronto["riconciliazione"]["ok"]
+        assert confronto["riconciliazione"]["arrivati"] == 1
+        # Il confronto col solo foglio non può confermare la precedente spedizione.
+        assert posto.post("/api/conferma_ricezione", {"inbound_id": None})[0] == 400
+        _survey(w, [a[1]])
+        code, confronto = posto.post("/api/leggi_volume", {"inbound_id": None})
+        assert code == 200 and not confronto["riconciliazione"]["ok"]
+        assert confronto["riconciliazione"]["mancanti"] == [righe[0].epc]
+        assert confronto["riconciliazione"]["inattesi"] == [a[1]]
+        assert confronto["mancanti_descritti"][0]["paziente"]
+        w.importa_distinta(blob)
+        assert w.distinta_qr is None and w.inbound_id == precedente["inbound_id"]
 
 
 def _run_all() -> int:

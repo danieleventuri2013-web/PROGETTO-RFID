@@ -56,7 +56,7 @@ __all__ = [
     "NotFoundError",
 ]
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 10
 
 
 class LimsDatabaseError(Exception):
@@ -505,12 +505,89 @@ def _migrazione_v6(conn: sqlite3.Connection) -> None:
 
 
 _MIGRATIONS: dict[int, "str | Callable[[sqlite3.Connection], None]"] = {
+    10: """
+        BEGIN IMMEDIATE;
+        CREATE TABLE visual_checks (
+            shipment_id INTEGER PRIMARY KEY REFERENCES shipments(id),
+            content_hash TEXT NOT NULL,
+            encrypted_blob BLOB NOT NULL
+        );
+        CREATE TABLE visual_settings (id INTEGER PRIMARY KEY CHECK(id=1), encrypted_blob BLOB NOT NULL);
+        COMMIT;
+    """,
+    9: """
+        BEGIN IMMEDIATE;
+        ALTER TABLE inbound_shipments ADD COLUMN box_epc TEXT;
+        ALTER TABLE inbound_shipments ADD COLUMN item_count INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE inbound_shipments ADD COLUMN scan_valid INTEGER NOT NULL DEFAULT 0;
+        UPDATE inbound_shipments SET scan_valid=1 WHERE id IN
+            (SELECT inbound_id FROM inbound_reconciliations);
+        CREATE INDEX idx_inbound_box ON inbound_shipments(box_epc, state);
+        CREATE TABLE mail_dispatches (
+            id TEXT PRIMARY KEY,
+            shipment_ids TEXT NOT NULL,
+            sender TEXT NOT NULL,
+            recipient TEXT NOT NULL,
+            subject TEXT NOT NULL,
+            body TEXT NOT NULL,
+            raw_eml BLOB NOT NULL,
+            message_id TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            state TEXT NOT NULL DEFAULT 'prepared',
+            updated_at TEXT NOT NULL,
+            updated_by TEXT NOT NULL,
+            last_error TEXT NOT NULL DEFAULT ''
+        );
+    """,
     1: _SCHEMA,
     2: _MIGRATION_V2,
     3: _migrazione_v3,
     4: _migrazione_v4,
     5: _migrazione_v5,
     6: _migrazione_v6,
+    7: """
+        CREATE TABLE IF NOT EXISTS provision_attempts (
+            container_id INTEGER PRIMARY KEY REFERENCES containers(id),
+            previous_epc TEXT NOT NULL, epc TEXT NOT NULL UNIQUE,
+            tid TEXT NOT NULL, fingerprint TEXT NOT NULL,
+            phase TEXT NOT NULL, updated_at TEXT NOT NULL
+        );
+    """,
+    8: """
+        BEGIN IMMEDIATE;
+        CREATE TABLE patients_v8 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            codice_fiscale TEXT UNIQUE,
+            cognome TEXT NOT NULL, nome TEXT NOT NULL,
+            data_nascita TEXT, sesso TEXT NOT NULL DEFAULT 'X',
+            created_at TEXT NOT NULL
+        );
+        INSERT INTO patients_v8 SELECT id, NULLIF(codice_fiscale, ''), cognome,
+            nome, data_nascita, sesso, created_at FROM patients;
+        UPDATE sqlite_sequence SET seq=MAX(seq, COALESCE(
+            (SELECT seq FROM sqlite_sequence WHERE name='patients'), 0))
+            WHERE name='patients_v8';
+        DROP TABLE patients;
+        ALTER TABLE patients_v8 RENAME TO patients;
+        ALTER TABLE cases ADD COLUMN draft INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE cases ADD COLUMN count_confirmed INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE cases ADD COLUMN frozen_at TEXT;
+        ALTER TABLE cases ADD COLUMN cancelled_at TEXT;
+        ALTER TABLE cases ADD COLUMN edit_version INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE containers ADD COLUMN last_write_error TEXT NOT NULL DEFAULT '';
+        UPDATE cases SET frozen_at=created_at WHERE EXISTS (
+            SELECT 1 FROM specimens s JOIN containers c ON c.specimen_id=s.id
+            WHERE s.case_id=cases.id AND (c.provisioned_at IS NOT NULL OR
+                EXISTS (SELECT 1 FROM provision_attempts a WHERE a.container_id=c.id))
+        );
+        UPDATE cases SET count_confirmed=1 WHERE frozen_at IS NOT NULL;
+        UPDATE cases SET count_confirmed=(SELECT count_confirmed FROM workflow_context WHERE id=1)
+            WHERE id=(SELECT s.case_id FROM specimens s JOIN workflow_context w ON w.active_specimen_id=s.id WHERE w.id=1);
+        CREATE INDEX idx_cases_created ON cases(created_at);
+        PRAGMA user_version=8;
+        COMMIT;
+    """,
 }
 
 
@@ -658,6 +735,11 @@ class LimsDatabase:
                 self._conn.executescript(script)
                 self._conn.execute(f"PRAGMA user_version = {versione}")
                 self._conn.commit()
+            except BaseException:
+                # La migrazione 8 è transazionale: un errore non deve lasciare
+                # né una tabella intermedia né i vincoli sospesi sulla connessione.
+                self._conn.rollback()
+                raise
             finally:
                 self._conn.execute("PRAGMA foreign_keys = ON")
 
@@ -667,18 +749,25 @@ class LimsDatabase:
 
     # -- pazienti ----------------------------------------------------------
     def upsert_patient(self, patient: Patient) -> int:
-        """Inserisce o aggiorna il paziente identificandolo dal codice fiscale."""
-        existing = self.find_patient(patient.codice_fiscale)
+        """Identifica dal suo ID o CF; senza entrambi crea una nuova anagrafica."""
+        existing = self.get_patient(patient.id) if patient.id is not None else self.find_patient(patient.codice_fiscale)
         if existing is not None:
+            campi = ("codice_fiscale", "cognome", "nome", "data_nascita", "sesso")
+            if any(getattr(existing, k) != getattr(patient, k) for k in campi) and self._conn.execute(
+                "SELECT 1 FROM cases WHERE patient_id=? AND frozen_at IS NOT NULL LIMIT 1",
+                (existing.id,),
+            ).fetchone():
+                raise LimsDatabaseError("anagrafica già collegata a tag avviati: conservarne i dati originali")
             self._conn.execute(
-                "UPDATE patients SET cognome=?, nome=?, data_nascita=?, sesso=? "
-                "WHERE codice_fiscale=?",
+                "UPDATE patients SET cognome=?, nome=?, data_nascita=?, sesso=?, codice_fiscale=? "
+                "WHERE id=?",
                 (
                     patient.cognome,
                     patient.nome,
                     _as_iso(patient.data_nascita),
                     patient.sesso.value,
-                    patient.codice_fiscale,
+                    patient.codice_fiscale or None,
+                    existing.id,
                 ),
             )
             self._conn.commit()
@@ -687,7 +776,7 @@ class LimsDatabase:
             "INSERT INTO patients (codice_fiscale, cognome, nome, data_nascita, sesso, created_at) "
             "VALUES (?,?,?,?,?,?)",
             (
-                patient.codice_fiscale,
+                patient.codice_fiscale or None,
                 patient.cognome,
                 patient.nome,
                 _as_iso(patient.data_nascita),
@@ -699,6 +788,8 @@ class LimsDatabase:
         return int(cursor.lastrowid)
 
     def find_patient(self, codice_fiscale: str) -> Patient | None:
+        if not codice_fiscale:
+            return None
         row = self._conn.execute(
             "SELECT * FROM patients WHERE codice_fiscale=?",
             (validate_codice_fiscale(codice_fiscale),),
@@ -715,7 +806,7 @@ class LimsDatabase:
     def _row_to_patient(row: sqlite3.Row) -> Patient:
         return Patient(
             id=row["id"],
-            codice_fiscale=row["codice_fiscale"],
+            codice_fiscale=row["codice_fiscale"] or "",
             cognome=row["cognome"],
             nome=row["nome"],
             data_nascita=_as_date(row["data_nascita"]),
@@ -905,6 +996,23 @@ class LimsDatabase:
             raise DuplicateEpcError(f"EPC {epc} gia' assegnato a un altro contenitore") from exc
         self._conn.commit()
 
+    def provision_attempt(self, container_id: int) -> dict[str, Any] | None:
+        row = self._conn.execute("SELECT * FROM provision_attempts WHERE container_id=?", (container_id,)).fetchone()
+        return dict(row) if row else None
+
+    def begin_provision(self, container_id: int, previous_epc: str, epc: str, tid: str, fingerprint: str) -> None:
+        """Prenotazione durevole prima del primo comando che modifica il tag."""
+        with self._conn:
+            self._conn.execute(
+                "INSERT INTO provision_attempts VALUES (?,?,?,?,?,?,?)",
+                (container_id, previous_epc, epc, tid, fingerprint, "avviata", _now()),
+            )
+
+    def provision_phase(self, container_id: int, phase: str) -> None:
+        self._conn.execute("UPDATE provision_attempts SET phase=?, updated_at=? WHERE container_id=?",
+                           (phase, _now(), container_id))
+        self._conn.commit()
+
     def mark_provisioned(self, container_id: int, tid: str = "", revision: int | None = None) -> None:
         parametri: list[Any] = [ContainerState.PROVISIONED.value, _now()]
         sql = "UPDATE containers SET state=?, provisioned_at=?"
@@ -974,7 +1082,7 @@ class LimsDatabase:
             state=ContainerState(row["state"]),
             revision=row["revision"],
             accession_id=row["accession_id"],
-            codice_fiscale=row["codice_fiscale"],
+            codice_fiscale=row["codice_fiscale"] or "",
             cognome=row["cognome"],
             nome=row["nome"],
             material_code=row["material_code"],
@@ -1054,6 +1162,7 @@ class LimsDatabase:
         revision: int = 0,
         *,
         allow_rewrite: bool = False,
+        provisioned: bool = False,
     ) -> int:
         """Apre un'assegnazione tag -> contenitore.
 
@@ -1077,6 +1186,17 @@ class LimsDatabase:
             )
         try:
             with self._conn:
+                if allow_rewrite:
+                    # La deroga riassegna un tag che ne aveva gia' una aperta.
+                    # Lasciarla aperta significherebbe due assegnazioni vive per
+                    # lo stesso TID, e `active_assignment` non saprebbe piu' quale
+                    # delle due e' quella buona: la storia del tag diventerebbe
+                    # illeggibile proprio nel caso in cui serve rileggerla.
+                    self._conn.execute(
+                        "UPDATE tag_assignments SET released_at=?, release_reason=? "
+                        "WHERE tid=? AND released_at IS NULL",
+                        (_now(), "riscrittura autorizzata", tid),
+                    )
                 cursor = self._conn.execute(
                     "INSERT INTO tag_assignments (tid, container_id, epc, revision, assigned_at) "
                     "VALUES (?,?,?,?,?)",
@@ -1091,6 +1211,13 @@ class LimsDatabase:
                     "UPDATE containers SET epc=?, tid=?, revision=? WHERE id=?",
                     (epc, tid, revision, container_id),
                 )
+                if provisioned:
+                    # Stato del contenitore e assegnazione del chip devono
+                    # diventare definitivi nella stessa transazione.
+                    self._conn.execute(
+                        "UPDATE containers SET state=?, provisioned_at=? WHERE id=?",
+                        (ContainerState.PROVISIONED.value, _now(), container_id),
+                    )
         except sqlite3.IntegrityError as exc:
             raise DuplicateEpcError(
                 f"EPC {epc} gia' assegnato a un contenitore in circolazione"
@@ -1382,6 +1509,11 @@ class LimsDatabase:
         inbound_id: int | None,
         count_confirmed: bool,
     ) -> None:
+        if specimen_id is not None:
+            self._conn.execute(
+                "UPDATE cases SET count_confirmed=? WHERE id=(SELECT case_id FROM specimens WHERE id=?)",
+                (int(count_confirmed), specimen_id),
+            )
         self._conn.execute(
             """
             INSERT INTO workflow_context

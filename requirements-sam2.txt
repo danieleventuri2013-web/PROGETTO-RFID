@@ -1,0 +1,6 @@
+# Ambiente separato Python 3.13. Installare prima PyTorch dalla sorgente CPU:
+# python -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+transformers>=4.57,<6
+Pillow>=10
+opencv-python-headless>=4.10
+cryptography>=42

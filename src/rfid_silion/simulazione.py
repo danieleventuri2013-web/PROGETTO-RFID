@@ -203,6 +203,25 @@ class FakeTagBackend:
         #: Antenne che il modulo dichiara non collegate, per provare l'avviso
         #: che oggi e' la causa piu' comune di «non legge».
         self.antenne_scollegate: set[int] = set()
+        #: Quante porte SMA ha il modulo simulato. Il SIM7200 ne ha quattro e
+        #: il banco vero ne usa tre: «quante se ne possono installare» e
+        #: «quante ce ne sono adesso» sono due domande diverse, e il pannello
+        #: delle antenne ha bisogno di tutt'e due le risposte.
+        self.porte_modulo: int = 4
+        #: Riproduce la sessione Gen2 **S2**, in cui il modulo si trova ogni
+        #: volta che un pannello di misura ce l'ha lasciato (e' l'assetto
+        #: giusto per leggere una scatola piena): il flag di inventario resta
+        #: su B finche' il tag e'
+        #: alimentato, quindi dopo la prima singolarizzazione il chip **non
+        #: risponde piu'** a un comando di accesso finche' non lo si rimette in
+        #: gioco con un nuovo inventario. Misurato sul banco vero: una lettura
+        #: riuscita seguita da cinque «0x0400 No tag found», e quattro su
+        #: quattro rimettendo l'inventario davanti a ciascuna.
+        self._sessione_persistente: bool = False
+        self._singolarizzato: bool = False
+        # Caso RF continuo: anche S0 conserva B mentre il chip resta alimentato.
+        self.alimentazione_continua: bool = False
+        self._flag_b: bool = False
         #: Le bande che il modulo simulato dichiara di accettare. Il valore
         #: predefinito imita un modulo certificato Cina (America, Cina, Europa,
         #: banda intera); `{0x08}` imita un modulo CE, che la spazzata larga
@@ -372,6 +391,13 @@ class FakeTagBackend:
         self.started = False
         return ServiceResponse(operation="stop", ok=True, state=ServiceState.STOPPED, data={})
 
+    def replace_config(self, config: Mapping[str, Any]) -> ServiceResponse:
+        """Cambio trasporto simulato: nessun collegamento a porte reali."""
+        self.calls.append("replace_config")
+        self.started = False
+        self.config = dict(config)
+        return self._ok("replace_config", {})
+
     def identify(self) -> ServiceResponse:
         """Il censimento, su un banco che finge un modulo certificato Cina.
 
@@ -384,16 +410,69 @@ class FakeTagBackend:
         return self._ok(
             "identify",
             {
-                "transport": {"description": "banco simulato"},
+                "transport": "banco simulato",
                 "firmware_info": {"version": "fake-1.0", "model": "SIM7200 simulato"},
                 "regions_available": sorted(self.regioni_simulate),
                 "serial_number": "5349-4D55-4C41-544F",
                 "temperature_c": 41,
+                "antenna_ports": self._porte(),
                 "antennas_connected": [
                     a for a in self.antennas if a not in self.antenne_scollegate
                 ],
             },
         )
+
+    @property
+    def sessione_persistente(self) -> bool:
+        """Vero se il modulo e' in una sessione con flag persistente (S2).
+
+        Accenderla **e'** dire che il modulo sta in S2, quindi porta con se' la
+        sessione: al banco le due cose non sono separabili, e tenerle separate
+        qui lascerebbe scrivere un test che descrive un modulo che non esiste.
+        Un `configure_gen2(session=0)` successivo la spegne, che e' esattamente
+        cio' su cui contano le postazioni di accesso.
+        """
+        return self._sessione_persistente and self.gen2.get("session") != 0
+
+    @sessione_persistente.setter
+    def sessione_persistente(self, valore: bool) -> None:
+        self._sessione_persistente = bool(valore)
+        if valore:
+            self.gen2["session"] = 2
+
+    def _s2(self, operazione: str) -> "ServiceResponse | None":
+        """La sessione Gen2 S2 in una regola: **un accesso per ogni inventario**.
+
+        Vale per la lettura come per la scrittura: il flag di inventario e' del
+        tag, non del comando. E' quello che al banco si vede come «cambio EPC:
+        scrittura EPC fallita: 0x0400 No tag found» subito dopo una lettura del
+        TID perfettamente riuscita.
+
+        S0 perde il flag solo senza alimentazione. Il caso RF continua e'
+        simulato separatamente per non far passare S0 come garanzia universale;
+        il modello ordinario assume invece RF interrotta fra i comandi.
+        """
+        if self.alimentazione_continua and self._flag_b:
+            return self._ko(operazione, "0x0400: No tag found (flag B, RF continua)")
+        if not self.sessione_persistente:
+            return None
+        if not self._singolarizzato:
+            return self._ko(operazione, "0x0400: No tag found")
+        self._singolarizzato = False
+        return None
+
+    def _porte(self) -> list[dict[str, Any]]:
+        """Tutte le porte del modulo, non solo quelle in uso.
+
+        Stessa forma del servizio vero (`service.identify`): una lista di
+        `{id, connected}`. Se il banco rispondesse in un'altra forma il
+        pannello sembrerebbe funzionare qui e leggerebbe vuoto sull'hardware.
+        """
+        collegate = {a for a in self.antennas if a not in self.antenne_scollegate}
+        return [
+            {"id": i, "connected": i in collegate}
+            for i in range(1, max(self.porte_modulo, *self.antennas, 1) + 1)
+        ]
 
     def health(self, check_antennas: bool = True) -> ServiceResponse:
         """Stesse chiavi di `reader.health_check`, altrimenti non prova niente.
@@ -407,7 +486,7 @@ class FakeTagBackend:
             {
                 "ok": self.started,
                 "booted": self.started,
-                "transport": {"description": "banco simulato"},
+                "transport": "banco simulato",
                 "firmware_info": {"version": "fake-1.0", "model": "SIM7200 simulato"},
                 # `antenne_scollegate` permette di provare il caso che conta:
                 # un'antenna in configurazione che non risulta collegata.
@@ -466,6 +545,10 @@ class FakeTagBackend:
             request = InventoryRequest.from_mapping(request)
         self.calls.append("inventory")
         self.inventory_calls += 1
+        self._flag_b = self.alimentazione_continua
+        # L'inventario rimette il tag in gioco: e' esattamente cio' che manca
+        # quando una lettura ripetuta fallisce in sessione S2.
+        self._singolarizzato = True
 
         elenco = []
         for tag in self.tags:
@@ -500,6 +583,9 @@ class FakeTagBackend:
             return self._ko("read", "lettura fallita su tutte le antenne")
         if not self.tags:
             return self._ko("read", "nessun tag nel campo")
+        bloccato_s2 = self._s2("read")
+        if bloccato_s2 is not None:
+            return bloccato_s2
 
         if request.select_epc:
             # Filtro Select: il comando punta quell'EPC preciso. Un EPC che non
@@ -548,6 +634,9 @@ class FakeTagBackend:
         bloccato = self._guard("write", request.expected_epc)
         if bloccato is not None:
             return bloccato
+        bloccato_s2 = self._s2("write")
+        if bloccato_s2 is not None:
+            return bloccato_s2
         dati = bytes.fromhex(request.data_hex)
         if not dati or len(dati) % 2 or len(dati) > _MAX_WRITE_BYTES:
             return self._ko(
@@ -611,6 +700,9 @@ class FakeTagBackend:
         bloccato = self._guard("write_epc", request.expected_epc)
         if bloccato is not None:
             return bloccato
+        bloccato_s2 = self._s2("write_epc")
+        if bloccato_s2 is not None:
+            return bloccato_s2
         if self.write_failures > 0:
             self.write_failures -= 1
             return self._ko("write_epc", "cambio EPC fallito su tutte le antenne")

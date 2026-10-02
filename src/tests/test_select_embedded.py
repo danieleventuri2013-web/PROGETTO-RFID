@@ -157,6 +157,53 @@ def test_scrittura_mirata_su_un_epc() -> None:
     assert EPC in inviato
 
 
+def test_cambio_epc_senza_filtro_resta_come_prima() -> None:
+    """Retrocompatibilita': la trama gia' collaudata non deve muoversi di un bit."""
+    transport = FakeTransport(make_response(P.CMD_WRITE_TAG_EPC))
+    nuovo_epc = bytes.fromhex("E2000017221101441890ABCE")
+    SIM7200Reader(transport).write_tag_epc(nuovo_epc)
+
+    atteso = P.build_packet(
+        P.CMD_WRITE_TAG_EPC,
+        (1000).to_bytes(2, "big") + bytes([P.SELECT_PASSWORD_ONLY]) + bytes(4) + nuovo_epc,
+    )
+    assert bytes(transport.tx) == atteso
+
+
+def test_cambio_epc_mirato_sull_epc_attuale() -> None:
+    """Manuale EX10 2024-12 §6.1: anche 0x23 accetta il campo Tag Singulation.
+
+    Senza filtro il comando colpisce «il primo tag che risponde»: con un secondo
+    contenitore appoggiato per sbaglio sul piatto riscriverebbe quello, ed e'
+    l'errore che una catena di custodia non puo' permettersi.
+    """
+    transport = FakeTransport(make_response(P.CMD_WRITE_TAG_EPC))
+    nuovo_epc = bytes.fromhex("E2000017221101441890ABCE")
+    SIM7200Reader(transport).write_tag_epc(nuovo_epc, select_epc=EPC)
+
+    inviato = bytes(transport.tx)
+    payload = inviato[3:-2]
+    assert payload[:2] == (1000).to_bytes(2, "big"), "timeout"
+    assert payload[2] == P.SELECT_BY_EPC_ID, "option con filtro sull'EPCID"
+    assert payload[3:7] == bytes(4), "password di accesso"
+    # Con il filtro sull'EPCID l'indirizzo e' implicito: subito la lunghezza in
+    # bit del confronto, poi l'EPC cercato, poi quello da scrivere.
+    assert payload[7] == len(EPC) * 8
+    assert payload[8:8 + len(EPC)] == EPC
+    assert payload[8 + len(EPC):] == nuovo_epc
+
+
+def test_cambio_epc_mirato_passa_dall_helper_per_antenna() -> None:
+    epc = bytes.fromhex("E2000017221101441890ABCE")
+    responses = make_response(P.CMD_SET_ANTENNA_PORTS) + make_response(P.CMD_WRITE_TAG_EPC)
+    transport = FakeTransport(responses)
+    reader = SIM7200Reader(transport)
+
+    results = reader.write_epc_try_all_antennas([1, 2, 3], epc, select_epc=EPC)
+    assert results == {1: {"ok": True}}
+    assert EPC in bytes(transport.tx), "il filtro deve arrivare fino al frame"
+
+
 def test_eco_dell_option_verificata_nella_risposta() -> None:
     # Il lettore rimanda l'option inviata: se non coincide qualcosa non torna, e
     # accettare la risposta significherebbe leggere dati di un altro comando.

@@ -1,0 +1,84 @@
+/* Coda di accettazione: usa gli stessi colori e caratteri del laboratorio. */
+#schermata-accettazione { max-width: 1440px; }
+:root[data-tema="scuro"] .giornata input { color-scheme:dark; }
+.giornata__testa { display:flex; align-items:center; justify-content:space-between; gap:24px; margin:8px 0 24px; }
+.giornata__testa h1 { font-size:clamp(1.6rem,2.4vw,2.15rem); margin:6px 0; letter-spacing:-.025em; }
+.giornata__testa p { margin:0; }
+.giornata__strumenti { display:flex; align-items:end; gap:12px; flex-wrap:wrap; }
+.giornata__ricerca { flex:1; min-width:210px; }
+.giornata__strumenti input, .giornata__strumenti select { min-height:42px; }
+.giornata__contatori { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; margin:22px 0 8px; }
+.giornata__numero { padding:18px 20px; border:1px solid var(--bordo); background:var(--superficie); border-radius:var(--r3); display:flex; flex-direction:column; gap:3px; box-shadow:var(--ombra-1); }
+.giornata__numero b { font:600 2rem var(--f-strumenti); }
+.giornata__numero span { color:var(--ematossilina-tenue); font-size:var(--t-piccolo); }
+.giornata__numero--verificati b, .giornata__ok { color:var(--conferma); }
+.giornata__numero--da_scrivere b { color:var(--attesa); }
+#giorno-esito { min-height:20px; font-size:var(--t-piccolo); margin:10px 0 16px; }
+.giornata__griglia { display:grid; grid-template-columns:minmax(280px,.85fr) minmax(0,1.55fr); gap:22px; align-items:start; }
+.giornata__elenco { border:1px solid var(--bordo); border-radius:var(--r3); background:var(--superficie); overflow:hidden; }
+.giornata__elenco-testa { display:flex; align-items:center; justify-content:space-between; padding:20px; border-bottom:1px solid var(--bordo); }
+.giornata h2 { font-size:1.2rem; margin:0; }
+.giornata__paziente { display:flex; flex-direction:column; align-items:stretch; gap:8px; width:100%; text-align:left; border:0; border-bottom:1px solid var(--bordo); border-left:4px solid transparent; padding:18px 16px; background:transparent; color:inherit; cursor:pointer; font:inherit; }
+.giornata__paziente:hover { background:var(--superficie-alt); }
+.giornata__paziente[aria-pressed="true"] { background:var(--fondo-alt); border-left-color:var(--ematossilina); }
+.giornata__paziente:focus-visible { outline:3px solid var(--ematossilina); outline-offset:-3px; }
+.giornata__paziente-testa { display:flex; align-items:start; justify-content:space-between; gap:10px; flex-wrap:wrap; }
+.giornata__paziente-testa b { font-size:.97rem; overflow-wrap:anywhere; }
+.giornata__stato { border-radius:20px; padding:4px 9px; font-size:.72rem; font-weight:600; white-space:nowrap; background:var(--fondo-alt); }
+.giornata__stato--completato { color:var(--conferma); background:var(--conferma-velo); }
+.giornata__stato--da_scrivere, .giornata__stato--parziale { color:var(--attesa); background:var(--attesa-velo); }
+.giornata__stato--errore { color:var(--allarme); background:var(--allarme-velo); }
+.giornata__avanzamento { font-size:.8rem; }
+.giornata progress { appearance:none; width:100%; height:5px; border:0; border-radius:5px; background:var(--bordo); }
+.giornata progress::-webkit-progress-bar { background:var(--bordo); border-radius:5px; }
+.giornata progress::-webkit-progress-value { background:var(--conferma); border-radius:5px; }
+.giornata progress::-moz-progress-bar { background:var(--conferma); }
+.giornata__arretrati { border-top:3px solid var(--attesa); background:var(--attesa-velo); }
+.giornata__arretrati > h2 { padding:18px 20px 0; }
+.giornata__arretrati > p { padding:0 20px; font-size:.8rem; }
+/* Il residuo dei giorni scorsi detto in testa: un invito ad agire, non una nota. */
+.giornata__arretrati-avviso { display:flex; align-items:center; justify-content:space-between; gap:12px 20px; flex-wrap:wrap; margin:0 0 16px; padding:14px 18px; border:1px solid var(--attesa); border-radius:var(--r3); background:var(--attesa-velo); }
+.giornata__arretrati-avviso p { margin:0; font-weight:600; color:var(--attesa); }
+.giornata__corpo { min-width:0; }
+#giorno-dettaglio { background:var(--superficie); border:1px solid var(--bordo); border-radius:var(--r3); padding:24px; min-height:350px; }
+.giornata__segnaposto { margin:38px 0 16px; font-size:3rem; color:var(--ematossilina-debole); }
+.giornata__dettaglio-testa h2 { font-size:1.5rem; margin:6px 0; overflow-wrap:anywhere; }
+.giornata__lotto { border-top:1px solid var(--bordo); margin-top:24px; padding-top:22px; }
+.giornata__lotto-testa { display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+.giornata__lotto h3 { margin:0; font-size:1rem; }
+.giornata__lotto > p { font-size:.8rem; margin:10px 0; }
+.giornata__campione { padding:14px 16px; margin:12px 0; background:var(--superficie-alt); border:1px solid var(--bordo); border-radius:var(--r2); }
+.giornata__campione h4 { margin:0 0 6px; }
+.giornata__contenitore { display:flex; align-items:center; justify-content:space-between; gap:8px 16px; flex-wrap:wrap; border-top:1px solid var(--bordo); padding-top:10px; margin-top:10px; font-size:.8rem; }
+.giornata__contenitore small { flex-basis:100%; overflow-wrap:anywhere; }
+.giornata__azioni { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; }
+.giornata__errore { color:var(--allarme); }
+.giornata__avvertenze { color:var(--attesa); font-size:.85rem; font-weight:600; }
+.giornata__vuoto { padding:18px; }
+.giornata__indietro { display:none; margin-bottom:12px; }
+.giornata__sezione { border-top:1px solid var(--bordo); padding:16px 0; margin-top:10px; }
+.giornata__sezione > summary { font-weight:600; cursor:pointer; padding:8px 0; }
+.giornata__sezione .modulo__griglia { margin-top:16px; }
+.giornata__includi { margin:16px 0; }
+.giornata__suggerimenti:empty { display:none; }
+.giornata__suggerimenti { background:var(--attesa-velo); padding:12px; border-radius:var(--r2); margin:12px 0; }
+.giornata__suggerimenti button { text-align:left; width:100%; white-space:normal; }
+.giornata__ritorno { display:flex; align-items:center; gap:20px; margin-bottom:20px; flex-wrap:wrap; }
+#giorno-corpo #pannello-anagrafica { margin:0; }
+#giorno-corpo .modulo__griglia { grid-template-columns:repeat(2,minmax(0,1fr)); }
+#giorno-corpo .modulo__largo { grid-column:1/-1; }
+@media(max-width:1050px) {
+  .giornata__griglia { grid-template-columns:1fr; }
+  .giornata__corpo { display:none; }
+  .giornata--dettaglio .giornata__corpo { display:block; }
+  .giornata--dettaglio .giornata__elenco { display:none; }
+  .giornata__indietro { display:inline-flex; }
+}
+@media(max-width:650px) {
+  .giornata__testa { align-items:start; flex-direction:column; gap:14px; }
+  .giornata__contatori { grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+  .giornata__numero { padding:14px; }
+  #giorno-corpo .modulo__griglia { grid-template-columns:1fr; }
+  #giorno-dettaglio { padding:16px; }
+}
+:root[data-postazione="tavoletta"] .giornata button { min-height:48px; }

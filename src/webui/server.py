@@ -57,7 +57,7 @@ MAX_BODY_BYTES = 4 * 1024 * 1024
 #: Operazioni che non finiscono nel diario come record `api`. `traccia`
 #: scriverebbe un record per ogni lotto di record; `stato` e' una lettura di
 #: stato che non cambia niente e comparirebbe a decine.
-_API_SILENZIOSE = frozenset({"traccia", "stato"})
+_API_SILENZIOSE = frozenset({"traccia", "stato", "decodifica_qr_camera", "controllo_visivo", "foto_visiva_ricevuta"})
 
 #: Nomi di campo il cui valore non entra mai nel diario, da qualunque canale
 #: arrivi: il PIN della deroga alla partenza, la password di accesso ai tag, il
@@ -377,6 +377,12 @@ class WebUIServer:
         """
         f = self.workflow
         operazioni: dict[str, tuple[Callable[..., Any], bool]] = {
+            "accettazioni_giorno": (lambda d: f.accettazioni_giorno(d), False),
+            "dettaglio_accettazione": (lambda d: f.dettaglio_accettazione(d.get("patient_id")), False),
+            "salva_bozza": (lambda d: f.salva_bozza(d), False),
+            "seleziona_accettazione": (lambda d: f.seleziona_accettazione(d.get("accession_id")), False),
+            "sospendi_accettazione": (lambda _d: f.sospendi_accettazione(), False),
+            "annulla_bozza": (lambda d: f.annulla_bozza(d.get("accession_id")), False),
             # Il flag del banco lo aggiunge il server: `Workflow` non deve
             # sapere se sotto c'e' un lettore vero o simulato.
             "descrivi": (
@@ -436,9 +442,14 @@ class WebUIServer:
                 False,
             ),
             "chiudi_riempimento": (lambda _d: f.chiudi_riempimento(), False),
+            "verifica_contenuto": (lambda d: f.verifica_contenuto(d.get("shipment_id")), True),
             "sigilla": (lambda _d: self._sigilla(), True),
+            "controllo_visivo": (f.controllo_visivo, False),
+            "recupera_visivo": (self._recupera_visivo, True),
+            "foto_visiva_ricevuta": (f.foto_visiva_ricevuta, False),
             "distinta_stampabile": (lambda _d: f.distinta_stampabile(), False),
             "leggi_qr_distinta": (lambda d: f.leggi_qr_distinta(d.get("scansioni", [])), False),
+            "decodifica_qr_camera": (self._decodifica_qr_camera, False),
             "invia_distinta_pec": (lambda _d: f.invia_distinta_pec(), False),
             "aggiorna_ricevute_pec": (lambda _d: f.aggiorna_ricevute_pec(), False),
             "conferma_invio": (
@@ -449,6 +460,18 @@ class WebUIServer:
                 False,
             ),
             "importa_distinta": (lambda d: self._importa_distinta(d), False),
+            "impostazioni_email": (lambda _d: f.impostazioni_email(), False),
+            "salva_email": (lambda d: f.salva_email(d), False),
+            "colli_email": (lambda _d: f.colli_email(), False),
+            "prepara_invio_email": (lambda d: f.prepara_invio_email(d.get("shipment_ids")), False),
+            "dettaglio_email": (lambda d: f.dettaglio_email(d.get("id")), False),
+            "file_email": (lambda d: f.file_email(d.get("id"), d.get("formato", "eml")), False),
+            "invia_email": (lambda d: f.invia_email(d.get("id")), False),
+            "conferma_email_manuale": (lambda d: f.conferma_email_manuale(d.get("id")), False),
+            "importa_distinte": (lambda d: f.importa_distinte(d.get("files")), False),
+            "distinte_attese": (lambda _d: f.distinte_attese(), False),
+            "seleziona_distinta": (lambda d: f.seleziona_distinta(d.get("inbound_id")), False),
+            "riconosci_collo": (lambda _d: f.riconosci_collo(), True),
             "stato_ricezione": (lambda _d: f.stato_ricezione(), False),
             "leggi_volume": (lambda _d: self._leggi_volume(), True),
             "stato_riscontro": (lambda _d: f.stato_riscontro(), False),
@@ -514,10 +537,15 @@ class WebUIServer:
             "bozza_email": (lambda _d: f.bozza_email(), False),
             "porte_seriali": (lambda _d: f.porte_seriali(), False),
             "impostazioni": (lambda _d: f.impostazioni(), False),
+            "salva_operativita": (lambda d: f.salva_operativita(d), True),
+            "applica_radio": (lambda _d: f.applica_radio(), True),
             # Cambiare trasporto ferma e riapre il lettore: e' un'operazione
             # radio a tutti gli effetti.
             "applica_collegamento": (lambda d: self._collegamento(d), True),
             "avanzate": (lambda d: f.imposta_avanzate(d), True),
+            "antenne_ruoli": (lambda _d: f.antenne_ruoli(), False),
+            # Riassegnare i ruoli riapplica le potenze al modulo: tocca la radio.
+            "salva_antenne": (lambda d: f.salva_antenne(d), True),
             "salva_impostazioni": (lambda d: f.salva_impostazioni(d), False),
         }
         if self.banco is not None:
@@ -547,6 +575,7 @@ class WebUIServer:
         esito = self.workflow.scrivi_prossimo(
             on_step=passo,
             authorized_rewrite=bool(dati.get("authorized_rewrite", False)),
+            expected_accession_id=dati.get("accession_id"),
         )
         self.events.publish(
             "scrittura",
@@ -617,6 +646,11 @@ class WebUIServer:
         # riceve, non per la successiva.
         self._stop_event = threading.Event()
         return self._stop_event
+
+    def _recupera_visivo(self, dati):
+        def progresso(passata, trovati, attesi):
+            self.events.publish("visivo", {"shipment_id": dati.get("shipment_id"), "passata": passata, "trovati": trovati, "attesi": attesi})
+        return self.workflow.recupera_visivo(dati, stop_event=self._stop_event_sigillo(), on_progress=progresso)
 
     def _collegamento(self, dati: Mapping[str, Any]) -> dict[str, Any]:
         esito = self.workflow.applica_collegamento(dati)
@@ -724,6 +758,12 @@ class WebUIServer:
             raise WorkflowError(str(exc).strip("'")) from exc
         raise WorkflowError(f"azione sconosciuta per il banco di prova: {azione}")
 
+    def _decodifica_qr_camera(self, dati):
+        from .qr_camera import decodifica_fotogramma
+
+        self.workflow._require_operator("scansionare con la webcam")
+        return decodifica_fotogramma(dati)
+
     def _leggi_volume(self) -> dict[str, Any]:
         self.events.publish("ricezione", {"fase": "lettura"})
         esito = self.workflow.leggi_volume()
@@ -745,7 +785,28 @@ class WebUIServer:
         if voce is None:
             return HTTPStatus.NOT_FOUND, {"errore": f"operazione sconosciuta: {nome}"}
         funzione, radio = voce
-        if not radio:
+        try:
+            self.workflow.verifica_operazione(nome)
+            if nome in {"scrivi", "conferma_conteggio", "correggi_conteggio", "annulla_accettazione", "annulla_contenitore", "sospendi_accettazione"} and "accession_id" in dati and dati["accession_id"] != self.workflow.accession_id:
+                raise WorkflowError("la selezione è cambiata in un'altra finestra: riaprire l'accettazione dall'elenco")
+        except WorkflowError as exc:
+            return HTTPStatus.BAD_REQUEST, {"errore": str(exc)}
+        # Anche i cambi di configurazione e di contesto devono aspettare la
+        # scrittura: non possono cambiarne paziente, profilo o operatore a meta'.
+        mutazione = nome in {
+            "salva_email", "colli_email", "prepara_invio_email", "dettaglio_email", "file_email",
+            "invia_email", "conferma_email_manuale", "importa_distinte", "distinte_attese", "seleziona_distinta",
+            "salva_bozza", "seleziona_accettazione", "sospendi_accettazione", "annulla_bozza",
+            "applica_profilo", "salva_impostazioni", "anagrafiche", "operatore",
+            "registra", "conferma_conteggio", "nuova_accettazione",
+            "annulla_accettazione", "aggiungi_contenitore", "rimuovi_contenitore",
+            "correggi_conteggio", "annulla_contenitore", "prepara_spedizione",
+            "riapri_spedizione", "annulla_spedizione", "togli_dalla_scatola",
+            "chiudi_riempimento", "conferma_invio", "importa_distinta",
+            "conferma_ricezione", "importa_riscontro", "leggi_qr_distinta",
+        }
+        mutazione = mutazione or (nome == "controllo_visivo" and dati.get("azione") not in {"analizza", "stato", "impostazioni", "archivio", "marcatori"})
+        if not radio and not mutazione:
             return self._esegui(nome, funzione, dati)
         try:
             self._acquire(nome)
@@ -761,6 +822,8 @@ class WebUIServer:
                 "occupato": True,
             }
         try:
+            if nome in {"leggi_volume", "conferma_ricezione"} and "inbound_id" in dati and dati["inbound_id"] != self.workflow.inbound_id:
+                return HTTPStatus.BAD_REQUEST, {"errore": "la distinta è cambiata in un'altra finestra: selezionare nuovamente il collo"}
             return self._esegui(nome, funzione, dati)
         finally:
             self._release()
@@ -770,6 +833,18 @@ class WebUIServer:
     ) -> tuple[int, dict[str, Any]]:
         avvio = time.perf_counter()
         try:
+            # Ricontrollare sotto esclusione: un'altra richiesta potrebbe aver
+            # cambiato ruolo o invalidato la configurazione nel frattempo.
+            self.workflow.verifica_operazione(nome)
+            if nome in {"leggi_volume", "conferma_ricezione"} and "inbound_id" in dati and dati["inbound_id"] != self.workflow.inbound_id:
+                raise WorkflowError("la distinta selezionata è cambiata: ricaricare la ricezione")
+            if nome in {"scrivi", "conferma_conteggio", "correggi_conteggio", "annulla_accettazione", "annulla_contenitore", "sospendi_accettazione"} and "accession_id" in dati and dati["accession_id"] != self.workflow.accession_id:
+                raise WorkflowError("la selezione è cambiata in un'altra finestra: riaprire l'accettazione dall'elenco")
+            if self._operations[nome][1] and nome not in {
+                "connetti", "disconnetti", "collegamento", "applica_collegamento",
+                "applica_radio", "salva_antenne", "salva_operativita", "rileva_hardware", "salute", "simulazione",
+            } and not self.workflow.radio_configurata:
+                raise WorkflowError("radio non configurata: usare Applica configurazione nelle Impostazioni")
             stato, risposta = HTTPStatus.OK, funzione(dati)
         except WorkflowError as exc:
             # Errore previsto: e' un messaggio pensato per l'operatore.
@@ -839,6 +914,13 @@ class WebUIServer:
                 "error": {"code": -32000, "message": f"lettore occupato: {exc}"},
             }
         try:
+            richieste = richiesta if isinstance(richiesta, list) else [richiesta]
+            if self.workflow.station_mode == "ricezione" and any(
+                isinstance(r, Mapping) and r.get("method") in
+                {"rfid.write", "rfid.write_epc", "rfid.lock"} for r in richieste
+            ):
+                return {"jsonrpc": "2.0", "id": richiesta.get("id") if isinstance(richiesta, Mapping) else None,
+                        "error": {"code": -32000, "message": "scrittura disabilitata nella sede di ricezione"}}
             return self.dispatcher.dispatch(richiesta)
         finally:
             self._release()
@@ -929,7 +1011,7 @@ def _ripulisci(valore: Any, profondita: int = 0) -> Any:
         return {
             str(chiave): (
                 "(non registrato)"
-                if _riservato(chiave)
+                if _riservato(chiave) or str(chiave) in {"jpeg", "immagine_base64", "miniatura"}
                 else _ripulisci(contenuto, profondita + 1)
             )
             for chiave, contenuto in valore.items()

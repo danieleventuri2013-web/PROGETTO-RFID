@@ -88,6 +88,7 @@ class _Postazione:
         )
         self.server.workflow.imposta_operatore("TEST")
         self.server.start_background()
+        self.post("/api/connetti")
 
     def __enter__(self) -> "_Postazione":
         return self
@@ -135,26 +136,138 @@ class _Postazione:
 # ---------------------------------------------------------------------------
 # Che cosa e' collegato davvero
 # ---------------------------------------------------------------------------
-def test_il_censimento_si_fa_da_solo_al_collegamento():
-    """Non e' un pannello da ricordarsi di aprire: e' la prima cosa che si sa."""
+def test_il_censimento_e_solo_su_comando():
+    """Il collegamento non interroga le caratteristiche hardware."""
     with _Postazione(_tmp("censimento")) as posto:
         assert posto.server.workflow.hardware["rilevato"] is False
         stato, esito = posto.post("/api/connetti")
         assert stato == 200, esito
+        assert esito["hardware"]["rilevato"] is False
+        _, esito["hardware"] = posto.post("/api/rileva_hardware")
         hardware = esito["hardware"]
         assert hardware["rilevato"] is True
         assert hardware["antenne_collegate"] == [1, 2, 3]
         assert hardware["seriale"]
+        assert hardware["trasporto"] == "banco simulato"
         assert hardware["banda_configurata"] == 0x08
         # E resta memorizzato: gli altri pannelli non lo richiedono di nuovo.
         _, descrizione = posto.post("/api/descrivi")
         assert descrizione["hardware"]["rilevato"] is True
 
 
+def test_il_censimento_dice_quante_antenne_si_possono_installare():
+    """«Quante ce ne sono» e «quante se ne possono mettere» sono due domande.
+
+    Il frame 0x61/0x05 elenca una coppia per **ogni** porta del modulo: il
+    numero di porte e' un dato che il lettore dichiara, non una costante. Un
+    SIM7200 a 4 vie con tre antenne attaccate deve dire 4, e dire quale manca.
+    """
+    with _Postazione(_tmp("porte")) as posto:
+        _, esito = posto.post("/api/connetti")
+        _, esito["hardware"] = posto.post("/api/rileva_hardware")
+        hardware = esito["hardware"]
+        assert hardware["antenne_massime"] == 4
+        assert hardware["antenne_collegate"] == [1, 2, 3]
+        assert hardware["antenne_porte"] == [
+            {"id": 1, "collegata": True},
+            {"id": 2, "collegata": True},
+            {"id": 3, "collegata": True},
+            {"id": 4, "collegata": False},
+        ]
+
+
+def test_i_ruoli_delle_antenne_si_leggono_e_si_cambiano():
+    """1 e 2 leggono, 3 scrive: e' la disposizione del banco, e si deve poter dire."""
+    with _Postazione(_tmp("ruoli")) as posto:
+        posto.post("/api/connetti")
+        posto.post("/api/rileva_hardware")
+        _, prima = posto.post("/api/antenne_ruoli")
+        assert prima["lettura"] == [1, 2]
+        assert prima["scrittura"] == [3]
+        assert prima["massime"] == 4
+        assert [p["id"] for p in prima["porte"]] == [1, 2, 3, 4]
+
+        stato, esito = posto.post(
+            "/api/salva_antenne", {"lettura": [1], "scrittura": [2, 3]}
+        )
+        assert stato == 200, esito
+        assert esito["lettura"] == [1]
+        assert esito["scrittura"] == [2, 3]
+        # E vale davvero per il flusso, non solo per la schermata.
+        flusso = posto.server.workflow
+        assert flusso.lims_cfg["read_antennas"] == [1]
+        assert flusso.lims_cfg["write_antennas"] == [2, 3]
+        # L'inventario cicla sulle antenne di lettura: se restasse indietro,
+        # la sorveglianza guarderebbe ancora dove non si legge piu'.
+        assert flusso.config["inventory"]["antennas"] == [1]
+
+
+def test_un_ruolo_su_una_porta_non_rilevata_si_puo_scegliere():
+    """Il guasto si scoprirebbe col tag in mano, a scrittura gia' tentata."""
+    with _Postazione(_tmp("porta_vuota")) as posto:
+        posto.post("/api/connetti")
+        posto.post("/api/rileva_hardware")
+        stato, errore = posto.post(
+            "/api/salva_antenne", {"lettura": [1, 2], "scrittura": [4]}
+        )
+        assert stato == 200, errore
+        assert posto.server.workflow.lims_cfg["write_antennas"] == [4]
+
+
+def test_una_porta_che_il_modulo_non_ha_si_rifiuta():
+    with _Postazione(_tmp("porta_assente")) as posto:
+        posto.post("/api/connetti")
+        posto.post("/api/rileva_hardware")
+        stato, errore = posto.post(
+            "/api/salva_antenne", {"lettura": [1], "scrittura": [7]}
+        )
+        assert stato != 200
+        assert "antenne" in errore["errore"]
+
+
+def test_senza_ruoli_non_si_salva_niente():
+    """Un elenco vuoto vuol dire «non leggere da nessuna parte»: non e' una scelta."""
+    with _Postazione(_tmp("ruoli_vuoti")) as posto:
+        posto.post("/api/connetti")
+        posto.post("/api/rileva_hardware")
+        stato, errore = posto.post("/api/salva_antenne", {"lettura": [], "scrittura": [3]})
+        assert stato != 200
+        assert "lettura" in errore["errore"]
+
+
+def test_la_stessa_antenna_puo_leggere_e_scrivere():
+    """Al banco a un'antenna sola e' il caso normale, non un errore."""
+    with _Postazione(_tmp("una_sola")) as posto:
+        posto.post("/api/connetti")
+        posto.post("/api/rileva_hardware")
+        stato, esito = posto.post("/api/salva_antenne", {"lettura": [1], "scrittura": [1]})
+        assert stato == 200, esito
+        assert esito["lettura"] == [1] and esito["scrittura"] == [1]
+
+
+def test_senza_censimento_i_ruoli_non_si_vietano():
+    """Nel dubbio si lascia provare: e' il modulo a dire di no, non noi."""
+    with _Postazione(_tmp("ruoli_nel_dubbio")) as posto:
+        assert posto.server.workflow.hardware["rilevato"] is False
+        stato, esito = posto.post("/api/salva_antenne", {"lettura": [1], "scrittura": [4]})
+        assert stato == 200, esito
+        assert esito["scrittura"] == [4]
+
+
+def test_una_antenna_nuova_riceve_una_potenza():
+    """Una porta senza riga in `antennas` non riceverebbe potenza da `configure`."""
+    with _Postazione(_tmp("potenza_nuova")) as posto:
+        posto.post("/api/salva_antenne", {"lettura": [1], "scrittura": [4]})
+        righe = {a["id"]: a for a in posto.server.workflow.config["antennas"]}
+        assert 4 in righe, "l'antenna assegnata deve comparire fra quelle configurate"
+        assert righe[4]["read_power"] == 2000 and righe[4]["write_power"] == 2000
+
+
 def test_le_bande_accettate_hanno_un_nome_e_i_loro_MHz():
     """«0x08» non dice niente a nessuno; «CE_LOW 865-867 MHz» sì."""
     with _Postazione(_tmp("bande")) as posto:
         _, esito = posto.post("/api/connetti")
+        _, esito["hardware"] = posto.post("/api/rileva_hardware")
         nomi = esito["hardware"]["bande_nomi"]
         assert any("CE_LOW" in n and "865-867" in n for n in nomi), nomi
         assert any("North America" in n for n in nomi), nomi
@@ -166,6 +279,7 @@ def test_un_modulo_monoregione_dichiara_di_non_poter_spazzare():
     with _Postazione(_tmp("monoregione")) as posto:
         posto.backend.regioni_simulate = {0x08}
         _, esito = posto.post("/api/connetti")
+        _, esito["hardware"] = posto.post("/api/rileva_hardware")
         hardware = esito["hardware"]
         assert hardware["multibanda"] is False
         assert hardware["spazzata_larga"] is False
@@ -179,6 +293,7 @@ def test_su_un_modulo_monoregione_la_spazzata_larga_si_rifiuta_spiegando():
     with _Postazione(_tmp("rifiuto_larga")) as posto:
         posto.backend.regioni_simulate = {0x08}
         posto.post("/api/connetti")
+        posto.post("/api/rileva_hardware")
         stato, esito = posto.post(
             "/api/diagnostica_antenna",
             {"antenna": 1, "da_khz": 850_000, "a_khz": 960_000, "passo_khz": 2000},
@@ -194,6 +309,7 @@ def test_su_un_modulo_monoregione_la_spazzata_larga_si_rifiuta_spiegando():
 def test_su_un_modulo_multibanda_la_spazzata_larga_si_fa():
     with _Postazione(_tmp("multibanda")) as posto:
         posto.post("/api/connetti")
+        posto.post("/api/rileva_hardware")
         stato, esito = posto.post(
             "/api/diagnostica_antenna",
             {"antenna": 1, "da_khz": 850_000, "a_khz": 960_000, "passo_khz": 2000},
@@ -211,9 +327,69 @@ def test_un_censimento_fallito_non_fa_fallire_il_collegamento():
 
         posto.backend.identify = rompi
         stato, esito = posto.post("/api/connetti")
+        _, esito["hardware"] = posto.post("/api/rileva_hardware")
         assert stato == 200, esito
         assert esito["hardware"]["rilevato"] is False
         assert "0x71" in esito["hardware"]["motivo"]
+
+
+def test_il_trasporto_si_legge_in_tutte_e_due_le_forme():
+    """Il difetto che teneva fermo il lettore vero, in tre righe.
+
+    `Transport.describe()` ritorna una **stringa** («serial COM5@115200») ed e'
+    quello il contratto del driver; il banco simulato rispondeva con un
+    dizionario. Il censimento sapeva leggere solo il dizionario, cosi' con il
+    lettore attaccato `connetti()` moriva di AttributeError *dopo* il boot e
+    *dopo* aver visto le tre antenne: sullo schermo «collegamento non
+    riuscito», nella realta' un modulo vivo e la seriale tenuta aperta.
+    """
+    with _Postazione(_tmp("trasporto_forme")) as posto:
+        leggi = posto.server.workflow._leggi_censimento
+        assert leggi({"transport": "serial COM5@115200"})["trasporto"] == "serial COM5@115200"
+        assert leggi({"transport": {"description": "banco"}})["trasporto"] == "banco"
+        assert leggi({})["trasporto"] == ""
+
+
+def test_il_modulo_si_chiama_col_nome_che_il_lettore_dichiara():
+    """`boot_firmware` risponde `hardware_version`, non `model`.
+
+    Il banco simulato usa `model`, il lettore vero no: cercando solo le chiavi
+    del banco la schermata scriveva «sconosciuto» sotto un modulo che si era
+    appena presentato.
+    """
+    with _Postazione(_tmp("nome_modulo")) as posto:
+        leggi = posto.server.workflow._leggi_censimento
+        vero = {
+            "bootloader_version": "22021100",
+            "hardware_version": "31020300",
+            "firmware_date": "20250714",
+            "firmware_version": "25071403",
+        }
+        assert leggi({"firmware_info": vero})["modulo"] == "hw 31020300"
+        # Le chiavi del banco restano valide, e vincono se ci sono.
+        assert leggi({"firmware_info": {"model": "SIM7200"}})["modulo"] == "SIM7200"
+        assert leggi({"firmware_info": {}})["modulo"] == "sconosciuto"
+        # E la risposta del lettore vero arriva intera all'interfaccia.
+        assert leggi({"firmware_info": vero})["firmware"]["firmware_version"] == "25071403"
+
+
+def test_un_censimento_illeggibile_non_fa_fallire_il_collegamento():
+    """La regola vale anche per *interpretare* la risposta, non solo per averla.
+
+    Prima il riparo copriva la chiamata a `identify` ma non la lettura di quel
+    che tornava: un campo di forma inattesa buttava giu' un collegamento gia'
+    riuscito.
+    """
+    with _Postazione(_tmp("censimento_strano")) as posto:
+        def rompi(_dati):
+            raise RuntimeError("campo di forma inattesa")
+
+        posto.server.workflow._leggi_censimento = rompi
+        stato, esito = posto.post("/api/connetti")
+        _, esito["hardware"] = posto.post("/api/rileva_hardware")
+        assert stato == 200, esito
+        assert esito["hardware"]["rilevato"] is False
+        assert "forma inattesa" in esito["hardware"]["motivo"]
 
 
 def test_senza_censimento_non_si_vieta_niente():
@@ -560,6 +736,167 @@ def test_la_modalita_ridotta_non_si_attiva_da_sola():
         assert descrizione["modalita_scrittura"] == MODALITA_PAYLOAD
 
 
+# ---------------------------------------------------------------------------
+# L'assetto radio della postazione di scrittura
+# ---------------------------------------------------------------------------
+def test_la_scrittura_non_dipende_da_cosa_ha_lasciato_un_pannello_di_misura():
+    """Il guasto del 27/08/2026, in un test.
+
+    Il pulsante «Metti i valori consigliati» mette il modulo in sessione S2 con
+    target A↔B e non ripristina niente: e' l'assetto giusto per leggere una
+    scatola piena. Ma i comandi di accesso interrogano **solo** il target A
+    (manuale EX10 §6.1 e §6.5), e in S2 il flag del tag resta su B dopo ogni
+    inventario: il cambio EPC rispondeva «0x0400 No tag found» su un tag fermo
+    davanti all'antenna. Adesso la postazione si porta il proprio assetto.
+    """
+    tag = _tag(1)
+    with _Postazione(_tmp("assetto")) as posto:
+        posto.backend.sessione_persistente = True   # il modulo e' in S2
+        assert posto.backend.gen2["session"] == 2
+
+        # Non basta che la scrittura riesca: deve riuscire *perche'* il modulo
+        # e' in S0 mentre il comando parte. La sessione va guardata li', non
+        # prima e non dopo.
+        sessioni: list[int | None] = []
+        vero = posto.backend.write_epc
+
+        def spia(richiesta):
+            sessioni.append(posto.backend.gen2.get("session"))
+            return vero(richiesta)
+
+        posto.backend.write_epc = spia
+        posto.trascrivi(CF_UNO, "Della Valle")
+        stato, esito = posto.scrivi_su(tag)
+        assert stato == 200 and esito["scrittura"]["ok"], esito
+        assert sessioni == [0], f"il cambio EPC deve partire in S0: {sessioni}"
+        # E fuori dall'operazione il modulo torna dov'era.
+        assert posto.backend.gen2["session"] == 2
+
+
+def test_l_assetto_della_postazione_viene_restituito_com_era():
+    """Anche il sigillo ha bisogno del suo, e non deve trovarlo cambiato."""
+    tag = _tag(1)
+    with _Postazione(_tmp("ripristino")) as posto:
+        posto.post("/api/gen2_consigliato")
+        prima = dict(posto.backend.gen2)
+        assert prima["session"] == 2, prima
+        posto.trascrivi(CF_UNO, "Della Valle")
+        stato, esito = posto.scrivi_su(tag)
+        assert stato == 200 and esito["scrittura"]["ok"], esito
+        assert posto.backend.gen2["session"] == prima["session"]
+        assert posto.backend.gen2["target_dynamic"] == prima["target_dynamic"]
+        assert posto.backend.gen2["rf_mode"] == prima["rf_mode"]
+
+
+def test_l_assetto_si_restituisce_anche_se_la_scrittura_fallisce():
+    """Una scrittura morta a meta' non deve lasciare il modulo in un assetto
+    che nessuno ha scelto: e' lo stesso principio del cambio di regione nella
+    spazzata d'antenna, provato sul percorso di fallimento."""
+    tag = _tag(1)
+    with _Postazione(_tmp("ripristino_ko")) as posto:
+        posto.post("/api/gen2_consigliato")
+        prima = dict(posto.backend.gen2)
+        posto.trascrivi(CF_UNO, "Della Valle")
+        posto.backend.write_failures = 99
+        stato, esito = posto.scrivi_su(tag)
+        assert stato == 200 and esito["scrittura"]["ok"] is False, esito
+        assert posto.backend.gen2["session"] == prima["session"]
+        assert posto.backend.gen2["target_dynamic"] == prima["target_dynamic"]
+
+
+def test_in_scrittura_trasmette_solo_l_antenna_della_postazione():
+    """Le antenne di lettura inquadrano il banco, dove stanno i contenitori gia'
+    scritti e la scatola in riempimento. Se rispondessero anche loro, la guardia
+    «un solo tag in campo» vedrebbe mezzo tavolo."""
+    tag = _tag(1)
+    with _Postazione(_tmp("antenne")) as posto:
+        potenze: list[tuple[int, ...]] = []
+        vero = posto.backend.configure
+
+        def spia(settings):
+            risposta = vero(settings)
+            from rfid_silion.service import ReaderSettings
+
+            impostazioni = (
+                ReaderSettings.from_mapping(settings)
+                if not isinstance(settings, ReaderSettings)
+                else settings
+            )
+            potenze.append(tuple(p.antenna_id for p in impostazioni.powers))
+            return risposta
+
+        posto.backend.configure = spia
+        posto.trascrivi(CF_UNO, "Della Valle")
+        stato, esito = posto.scrivi_su(tag)
+        assert stato == 200 and esito["scrittura"]["ok"], esito
+        assert potenze, "la postazione deve configurare le proprie potenze"
+        assert potenze[0] == (3,), f"solo l'antenna di scrittura: {potenze[0]}"
+        assert potenze[-1] == (1, 2, 3), "e alla fine si rimette tutto com'era"
+
+
+def test_senza_antenna_di_scrittura_non_si_scrive_a_caso():
+    """Il ripiego su *tutte* le antenne era il modo silenzioso di accendere
+    anche quelle di lettura proprio quando non devono trasmettere."""
+    tag = _tag(1)
+    with _Postazione(_tmp("senza_antenne"), write_antennas=[]) as posto:
+        posto.trascrivi(CF_UNO, "Della Valle")
+        stato, esito = posto.scrivi_su(tag)
+        assert stato == 400, (stato, esito)
+        assert "antenna di scrittura" in json.dumps(esito)
+
+
+def test_un_tag_gia_scritto_si_riconosce_dal_codice_e_si_puo_riscrivere():
+    """In prototipazione lo stesso chip si riusa a ogni giro.
+
+    La memoria EPC di un tag Gen2 si riscrive centomila volte: a impedirlo non e'
+    il chip, e' la nostra guardia — che serve, perche' riscrivere un tag in
+    circolazione lascerebbe un campione senza identificazione. Quindi non si
+    toglie: si rende chiedibile, e la richiesta resta nel registro.
+    """
+    tag = _tag(1)
+    with _Postazione(_tmp("riscrittura"), [tag]) as posto:
+        posto.trascrivi(CF_UNO, "Della Valle")
+        stato, esito = posto.scrivi_su(tag)
+        assert stato == 200 and esito["scrittura"]["ok"], esito
+
+        posto.post("/api/nuova_accettazione")
+        posto.trascrivi(CF_DUE, "Rossi")
+        stato, negato = posto.scrivi_su(tag)
+        assert stato == 200 and negato["scrittura"]["ok"] is False
+        assert negato["scrittura"]["error_code"] == "tag_gia_scritto", negato["scrittura"]
+
+        tutti = list(posto.backend.tags)
+        posto.backend.tags[:] = [tag]
+        try:
+            stato, forzato = posto.post("/api/scrivi", {"authorized_rewrite": True})
+        finally:
+            posto.backend.tags[:] = tutti
+        assert stato == 200 and forzato["scrittura"]["ok"], forzato
+        assert forzato["scrittura"]["epc"] != esito["scrittura"]["epc"]
+
+        _, registro = posto.post("/api/registro", {"quante": 30})
+        operazioni = [voce["operation"] for voce in registro["eventi"]]
+        assert "authorized_rewrite" in operazioni, registro
+
+
+def test_un_guasto_qualunque_non_viene_spacciato_per_la_trappola_dell_assetto():
+    """Il codice d'errore serve a far comparire un bottone: non deve mentire.
+
+    La spiegazione dell'assetto radio vale per «0x0400 No tag found» e per
+    nient'altro. Un guasto generico resta un guasto generico, senza codice e
+    senza suggerimenti inventati.
+    """
+    tag = _tag(1)
+    with _Postazione(_tmp("errore_muto"), [tag]) as posto:
+        posto.trascrivi(CF_UNO, "Della Valle")
+        posto.backend.write_failures = 99
+        stato, esito = posto.scrivi_su(tag)
+        assert stato == 200 and esito["scrittura"]["ok"] is False
+        scrittura = esito["scrittura"]
+        assert scrittura["error_code"] == "", scrittura
+        assert "sessione Gen2" not in scrittura["error"]
+
+
 def test_in_solo_epc_la_user_memory_non_viene_toccata():
     tag = _tag(1, user_bytes=64)
     with _Postazione(_tmp("solo_epc"), [tag], modalita_scrittura=MODALITA_SOLO_EPC) as posto:
@@ -574,6 +911,61 @@ def test_in_solo_epc_la_user_memory_non_viene_toccata():
         assert tag.write_count == 0
         assert bytes(tag.user) == bytes(64)
         assert any("solo EPC" in passo for passo in esito["scrittura"]["steps"])
+
+
+def test_in_solo_epc_una_capienza_a_zero_non_blocca_la_scrittura():
+    """Il caso vero: e' *per* i tag piccoli che la modalita' ridotta esiste.
+
+    Al banco, il 2026-08-27: profilato un Quanray da 16 byte di USER memory, la
+    profilazione ha scritto in configurazione `user_memory_bytes: 16` e
+    `modalita_scrittura: solo_epc` — cioe' proprio quello che deve fare. Poi la
+    scrittura falliva con «spazio insufficiente: servono almeno 18 byte per la
+    parte fissa, disponibili 0», perche' il controllo di capienza girava anche
+    in una modalita' che il payload non lo scrive affatto.
+
+    Gli altri test di `solo_epc` non lo prendevano: usano tag da 0 byte ma
+    lasciano `user_memory_bytes: 64` in configurazione, dove la capienza resta
+    44. La combinazione che conta e' l'altra, ed e' quella che la profilazione
+    produce da sola.
+    """
+    tag = _tag(1, user_bytes=0)
+    with _Postazione(
+        _tmp("capienza_zero"),
+        [tag],
+        modalita_scrittura=MODALITA_SOLO_EPC,
+        user_memory_bytes=16,
+    ) as posto:
+        # La premessa del test: con questa configurazione il payload non ci sta.
+        from lims.codec import PAYLOAD_FIXED_SIZE
+        from lims.crypto import max_plaintext_bytes
+
+        assert max_plaintext_bytes(16) < PAYLOAD_FIXED_SIZE
+
+        posto.trascrivi(CF_UNO, "Della Valle")
+        stato, esito = posto.scrivi_su(tag)
+        assert stato == 200 and esito["scrittura"]["ok"], esito
+        assert esito["scrittura"]["epc"], "l'EPC si scrive comunque"
+        assert esito["scrittura"]["payload_bytes"] == 0
+        assert tag.write_count == 0, "la USER memory non va toccata"
+
+
+def test_in_payload_una_capienza_a_zero_si_rifiuta_ancora():
+    """La difesa non deve sparire: fuori da «solo EPC» il controllo serve.
+
+    Scrivere l'EPC e poi accorgersi che il campione non ci sta lascerebbe il tag
+    a meta' procedura, con il nuovo pseudonimo e senza dati.
+    """
+    tag = _tag(1, user_bytes=0)
+    with _Postazione(
+        _tmp("capienza_zero_payload"),
+        [tag],
+        modalita_scrittura=MODALITA_PAYLOAD,
+        user_memory_bytes=16,
+    ) as posto:
+        posto.trascrivi(CF_UNO, "Della Valle")
+        stato, esito = posto.scrivi_su(tag)
+        assert not (stato == 200 and esito.get("scrittura", {}).get("ok")), esito
+        assert tag.epc_hex == _tag(1).epc_hex, "l'EPC non deve cambiare se il resto non ci sta"
 
 
 def test_in_solo_epc_il_giro_arriva_fino_alla_distinta():
@@ -615,7 +1007,7 @@ def test_in_solo_epc_un_tag_letto_non_e_illeggibile():
         rilievo = posto.server.workflow._tagio(scrittura=False).survey_field()
         osservazioni = rilievo.to_dict()["osservazioni"]
         assert [o["stato"] for o in osservazioni] == ["solo_epc"], osservazioni
-        assert "distinta" in osservazioni[0]["dettaglio"]
+        assert "non letto ne' autenticato" in osservazioni[0]["dettaglio"]
 
 
 def test_una_modalita_sconosciuta_non_degrada_in_silenzio():
@@ -701,6 +1093,7 @@ def test_il_registro_delle_misure_rilegge_il_diario():
         server = WebUIServer(config, backend, host="127.0.0.1", port=0, diario=diario)
         server.workflow.imposta_operatore("TEST")
         try:
+            server.call("connetti", {})
             server.call("diagnostica_antenna", {"antenna": 1})
             server.call("prova_lettura", {"cicli": 2})
             stato, esito = server.call("registro_misure", {"limite": 10})
