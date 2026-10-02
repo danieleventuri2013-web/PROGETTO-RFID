@@ -80,6 +80,9 @@ def test_webcam_fullhd_jpeg_limitato_senza_perdere_risoluzione():
 
     def fake_open(request, timeout):
         body = json.loads(request.data)
+        prompt = body["messages"][0]["content"][0]["text"]
+        assert "piano di fondo" in prompt and "copia speculare" in prompt
+        assert "17" not in prompt and "18" not in prompt
         uri = body["messages"][0]["content"][1]["image_url"]["url"]
         assert uri.startswith("data:image/jpeg;base64,")
         photo = base64.b64decode(uri.split(",")[1])
@@ -88,12 +91,14 @@ def test_webcam_fullhd_jpeg_limitato_senza_perdere_risoluzione():
         decoded = Image.open(io.BytesIO(photo))
         assert decoded.format == "JPEG" and decoded.size == image.size
         return io.BytesIO(json.dumps({"choices": [{"finish_reason": "stop", "message": {
-            "content": json.dumps(result)}}], "provider": "DekaLLM"}).encode())
+            "content": json.dumps({**result, "nota": "dubbio vicino alla parete", "incerto": True})}}],
+            "provider": "DekaLLM"}).encode())
 
     with patch.dict(os.environ, {"OPENROUTER_API_KEY": "chiave-finta"}), patch("urllib.request.urlopen", fake_open):
         output = OpenRouterVision().analizza_web(image)
         assert output["conteggio"] == 1 and output["formato_invio"] == "JPEG"
         assert output["dimensioni"] == [1920, 1080] and output["tipo_overlay"] == "centri"
+        assert output["avvisi"] and "dubbio vicino alla parete" in output["nota"]
 
 
 def test_http_qwen_token_origine_lock_ed_errori():

@@ -47,8 +47,9 @@ Il caricamento/compilazione iniziale (100,20 s a cache fredda) è escluso.
 La seconda foto perde un campione anche con l'automatismo CPU originale:
 7/8, limite della finestra interna attuale. Il confronto manuale precedente
 con altra ROI contava 8. Una richiesta HTTP JPEG sulla sesta foto ha
-restituito 5 in 52,15 s complessivi. Nessun benchmark GPU sui 17 campioni
-della webcam è stato ancora completato.
+restituito 5 in 52,15 s complessivi. Successiva prova webcam C920 sullo
+scatto con 17 campioni: conteggio17 in49,88s, bordo2,95s e conteggio46,93s.
+Una sola immagine, non un tempo medio garantito.
 
 È disponibile anche [Qwen via OpenRouter](OPENROUTER_VISION.md) nel selettore
 della pagina webcam; **Rianalizza lo scatto** confronta i modelli sulla stessa foto.

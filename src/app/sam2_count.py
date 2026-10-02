@@ -89,5 +89,3 @@ def candidati_circolari(masks, scores, size):
             selected.append(candidate)
     selected.sort(key=lambda c: (round(c["centro"][1] / (height * .2)), c["centro"][0]))
     return selected, len(candidates)
-
-

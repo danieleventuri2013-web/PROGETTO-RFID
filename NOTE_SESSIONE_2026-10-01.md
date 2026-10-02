@@ -501,3 +501,28 @@ la casella effettiva e i colli sul lettore reale.
 - Accesso CLI confermato come `danieleventuri2013-web`, repository privato
   `danieleventuri2013-web/PROGETTO-RFID` creato per la collaborazione richiesta.
   I codici temporanei del login non vengono conservati nella documentazione.
+- Pubblicato commit5cc72fa nel repository privato, ramo `codex` come
+  default. `origin` è il nuovo account; il vecchio remote è conservato
+  come `precedente`. Autore usa email noreply del nuovo account.
+  GitHub CI del primo commit completata con successo su tutti i job.
+- Invito `Willmat79` con permesso write inviato e verificato (335812327),
+  dopo conferma esplicita dell'utente «si lettura e scrittura». La prima
+  richiesta write era stata fermata dall'auto-review, senza azioni svolte;
+  push effettuato separatamente e livello di accesso chiesto all'utente.
+  L'invitato deve accettare su GitHub; non dichiararlo già membro attivo.
+- Console vera webcam riaperta, calibrata automaticamente dai dati già
+  salvati dall'utente; scatto congelato presente. Qwen iniziale18 in8,691s:
+  l'utente conferma che18 è il riflesso sulla parete superiore. SAM2 sulla
+  stessa foto17 in49,88s (bordo2,95, conteggio46,93), OpenVINO GPU F16.
+- Prompt webcam rinforzato: contare contenitori sul fondo, escludere copie
+  speculari/traslucide/parziali sulle pareti, segnalare dubbi. Nessun numero
+  atteso né coordinate del riflesso nel prompt. Benchmark da file invariato.
+  Nota del modello adesso mostrata, invece di sostituirla con sola legenda.
+- Due richieste Qwen webcam dopo modifica:17 in4,197s e17 in3,652s,
+  centri17 verificati e riflesso escluso. Prima rianalisi operata dall'utente;
+  seconda dall'agente sulla medesima foto congelata con Rianalizza lo scatto.
+  Non una prova su due scene nuove né una garanzia su altri riflessi.
+- Ultimo riavvio soltantoSAM/Qwen8772 per prompt: launcher14060, avvio
+  17:02:37, log usuali. Console tab425118294 Chrome2 lasciata aperta con
+  risultatoQwen17; area, token, foto e misure invariati. TestQwen5/5,
+  UI automatico e Ruff nuovamente superati dopo modifica.

@@ -45,6 +45,24 @@ Costo complessivo delle 36 richieste: circa 0,0178 USD; Qwen3.8 circa
 Le ripetizioni non aumentano il numero di scene distinte: questi risultati
 non garantiscono accuratezza su altri allestimenti o sullo scatto con 17 campioni.
 
+## Prova webcam e riflesso sul bordo
+
+Sul vero scatto C920 ritagliato1127×805, con17 contenitori, il prompt
+iniziale ha restituito18 in8,691s: ha contato una copia riflessa sulla
+parete superiore. SAM2 GPU sulla stessa foto ha contato17 in49,88s
+(bordo2,95s, conteggio46,93s).
+
+Per le richieste webcam l'istruzione ora distingue i recipienti appoggiati
+sul piano di fondo dalle copie speculari, traslucide o parziali sulle
+pareti. Chiede di segnalare l'incertezza e conserva la nota del modello
+nell'interfaccia. Non contiene il numero atteso o coordinate di oggetti
+da togliere. Il prompt da file resta quello del confronto precedente.
+
+Due rianalisi successive dello stesso scatto hanno restituito17 in4,197s
+e17 in3,652s, con esclusione visiva del riflesso e17 centri sui contenitori.
+È una correzione verificata su questa scena, non una garanzia su altri
+riflessi o disposizioni: mantenere la verifica dei punti sovrapposti.
+
 Strumenti: `tools/conta_foto_openrouter.py` e
 `tools/rapporto_confronto_vision.py`. Foto, risultati e report locali sotto
 `demo-output/` sono esclusi da Git. Test offline API, validazione e UI:

@@ -23,6 +23,17 @@ di centri distinti. Se non è determinabile, restituisci conteggio null e
 incerto true. Rispondi esclusivamente con il JSON richiesto, senza spiegazioni
 lunghe. La nota può descrivere brevemente un dubbio visivo."""
 
+PROMPT_WEBCAM = PROMPT + """
+La borsa ha pareti trasparenti che possono riflettere i coperchi, soprattutto
+vicino al bordo superiore. Conta i recipienti fisicamente appoggiati sul
+piano di fondo interno. Una copia speculare, traslucida o parziale sulla
+parete, sul bordo o sul coperchio esterno non è un altro campione.
+Prima di rispondere controlla i centri vicino alle pareti: conserva un
+centro solo se identifica un recipiente reale distinto sul fondo.
+Non aggiungere oggetti per completare file o simmetrie; se non riesci a
+distinguere un recipiente da un riflesso segnala incerto true nella risposta
+e descrivi il dubbio nella nota. Non dedurre la quantità dalla simmetria."""
+
 SCHEMA = {"type": "object", "additionalProperties": False,
           "properties": {
               "conteggio": {"type": ["integer", "null"], "minimum": 0, "maximum": 60},
@@ -70,7 +81,7 @@ class OpenRouterVision:
         self.model, self.reasoning, self.timeout = model, reasoning, timeout
         self.provider = provider
 
-    def analizza(self, image, *, formato="PNG"):
+    def analizza(self, image, *, formato="PNG", prompt=PROMPT):
         started = time.perf_counter()
         if image.width > 1920 or image.height > 1080:
             raise ValueError("ritagliare la fotografia prima dell'analisi: massimo Full HD")
@@ -95,7 +106,7 @@ class OpenRouterVision:
                 "response_format": {"type": "json_schema", "json_schema": {
                     "name": "conteggio_campioni", "strict": True, "schema": SCHEMA}},
                 "messages": [{"role": "user", "content": [
-                    {"type": "text", "text": PROMPT},
+                    {"type": "text", "text": prompt},
                     {"type": "image_url", "image_url": {
                         "url": f"data:{mime};base64," + base64.b64encode(buffer.getvalue()).decode("ascii")}}]}]}
         if self.reasoning:
@@ -129,12 +140,14 @@ class OpenRouterVision:
 
     def analizza_web(self, image):
         """Stesso contratto del banco webcam; centri, senza inventare contorni."""
-        result = self.analizza(image, formato="JPEG")
+        result = self.analizza(image, formato="JPEG", prompt=PROMPT_WEBCAM)
+        nota_modello = result["nota"].strip()
         result.update(automatico=True, tipo_overlay="centri",
                       oggetti=[{"id":i+1,"centro":item["centro"],"contorni":[]}
                                for i,item in enumerate(result["campioni"])],
                       tempo_conteggio_secondi=result["tempo_secondi"],
                       modello=f"Qwen3.8 27B · OpenRouter ({result.get('provider') or 'provider remoto'})",
                       avvisi=["il modello segnala incertezza: verificare i campioni"] if result["incerto"] else [],
-                      nota="Punti blu: posizioni approssimative dei campioni riconosciuti da Qwen; non sono contorni di segmentazione.")
+                      nota="Punti blu: posizioni approssimative dei campioni riconosciuti da Qwen; non sono contorni di segmentazione."
+                           + (f" Nota del modello: {nota_modello}" if nota_modello else ""))
         return result
