@@ -526,3 +526,12 @@ la casella effettiva e i colli sul lettore reale.
   17:02:37, log usuali. Console tab425118294 Chrome2 lasciata aperta con
   risultatoQwen17; area, token, foto e misure invariati. TestQwen5/5,
   UI automatico e Ruff nuovamente superati dopo modifica.
+- Pubblicata correzione riflessi nel commitdca7596. Il collega segnalava404:
+  verificato via API che Willmat79 aveva già accettato l'invito e possedeva
+  write. L'utente ha autorizzato il repository pubblico come rimedio.
+  Ora `danieleventuri2013-web/PROGETTO-RFID` è PUBLIC, scrittura Willmat79
+  conservata; pagina verificata HTTP200 senza login e `git ls-remote`
+  senza credential helper riuscito su HEAD/codex. URL da condividere:
+  https://github.com/danieleventuri2013-web/PROGETTO-RFID .
+  Codice e storia visibili a chiunque; foto, log, DB, chiavi e modelli
+  continuano a essere esclusi. Non è cambiata la proprietà dell'account.
