@@ -2882,6 +2882,10 @@ body {
 .visivo-video { position: relative; max-width: 720px; background: #111; }
 .visivo-video video { display: block; width: 100%; }
 .visivo-video canvas { position: absolute; inset: 0; width: 100%; height: 100%; touch-action: none; }
+.visivo-video--foto { aspect-ratio: var(--visivo-rapporto); }
+.visivo-video--foto video { position: absolute; inset: 0; height: 100%; visibility: hidden; }
+.visivo-calibrazione { display: block; width: 100%; height: 1060px; border: 1px solid var(--bordo, #ddd); border-radius: 12px; margin: 16px 0; }
+.visivo-calibrazione[hidden] { display: none; }
 .visivo-conteggi { font-size: 1.3rem; font-weight: 600; }
 .visivo-foto { max-width: 720px; width: 100%; display: block; margin: .5rem 0; }
 .visivo details { margin: .75rem 0; }

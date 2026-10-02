@@ -497,37 +497,25 @@
         <label class="interruttore"><input type="checkbox" id="visivo-attivo"> Controllo avanzato visivo / RFID (facoltativo)</label>
         <div id="visivo-pannello" hidden>
           <p>Scatola aperta, contenitori in piedi e tutti visibili. Il confronto aggiuntivo non sostituisce il sigillo RFID.</p>
-          <details><summary>Marcatori e calibrazione</summary>
-            <div class="email-campi">
-              <label><input type="checkbox" id="visivo-box-mark"> Marcatori sulla scatola (0–3)</label>
-              <label><input type="checkbox" id="visivo-lid-mark"> Marcatori sul coperchio (4–5)</label>
-              <label><input type="checkbox" id="visivo-lid-check"> Controlla anche il coperchio</label>
-              <label>Raggio minimo (% lato corto) <input id="visivo-min" type="number" value="1.2" min="0.5" max="20" step="0.1"></label>
-              <label>Raggio massimo (%) <input id="visivo-max" type="number" value="16" min="1" max="40" step="0.5"></label>
-              <label>Soglia cerchi (più bassa = più rilevamenti) <input id="visivo-soglia" type="number" min="10" max="80" value="30"></label>
-            </div>
-            <div class="email-azioni">
-              <button type="button" id="visivo-salva" class="bottone">Salva impostazioni</button>
-              <button type="button" id="visivo-marcatori" class="bottone">Stampa marcatori</button>
-              <button type="button" id="visivo-area" class="bottone">Indica i 4 angoli interni</button>
-              <button type="button" id="visivo-auto-area" class="bottone">Torna al bordo automatico</button>
-              <button type="button" id="visivo-calibra-aperta" class="bottone">Memorizza riferimento aperto</button>
-              <button type="button" id="visivo-calibra-chiusa" class="bottone">Memorizza riferimento con coperchio</button>
-            </div>
-            <p>Indica gli angoli in senso orario iniziando in alto a sinistra. I marcatori della scatola devono restare visibili anche con il coperchio. Per il riferimento chiuso posiziona correttamente coperchio e agganci. Senza marcatori, i riflessi della plastica possono rendere il controllo non determinabile.</p>
-          </details>
           <div class="email-azioni">
-            <label class="campo">Videocamera <select id="visivo-camera" aria-label="Videocamera del sigillo"><option value="">Predefinita</option></select></label>
-            <button type="button" class="bottone bottone--sobrio" id="visivo-aggiorna-camera">Aggiorna videocamere</button>
+            <button type="button" class="bottone bottone--primario" id="visivo-riconosci" disabled>Scatta e cerca campioni</button>
+            <button type="button" class="bottone" id="visivo-rianalizza" disabled>Rianalizza lo stesso scatto</button>
+            <button type="button" class="bottone bottone--sobrio" id="visivo-vai-impostazioni">Impostazioni Controllo Visivo</button>
+          </div>
+          <p id="visivo-profilo">SAM 2 mostra contorni; Qwen mostra punti numerati e invia solo lo scatto richiesto a OpenRouter. Il rilevamento classico conserva il controllo continuo precedente.</p>
+          <p id="visivo-nota-modello" role="status"></p>
+          <p id="visivo-blocco" role="status" hidden></p>
+          <div class="email-azioni">
             <button type="button" class="bottone" id="visivo-avvia">Attiva webcam</button>
             <button type="button" class="bottone" id="visivo-ferma">Spegni webcam</button>
             <button type="button" class="bottone" id="visivo-correggi">Correggi i marcatori</button>
             <button type="button" class="bottone" id="visivo-conferma-correzioni" hidden>Conferma marcatori corretti</button>
           </div>
-          <p>Seleziona la webcam da usare. Se l'elenco è vuoto, premi Attiva webcam e consenti l'accesso: poi potrai cambiarla dal menu.</p>
+          <div id="visivo-anteprima-sigillo">
           <div class="visivo-video" id="visivo-video-box" hidden>
             <video id="visivo-video" autoplay muted playsinline></video>
             <canvas id="visivo-overlay" aria-label="Conteggio e perimetro scatola"></canvas>
+          </div>
           </div>
           <p id="visivo-stato" role="status">Controllo non avviato.</p>
           <p id="visivo-conteggi" class="visivo-conteggi">Attesi — · Visibili — · RFID —</p>
@@ -973,7 +961,58 @@
               aria-selected="true">Configurazione</button>
       <button class="schede__voce" role="tab" data-scheda="misure"
               aria-selected="false">Misure e strumenti</button>
+      <button class="schede__voce" role="tab" data-scheda="controllo-visivo"
+              aria-selected="false">Impostazioni Controllo Visivo</button>
     </nav>
+
+    <div class="scheda" id="scheda-controllo-visivo" role="tabpanel">
+      <section class="pannello" id="config-controllo-visivo">
+        <header class="pannello__testa"><h2>Impostazioni Controllo Visivo</h2>
+          <p class="tenue">Configura la videocamera e il riconoscimento una volta; il Sigillo usa queste scelte per scatti e verifiche.</p></header>
+        <div class="modulo__griglia">
+          <label class="campo"><span class="etichetta">Videocamera</span><select id="visivo-camera" aria-label="Videocamera del controllo visivo"><option value="">Predefinita</option></select></label>
+          <label class="campo"><span class="etichetta">Modello di riconoscimento</span><select id="visivo-modello" aria-label="Modello di ricerca dei campioni">
+            <option value="sam2">SAM 2 — locale</option><option value="qwen">Qwen3.8 27B — OpenRouter</option><option value="cerchi">Rilevamento classico dei cerchi</option>
+          </select></label>
+        </div>
+        <p class="tenue">SAM 2 elabora sul PC. Qwen è il modello LLM remoto e invia a OpenRouter soltanto lo scatto richiesto, con punti numerati.</p>
+        <div class="modulo__azioni">
+          <button type="button" class="bottone" id="visivo-aggiorna-camera">Aggiorna videocamere</button>
+          <button type="button" class="bottone bottone--primario" id="visivo-salva">Salva impostazioni controllo visivo</button>
+        </div>
+        <p id="visivo-config-stato" role="status">Seleziona un operatore per caricare e salvare le impostazioni.</p>
+        <h3>Area salvata e correzione prospettica</h3>
+        <p id="visivo-area-salvata">Nessuna area caricata.</p>
+        <div class="modulo__azioni">
+          <button type="button" class="bottone" id="visivo-configura-modelli">Configura area e prospettiva</button>
+          <button type="button" class="bottone" id="visivo-chiudi-calibrazione" hidden>Chiudi configurazione area</button>
+        </div>
+        <p class="tenue">L'area è salvata per questa webcam nel browser. Qui puoi indicare il ritaglio o i quattro angoli e le misure in centimetri, anche senza una spedizione aperta.</p>
+        <iframe id="visivo-calibrazione" class="visivo-calibrazione" title="Configurazione area e prospettiva della videocamera" allow="camera" hidden></iframe>
+        <details><summary>Marcatori, cerchi e riferimenti del coperchio</summary>
+          <div class="email-campi">
+            <label><input type="checkbox" id="visivo-box-mark"> Marcatori sulla scatola (0–3)</label>
+            <label><input type="checkbox" id="visivo-lid-mark"> Marcatori sul coperchio (4–5)</label>
+            <label><input type="checkbox" id="visivo-lid-check"> Controlla anche il coperchio</label>
+            <label>Raggio minimo (% lato corto) <input id="visivo-min" type="number" value="1.2" min="0.5" max="20" step="0.1"></label>
+            <label>Raggio massimo (%) <input id="visivo-max" type="number" value="16" min="1" max="40" step="0.5"></label>
+            <label>Soglia cerchi (più bassa = più rilevamenti) <input id="visivo-soglia" type="number" min="10" max="80" value="30"></label>
+          </div>
+          <div class="modulo__azioni">
+            <button type="button" class="bottone" id="visivo-config-avvia">Attiva anteprima di calibrazione</button>
+            <button type="button" class="bottone" id="visivo-config-ferma">Spegni anteprima</button>
+            <button type="button" class="bottone" id="visivo-marcatori">Stampa marcatori</button>
+            <button type="button" class="bottone" id="visivo-area">Indica i 4 angoli interni</button>
+            <button type="button" class="bottone" id="visivo-auto-area">Torna al bordo automatico</button>
+            <button type="button" class="bottone" id="visivo-calibra-aperta">Memorizza riferimento aperto</button>
+            <button type="button" class="bottone" id="visivo-calibra-chiusa">Memorizza riferimento con coperchio</button>
+          </div>
+          <p id="visivo-riferimenti">Riferimenti aperto e coperchio da verificare.</p>
+          <div id="visivo-anteprima-impostazioni"></div>
+          <p class="tenue">Prima salva i parametri. Per i riferimenti indica gli angoli in senso orario dall'alto a sinistra; per il coperchio posiziona correttamente coperchio e agganci. La calibrazione non richiede RFID.</p>
+        </details>
+      </section>
+    </div>
 
     <div class="scheda scheda--attiva" id="scheda-configurazione" role="tabpanel">
 

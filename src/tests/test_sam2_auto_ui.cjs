@@ -2,20 +2,21 @@
 const assert=require("node:assert/strict"),fs=require("node:fs"),vm=require("node:vm");
 const source=fs.readFileSync(require("node:path").join(__dirname,"../webui/static/sam2-auto.js"),"utf8");
 const tick=()=>new Promise(r=>setImmediate(r));
-function bench(storage=new Map()){
+function bench(storage=new Map(),search="?t=token&port=8772"){
   const elements=new Map(),calls=[],draws=[],timers=new Map();let serial=0,stops=0,media=null,reply=null;
   class El{
     constructor(){this.events={};this.value="";this.width=1280;this.height=720;this.videoWidth=1920;this.videoHeight=1080;this.readyState=2;this.classList={toggle(){}};}
     addEventListener(n,f){this.events[n]=f;}replaceChildren(...a){this.options=a;}
+    closest(name){return el("parent-"+name+"-"+this.id);}get parentElement(){return this.closest("parent");}
     getContext(){const self=this;return {drawImage(...a){draws.push({canvas:self,args:a});},beginPath(){},lineTo(){},moveTo(){},closePath(){},fill(){},stroke(){},arc(){},fillText(){},fillRect(){},strokeRect(){},setLineDash(){}};}
     play(){return Promise.resolve();}setPointerCapture(){}
     toDataURL(){return "data:image/jpeg;base64,"+Buffer.from(`${this.width}x${this.height}`).toString("base64");}
     getBoundingClientRect(){return {left:0,top:0,width:1000,height:600};}
   }
-  const el=id=>{if(!elements.has(id))elements.set(id,new El());return elements.get(id);};
+  const el=id=>{if(!elements.has(id)){const e=new El();e.id=id;elements.set(id,e);}return elements.get(id);};
   el("modo-area").value="rettangolo";const win=new El();
   const stream={getTracks:()=>[{stop:()=>stops++}],getVideoTracks:()=>[{getSettings:()=>({deviceId:el("camera").value||"cam"})}]};
-  const context={document:{getElementById:el,createElement:()=>new El()},window:win,location:{search:"?t=token&port=8772"},URLSearchParams,AbortController,Date,
+  const context={document:{getElementById:el,createElement:()=>new El(),querySelector:el},window:win,location:{search},URLSearchParams,AbortController,Date,
     localStorage:{getItem:k=>storage.get(k)||null,setItem:(k,v)=>storage.set(k,v),removeItem:k=>storage.delete(k)},
     Image:class{decode(){return Promise.resolve();}},requestAnimationFrame:()=>1,cancelAnimationFrame(){},
     navigator:{mediaDevices:{enumerateDevices:async()=>[{kind:"videoinput",deviceId:"cam",label:"C920"},{kind:"videoinput",deviceId:"cam2",label:"Altra"}],getUserMedia:()=>media||Promise.resolve(stream)}},
@@ -69,5 +70,16 @@ function bench(storage=new Map()){
   quad.el("nuova").events.click();assert.equal(quad.el("riconta").disabled,true,"la nuova anteprima invalida il vecchio scatto");
   const noDims=bench();await tick();await noDims.el("avvia").events.click();noDims.el("configura").events.click();noDims.rectangle();noDims.el("larghezza").value="60";noDims.el("salva").events.click();assert.equal(noDims.storage.size,0,"rifiuta dimensioni incomplete");
   const late=bench();await tick();let permission;late.media=new Promise(r=>{permission=r;});const opening=late.el("avvia").events.click();late.el("ferma").events.click();permission(late.stream);await opening;assert.equal(late.stops,1);
+  const embedded=bench(new Map(),"?t=token&port=8772&impostazioni=1&device=cam2&motore=qwen");await tick();
+  assert.equal(embedded.el("camera").value,"cam2","calibra la webcam scelta nel pannello principale");
+  assert.equal(embedded.el("camera").closest("label").hidden,true);
+  assert.equal(embedded.el("motore").closest(".comandi").hidden,true);
+  assert.equal(embedded.el("scatta").closest(".comandi").hidden,true);
+  await embedded.el("avvia").events.click();embedded.el("configura").events.click();embedded.rectangle();embedded.el("salva").events.click();
+  assert(embedded.storage.has("rfid.sam2.area.v2.cam2"));
+  await embedded.el("scatta").events.click();assert.equal(embedded.calls.length,0,"il riquadro configurazione non invia foto ai modelli");
+  const missing=bench(new Map(),"?impostazioni=1&device=assente");await tick();
+  assert.equal(missing.el("avvia").disabled,true,"non sostituisce in silenzio la webcam salvata assente");
+  assert.match(missing.el("stato").textContent,/Videocamera selezionata non disponibile/);
   console.log("PASS SAM automatico UI: ritaglio nativo, persistenza/webcam/aspect ratio, quattro angoli/misure, rettifica prima di SAM e risposte obsolete");
 })().catch(e=>{console.error(e);process.exitCode=1;});

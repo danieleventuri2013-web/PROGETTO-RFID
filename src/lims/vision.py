@@ -114,7 +114,7 @@ def miniatura(gray, area):
     return cv2.GaussianBlur(rect, (5, 5), 0).flatten().tolist()
 
 
-def analizza(im, cfg, *, area_manuale=None):
+def analizza(im, cfg, *, area_manuale=None, solo_scena=False):
     import cv2
     import numpy as np
 
@@ -167,6 +167,9 @@ def analizza(im, cfg, *, area_manuale=None):
     mask = np.zeros_like(gray)
     polygon = (np.array(area) * (w, h)).astype("int32")
     cv2.fillConvexPoly(mask, polygon, 255)
+    if solo_scena:
+        result.update(qualita="leggibile", miniatura=miniatura(gray, area))
+        return result
     blurred = cv2.GaussianBlur(gray, (7, 7), 1.5)
     min_r = max(5, int(float(cfg.get("raggio_min", .012)) * min(w, h)))
     max_r = max(min_r+1, int(float(cfg.get("raggio_max", .16)) * min(w, h)))

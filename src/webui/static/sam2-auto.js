@@ -4,10 +4,19 @@
   const el=id=>document.getElementById(id), video=el("video"), canvas=el("overlay");
   const full=document.createElement("canvas"), frame=document.createElement("canvas");
   const params=new URLSearchParams(location.search), token=params.get("t");
+  if(params.get("impostazioni")==="1") {
+    document.title="Area e prospettiva della videocamera";
+    document.querySelector("h1").textContent="Area e prospettiva della videocamera";
+    el("camera").closest("label").hidden=true;el("motore").closest(".comandi").hidden=true;
+    el("manuale").parentElement.hidden=true;
+    el("descrizione").textContent="Attiva la videocamera scelta nelle Impostazioni, indica l'area e salva. Poi torna al Sigillo per cercare i campioni.";
+    el("scatta").closest(".comandi").hidden=true;
+    for(const id of ["descrizione-modelli","conteggio","risultati","legenda"])el(id).hidden=true;
+  }
   const endpoint=params.get("port")==="8772"?"http://127.0.0.1:8772/api/sam2/automatico":"/api/sam2/automatico";
   try{el("motore").value=(params.get("motore")??localStorage.getItem("rfid.visione.motore.v1"))==="qwen"?"qwen":"sam2";}catch(_e){el("motore").value="sam2";}
   el("manuale").href="sam2.html"+location.search;
-  let stream=null, opening=false, generation=0, revision=0, raf=null, busy=false, request=null;
+  let stream=null, opening=false, generation=0, revision=0, raf=null, busy=false, request=null, deviceMissing=false;
   let profile=null, draft=null, corners=[], dragging=null, configuring=false, frozen=false, result=null, started=0;
   let snapshot=null,snapshotCorrection=null;
   const note=text=>{el("stato").textContent=text;};
@@ -42,7 +51,7 @@
     el("profilo").textContent=`${mode} per questa webcam · ${w}×${h} pixel nell’inquadratura ${video.videoWidth}×${video.videoHeight}.`;
   }
   function update(){
-    el("avvia").disabled=!!stream||opening;el("ferma").disabled=!stream&&!opening;
+    el("avvia").disabled=deviceMissing||!!stream||opening;el("ferma").disabled=!stream&&!opening;
     el("camera").disabled=busy||opening||configuring;
     el("motore").disabled=busy||opening||configuring;
     el("configura").disabled=!stream||busy||configuring;
@@ -113,7 +122,7 @@
       stream=s;video.srcObject=s;await video.play();if(turn!==generation)return;
       await cameras(s.getVideoTracks()[0].getSettings().deviceId);
       loadProfile();el("qualita").textContent=`Webcam: ${video.videoWidth}×${video.videoHeight}. L’analisi usa solo il ritaglio, senza ingrandimento artificiale dei pixel.`;
-      if(raf===null)preview();note(profile?"Area salvata ripristinata. Premi Scatta e conta.":"Seleziona l’area sull’inquadratura completa prima di scattare.");
+      if(raf===null)preview();note(params.get("impostazioni")==="1"?(profile?"Area salvata ripristinata. Puoi modificarla oppure chiudere la configurazione.":"Seleziona l’area sull’inquadratura completa e salva."):(profile?"Area salvata ripristinata. Premi Scatta e conta.":"Seleziona l’area sull’inquadratura completa prima di scattare."));
     }catch(e){if(turn===generation){stop();note(e.message);}else if(!opening&&!stream)note(e.message);}
     finally{clearTimeout(timer);if(turn===generation)opening=false;update();}
   }
@@ -140,10 +149,10 @@
     const [,,w,h]=box(full,draft);if(Math.min(w,h)<100){note("Area troppo piccola: seleziona almeno 100 pixel per lato.");return;}
     const saved={versione:2,modo:mode,area:draft.slice(),punti:mode==="prospettiva"?corners.map(p=>p.slice()):null,dimensioni:[full.width,full.height],larghezza_cm:dimensions[0]?Number(dimensions[0]):null,lunghezza_cm:dimensions[1]?Number(dimensions[1]):null,altezza_camera_cm:cameraHeight?Number(cameraHeight):null};
     try{localStorage.setItem(key(),JSON.stringify(saved));}catch(_e){note("Impossibile salvare l’area nel browser. Consenti la memoria locale e riprova.");return;}
-    profile=saved;configuring=false;dragging=null;describe();invalidate();render();note("Area salvata. L’anteprima ora mostra solo il ritaglio. Premi Scatta e conta.");
+    profile=saved;configuring=false;dragging=null;describe();invalidate();render();note(params.get("impostazioni")==="1"?"Area salvata. Chiudi la configurazione e torna al Sigillo per cercare i campioni.":"Area salvata. L’anteprima ora mostra solo il ritaglio. Premi Scatta e conta.");
   }
   async function capture(reuse=false){
-    if(busy||configuring||(reuse?(!frozen||!snapshot):(!stream||!profile||frozen||video.readyState<2)))return;
+    if(params.get("impostazioni")==="1"||busy||configuring||(reuse?(!frozen||!snapshot):(!stream||!profile||frozen||video.readyState<2)))return;
     if(!reuse&&!compatible(profile)){profile=null;describe();update();note("L’inquadratura è cambiata: seleziona di nuovo l’area.");return;}
     if(!reuse){crop(video);snapshot=null;snapshotCorrection=null;}let photo=reuse?snapshot:null;
     const mode=el("motore").value==="qwen"?"qwen":"sam2";
@@ -193,5 +202,14 @@
   el("scatta").addEventListener("click",()=>capture(false));el("riconta").addEventListener("click",()=>capture(true));el("nuova").addEventListener("click",()=>{frozen=false;request?.abort();invalidate();render();note(busy?"Il server potrebbe completare ancora l’analisi precedente: attendi prima di un nuovo scatto.":"Anteprima pronta per un nuovo scatto.");});
   el("camera").addEventListener("change",async()=>{stop();profile=null;frozen=false;configuring=false;invalidate();await start();});
   window.addEventListener("pagehide",()=>{request?.abort();stop();});update();
-  cameras().then(()=>{const wanted=params.get("camera");if(wanted){const o=Array.from(el("camera").options||[]).find(o=>o.textContent.toLowerCase().includes(wanted.toLowerCase()));if(o)el("camera").value=o.value;}if(params.get("auto")==="1")start();}).catch(e=>note(e.message));
+  cameras().then(()=>{
+    const device=params.get("device");
+    if(device&&Array.from(el("camera").options||[]).some(o=>o.value===device))el("camera").value=device;
+    else if(device&&params.get("impostazioni")==="1") {
+      deviceMissing=true;update();note("Videocamera selezionata non disponibile. Chiudi questo riquadro e scegli un'altra videocamera nelle Impostazioni.");return;
+    } else {
+      const wanted=params.get("camera");if(wanted){const o=Array.from(el("camera").options||[]).find(o=>o.textContent.toLowerCase().includes(wanted.toLowerCase()));if(o)el("camera").value=o.value;}
+    }
+    if(params.get("auto")==="1")start();
+  }).catch(e=>note(e.message));
 })();

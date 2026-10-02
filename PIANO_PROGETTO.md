@@ -1,5 +1,14 @@
 # PIANO PROGETTO — Applicazione lettore RFID SIM7200 (Silion) con 3 antenne
 
+> Stato al 2 ottobre 2026: WebUI operativa per accettazione, spedizione e
+> ricezione, SQLite schema 9, archivio distinte e QR webcam integrati.
+> Completato il riconoscimento SAM 2 / Qwen nel Sigillo con configurazione
+> centralizzata nelle Impostazioni Controllo Visivo. Test: 754/754 runner,
+> 781/781 pytest e sei suite UI. Il collaudo fisico completo del nuovo
+> percorso visivo/RFID resta da svolgere. Per la ripresa usare
+> [la memoria del 2 ottobre](NOTE_SESSIONE_2026-10-02.md); le sezioni
+> successive conservano anche la pianificazione storica degli step hardware.
+
 ## 1. Obiettivo
 Realizzare un'applicazione per pilotare in lettura e scrittura un lettore RFID UHF **SIM7200**
 (Silion, modulo Impinj E710) montato su baseboard **SLD1090**, con **3 antenne SLP1027**

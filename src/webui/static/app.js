@@ -368,6 +368,7 @@ function mostra(nome, scheda) {
       (ruolo === "spedizione" && nome === "ricezione")) nome = "impostazioni";
   if (nome !== "ricezione") window.fermaWebcamRicezione?.();
   if (nome !== "sigillo") window.fermaWebcamSigillo?.();
+  if (nome !== "impostazioni") window.fermaConfigurazioneVisiva?.();
   Traccia.nota("schermata", { da: schermataAttiva(), a: nome, scheda: scheda || "" });
   $$(".schermata").forEach((sezione) => {
     sezione.classList.toggle("schermata--attiva", sezione.id === `schermata-${nome}`);
@@ -382,10 +383,12 @@ function mostra(nome, scheda) {
   else fermaSorveglianza();
   if (nome === "sigillo" && stato.riempimento) avviaVigilanza();
   else fermaVigilanza();
+  if(nome==="sigillo")window.caricaImpostazioniVisive?.();
   // Le impostazioni si rileggono ogni volta: possono essere cambiate altrove,
   // e mostrare valori vecchi qui significherebbe farli riscrivere per sbaglio.
   if (nome === "impostazioni") {
     caricaImpostazioni();
+    window.caricaImpostazioniVisive?.();
     if (scheda) mostraScheda(scheda);
   }
   // L'archivio si riempie da solo: e' un elenco da sfogliare, non un modulo da
@@ -399,6 +402,7 @@ function mostra(nome, scheda) {
  *  dimentica, le misure si fanno col lettore in mano. Tenerle su una schermata
  *  sola significherebbe undici riquadri in fila e quello che serve in fondo. */
 function mostraScheda(nome) {
+  if(nome!=="controllo-visivo")window.fermaConfigurazioneVisiva?.();
   $$(".scheda").forEach((riquadro) => {
     riquadro.classList.toggle("scheda--attiva", riquadro.id === `scheda-${nome}`);
   });

@@ -15,6 +15,8 @@ from lims import vision
 from lims.crypto import CryptoError
 from lims.sealing import ClosureProof, ReadPass, SealingPolicy, SealingSession, default_passes
 
+from . import vision_models
+
 
 def ora():
     return dt.datetime.now().astimezone().isoformat(timespec="seconds")
@@ -84,15 +86,88 @@ class VisualMixin:
             raise self.exchange_error("il contenuto o la sessione visiva è cambiato")
         return session
 
-    def _visual_reset(self, s):
+    def _visual_reset(self, s, *, conserva_ai=False):
         if s.get("stop"):
             s["stop"].set()
-        s.update(id=uuid.uuid4().hex, history=[], rfid=None, corretti=None, pending=None)
+        s.update(id=uuid.uuid4().hex, history=[], rfid=None, corretti=None, pending=None, stable=False)
+        if not conserva_ai:
+            s.pop("ai", None)
+
+    def _visual_modello(self, dati):
+        with self._visual_lock:
+            s = self._visual_context(dati)
+            model = dati.get("modello")
+            if model not in ("sam2", "qwen"):
+                raise ValueError("scegliere SAM 2 oppure Qwen")
+            if dati.get("profilo") is None:
+                raise ValueError("configurare prima l'area della webcam nel banco SAM 2 / Qwen")
+            raw = vision.immagine(dati.get("immagine_base64"))
+            im, correction = vision_models.prepara(raw, dati.get("profilo"))
+            self._visual_reset(s)
+            s.update(modello=model, profilo=dati.get("profilo"), latest=None, stable=False)
+            ticket = s["id"]
+            self._visual_save(s["sid"], {"stato": "da verificare", "operatore": self.operatore, "quando": ora()})
+        # L'inferenza non occupa la radio e non blocca l'invalidazione della scena.
+        detected = vision_models.analizza(im, model)
+        centers = [obj["centro"] for obj in detected.get("oggetti", [])]
+        outline = detected.get("borsa", {}).get("contorno")
+        if outline:
+            xs, ys = zip(*outline, strict=True)
+            polygon = [[min(xs), min(ys)], [max(xs), min(ys)], [max(xs), max(ys)], [min(xs), max(ys)]]
+        else:
+            polygon = [[0, 0], [1, 0], [1, 1], [0, 1]]
+        scene = vision.analizza(im, self._visual_config(), area_manuale=polygon, solo_scena=True)
+        scene.update(centri=centers, modello=detected.get("modello", model), motore=model,
+                     oggetti=detected.get("oggetti", []), tipo_overlay=detected.get("tipo_overlay"),
+                     borsa=detected.get("borsa"), area_campioni=detected.get("area_campioni"),
+                     origine_area="bordo SAM 2" if detected.get("borsa", {}).get("rilevata") else "area dello scatto webcam",
+                     tempo_secondi=detected.get("tempo_secondi"), correzione=correction,
+                     nota=detected.get("nota", ""), avvisi=detected.get("avvisi", []))
+        uncertain = detected.get("conteggio") is None or bool(detected.get("incerto"))
+        with self._visual_lock:
+            current = self._visual_context({"shipment_id": s["sid"]})
+            if current is not s or ticket != s["id"]:
+                raise ValueError("scatto superato: contenuto o sessione modificati durante il riconoscimento")
+            s["ai"] = {"im": im.copy(), "scene": scene, "incerto": uncertain,
+                       "conteggio": detected.get("conteggio"), "modello": model}
+            s.update(latest=scene, im=im, seen=time.monotonic(), stable=False)
+            return {**{k: v for k, v in scene.items() if k != "miniatura"},
+                    "sessione": s["id"], "conteggio": detected.get("conteggio"), "confermati": centers,
+                    "qualita": "incerta" if uncertain else scene["qualita"], "stabile": False,
+                    "manuale": False, "rfid": None, "immagine_base64": vision_models.jpeg(im)}
 
     def _visual_analisi(self, s, dati):
         cfg = self._visual_config()
         im = vision.immagine(dati.get("immagine_base64"))
-        result = vision.analizza(im, cfg, area_manuale=dati.get("area_manuale"))
+        model = dati.get("modello", s.get("modello", "cerchi"))
+        if model not in vision_models.MODELLI:
+            raise ValueError("modello di riconoscimento non valido")
+        if model != s.get("modello", "cerchi"):
+            self._visual_reset(s)
+        s["modello"] = model
+        if model != "cerchi":
+            try:
+                im, _ = vision_models.prepara(im, dati.get("profilo"))
+            except ValueError:
+                self._visual_reset(s)
+                raise
+            ai = s.get("ai")
+            if ai and (dati.get("profilo") != s.get("profilo") or not vision_models.scena_uguale(ai["im"], im,
+                    s["corretti"] if s["corretti"] is not None else ai["scene"]["centri"])):
+                self._visual_reset(s)
+                ai = None
+                self._visual_save(s["sid"], {"stato": "invalidato", "motivo": "scena modificata dopo il riconoscimento", "quando": ora(), "operatore": self.operatore})
+            if ai is None:
+                s.update(stable=False, seen=time.monotonic(), im=im, latest=None)
+                return {"sessione": s["id"], "stabile": False, "conteggio": None, "confermati": [],
+                        "qualita": "da riconoscere", "manuale": False, "rfid": None, "dimensioni": list(im.size),
+                        "area": None, "motore": model}
+            observed = vision.analizza(im, cfg, area_manuale=ai["scene"]["area"], solo_scena=True)
+            result = {**ai["scene"], "miniatura": observed.get("miniatura"), "qualita": observed["qualita"]}
+            if ai["incerto"] and s["corretti"] is None:
+                result["qualita"] = "incerta"
+        else:
+            result = vision.analizza(im, cfg, area_manuale=dati.get("area_manuale"))
         last = s.get("latest")
         same = (last is not None and result["qualita"] == "leggibile" and last["qualita"] == "leggibile"
                 and vision.vicini(last["area"], result["area"], .025)
@@ -100,7 +175,7 @@ class VisualMixin:
         if same:
             # Rileva anche sostituzioni/spostamenti a conteggio invariato.
             same = sum(abs(a-b) for a, b in zip(last["miniatura"], result["miniatura"], strict=True)) / 3072 < 12
-        if not same:
+        if not same and model == "cerchi":
             self._visual_reset(s)
         now = time.monotonic()
         s["history"] = (s["history"] + [now])[-3:] if result["qualita"] == "leggibile" else []
@@ -109,11 +184,14 @@ class VisualMixin:
         centres = s["corretti"] if s["corretti"] is not None else result["centri"]
         return {**{k: v for k, v in result.items() if k != "miniatura"}, "sessione": s["id"],
                 "stabile": s["stable"], "confermati": centres, "conteggio": len(centres),
-                "manuale": s["corretti"] is not None, "rfid": s["rfid"]}
+                "manuale": s["corretti"] is not None, "rfid": s["rfid"],
+                **({"conteggio": None} if model != "cerchi" and s["ai"]["conteggio"] is None and s["corretti"] is None else {})}
 
     def controllo_visivo(self, dati):
         self._visual_init()
         try:
+            if dati.get("azione") == "analizza_modello":
+                return self._visual_modello(dati)
             with self._visual_lock:
                 self._require_operator("usare il controllo visivo")
                 azione = dati.get("azione", "stato")
@@ -121,7 +199,9 @@ class VisualMixin:
                     return {"marcatori": vision.pagina_marcatori()}
                 if azione == "impostazioni":
                     cfg = self._visual_config()
+                    service = vision_models.servizio()
                     return {"config": {k: v for k, v in cfg.items() if k not in ("aperta", "chiusa")},
+                            "console_modelli": service["console"] if service else None,
                             "calibrata_aperta": bool(cfg.get("aperta")), "calibrata_chiusa": bool(cfg.get("chiusa"))}
                 if azione == "configura":
                     cfg = self._visual_config()
@@ -133,6 +213,9 @@ class VisualMixin:
                     if new["raggio_min"] >= new["raggio_max"]:
                         raise ValueError("raggio minimo maggiore del massimo")
                     new["camera"] = str(dati.get("camera", ""))[:300]
+                    new["modello"] = dati.get("modello", cfg.get("modello", "cerchi"))
+                    if new["modello"] not in vision_models.MODELLI:
+                        raise ValueError("modello di riconoscimento non valido")
                     # Un'altra camera o un'altra modalità richiedono una calibrazione nuova.
                     geometry = ("camera", "marcatori_scatola", "marcatori_coperchio")
                     if all(new[k] == cfg.get(k, False if k != "camera" else "") for k in geometry):
@@ -145,15 +228,21 @@ class VisualMixin:
                     sid = int(dati["shipment_id"])
                     self.db.shipment_row(sid)
                     return {"prova": self.visual_documento(sid)}
-                s = self._visual_context(dati, modifica=azione != "stato")
-                if azione == "stato":
-                    return {"sessione": s["id"], "prova": self.visual_documento(s["sid"])}
-                if azione == "analizza":
-                    return self._visual_analisi(s, dati)
+                if azione == "anteprima_configurazione":
+                    im = vision.immagine(dati.get("immagine_base64"))
+                    if dati.get("modello") in ("sam2", "qwen"):
+                        im, _ = vision_models.prepara(im, dati.get("profilo"))
+                    result = vision.analizza(im, self._visual_config(), area_manuale=dati.get("area_manuale"))
+                    return {**{k: v for k, v in result.items() if k != "miniatura"},
+                            "sessione": None, "stabile": False, "confermati": result["centri"],
+                            "conteggio": len(result["centri"]), "manuale": False, "rfid": None}
                 if azione == "calibra":
                     cfg = self._visual_config()
                     area = vision.punti(dati.get("area"), quattro=True)
-                    result = vision.analizza(vision.immagine(dati.get("immagine_base64")), cfg, area_manuale=area)
+                    im = vision.immagine(dati.get("immagine_base64"))
+                    if dati.get("modello") in ("sam2", "qwen"):
+                        im, _ = vision_models.prepara(im, dati.get("profilo"))
+                    result = vision.analizza(im, cfg, area_manuale=area)
                     if result["qualita"] != "leggibile":
                         raise ValueError("immagine non leggibile per la calibrazione")
                     tipo = dati.get("tipo")
@@ -165,10 +254,16 @@ class VisualMixin:
                         raise ValueError("devono essere visibili i marcatori coperchio 4 e 5")
                     cfg[tipo] = {k: result[k] for k in ("area", "markers", "miniatura")}
                     self._visual_save_config(cfg)
-                    self._visual_reset(s)
+                    if self._visual_session:
+                        self._visual_reset(self._visual_session)
                     return {"ok": True}
+                s = self._visual_context(dati, modifica=azione != "stato")
+                if azione == "stato":
+                    return {"sessione": s["id"], "prova": self.visual_documento(s["sid"])}
+                if azione == "analizza":
+                    return self._visual_analisi(s, dati)
                 if azione == "correggi":
-                    if not s["latest"] or s["latest"]["qualita"] != "leggibile":
+                    if not s["latest"] or s["latest"]["qualita"] not in ("leggibile", "incerta"):
                         raise ValueError("analizzare prima un'immagine leggibile")
                     centri = vision.punti(dati.get("centri"))
                     import cv2
@@ -177,7 +272,7 @@ class VisualMixin:
                     poly = np.array(s["latest"]["area"], dtype="float32")
                     if any(cv2.pointPolygonTest(poly, tuple(p), False) < 0 for p in centri):
                         raise ValueError("marcatore esterno alla scatola")
-                    self._visual_reset(s)
+                    self._visual_reset(s, conserva_ai=True)
                     s["corretti"], s["stable"] = centri, True
                     s["seen"] = time.monotonic()
                     return {"sessione": s["id"], "conteggio": len(centri), "stabile": True}
@@ -205,6 +300,7 @@ class VisualMixin:
                                  "confermati": s["corretti"] if s["corretti"] is not None else s["latest"]["centri"],
                                  "manuale": s["corretti"] is not None, "area": s["latest"]["area"],
                                  "origine_area": s["latest"]["origine_area"],
+                                 "riconoscimento": {k: s["latest"][k] for k in ("motore", "modello", "tempo_secondi", "nota", "avvisi", "correzione") if k in s["latest"]},
                                  "config": {k: v for k, v in cfg.items() if k not in ("aperta", "chiusa")},
                                  "rfid": {k: v for k, v in s["rfid"].items() if not k.startswith("_")},
                                  "foto_contenuto": pending["foto"],
@@ -217,6 +313,8 @@ class VisualMixin:
                     if not doc or doc.get("stato") != "concordante":
                         raise ValueError("confermare prima la foto del contenuto")
                     im = vision.immagine(dati.get("immagine_base64"))
+                    if dati.get("modello") in ("sam2", "qwen"):
+                        im, _ = vision_models.prepara(im, dati.get("profilo"))
                     cfg = self._visual_config()
                     result = vision.analizza(im, cfg, area_manuale=dati.get("area_manuale"))
                     if not cfg.get("controlla_coperchio"):
@@ -230,7 +328,7 @@ class VisualMixin:
                     self._visual_save(s["sid"], doc)
                     return {"ok": True, "prova": doc}
                 raise ValueError("azione visiva non riconosciuta")
-        except (ValueError, TypeError, KeyError, ImportError, InvalidTag, CryptoError) as exc:
+        except (ValueError, TypeError, KeyError, ImportError, RuntimeError, OSError, InvalidTag, CryptoError) as exc:
             raise self.exchange_error(str(exc)) from exc
 
     def visual_finalizza(self, record):

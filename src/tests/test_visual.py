@@ -260,12 +260,210 @@ def test_calibrazione_cifrata_e_cambio_camera_elimina_riferimenti():
         _rifiuta(lambda:w.controllo_visivo({"azione":"configura","raggio_min":.2,"raggio_max":.1}), "raggio")
 
 
+def test_impostazioni_calibrazione_senza_spedizione_e_archivio_immutabile():
+    with _Postazione(_tmp("visivo_config_globale")) as p, patch("lims.vision.immagine", return_value=object()), patch("lims.vision.analizza", side_effect=lambda *a, **k: copy.deepcopy(_scena())):
+        w = p.server.workflow
+        w.shipment_id = None
+        preview = {"azione":"anteprima_configurazione", "immagine_base64":"foto"}
+        calibration = {"azione":"calibra", "tipo":"aperta", "area":_scena()["area"], "immagine_base64":"foto"}
+        with patch.object(w, "recupera_visivo", side_effect=AssertionError("RFID non previsto")):
+            status, out = p.post("/api/controllo_visivo", preview)
+            assert status == 200 and out["rfid"] is None and not out["stabile"] and out["sessione"] is None
+            assert p.post("/api/controllo_visivo", calibration)[0] == 200
+        assert w._visual_session is None
+        assert w.controllo_visivo({"azione":"impostazioni"})["calibrata_aperta"]
+        _popola(w)
+        document = {"stato":"concordante", "foto_contenuto":{"jpeg":"PROVA_CONSERVATA"}}
+        w._visual_save(w.shipment_id, document)
+        w.db.connection.execute("UPDATE shipments SET state='received' WHERE id=?", (w.shipment_id,))
+        w.db.connection.commit()
+        assert p.post("/api/controllo_visivo", {**calibration,"tipo":"chiusa"})[0] == 200
+        assert w.visual_documento() == document, "calibrare non modifica la prova archiviata"
+        w.operatore = ""
+        assert p.post("/api/controllo_visivo", preview)[0] == 400
+        assert p.post("/api/controllo_visivo", calibration)[0] == 400
+
+
+def test_riquadro_area_incorporabile_solo_nella_webui_stessa_origine():
+    import urllib.request
+
+    with _Postazione(_tmp("visivo_riquadro")) as p:
+        for path in ("/", "/sam2-auto.html", "/sam2-auto.html?impostazioni=0"):
+            with urllib.request.urlopen(p.base + path) as response:
+                assert response.headers["X-Frame-Options"] == "DENY"
+        with urllib.request.urlopen(p.base + "/sam2-auto.html?impostazioni=1") as response:
+            assert response.headers["X-Frame-Options"] == "SAMEORIGIN"
+            assert response.headers["Content-Security-Policy"] == "frame-ancestors 'self'"
+
+
 def test_foto_distinta_v2_firmata_cifrata_e_ricevuta():
     from test_lims_secure_workflow import (
         test_percorso_v2_blocca_la_partenza_fino_alla_consegna_e_si_importa,
     )
 
     test_percorso_v2_blocca_la_partenza_fino_alla_consegna_e_si_importa()
+
+
+def _scatto_ai():
+    from PIL import Image, ImageDraw
+
+    from webui import vision_models
+
+    im = Image.new("RGB", (480, 320), "white")
+    draw = ImageDraw.Draw(im)
+    for x in range(20, 460, 40):
+        draw.rectangle((x, 30, x+15, 290), fill="gray")
+    profile = {"versione": 2, "modo": "rettangolo", "area": [.05, .05, .95, .95],
+               "dimensioni": [480, 320]}
+    return im, {"immagine_base64": vision_models.jpeg(im), "profilo": profile, "modello": "qwen"}
+
+
+def _rilevamento_ai(im, model):
+    return {"dimensioni": list(im.size), "conteggio": 3, "oggetti": [{"centro": p} for p in _scena()["centri"]],
+            "modello": "Qwen di prova" if model == "qwen" else "SAM di prova",
+            "tempo_secondi": 1.5, "nota": "Riflessi esclusi", "incerto": False}
+
+
+def _stabilizza_ai(w, data):
+    base = time.monotonic()
+    with patch("webui.visual.time.monotonic", side_effect=[base-1.2, base-.6, base]):
+        for _ in range(3):
+            result = w.controllo_visivo({"azione": "analizza", "shipment_id": w.shipment_id, **data})
+    return result
+
+
+def test_qwen_nel_sigillo_stabilita_rfid_foto_e_metadati_cifrati():
+    from webui import vision_models
+
+    _, data = _scatto_ai()
+    with _Postazione(_tmp("visivo_qwen")) as p, patch.object(vision_models, "analizza", side_effect=_rilevamento_ai) as detector:
+        w = p.server.workflow
+        p.backend.tags[:] = _popola(w)
+        code, result = p.post("/api/controllo_visivo", {"azione": "analizza_modello", "shipment_id": w.shipment_id, **data})
+        assert code == 200 and result["conteggio"] == 3 and not result["stabile"]
+        assert result["dimensioni"] == [432, 288] and result["motore"] == "qwen"
+        assert p.backend.inventory_calls == 0
+        stable = _stabilizza_ai(w, data)
+        assert stable["stabile"] and stable["conteggio"] == 3 and detector.call_count == 1
+        result = w.recupera_visivo({"shipment_id": w.shipment_id}, stop_event=threading.Event())
+        assert result["concorde"]
+        pending = w.controllo_visivo({"azione": "prepara_foto", "shipment_id": w.shipment_id, **data})
+        saved = w.controllo_visivo({"azione": "conferma_foto", "shipment_id": w.shipment_id, "token": pending["token"]})["prova"]
+        assert saved["riconoscimento"]["modello"] == "Qwen di prova"
+        assert saved["riconoscimento"]["nota"] == "Riflessi esclusi"
+        assert saved["foto_contenuto"]["larghezza"] == 432
+        raw = w.db.connection.execute("SELECT encrypted_blob FROM visual_checks").fetchone()[0]
+        assert b"Qwen di prova" not in raw
+        w.sigilla()
+        blob, _ = w.esporta_distinta()
+        assert open_manifest(blob, w.keyring).visual_check["riconoscimento"] == saved["riconoscimento"]
+
+
+def test_ai_incerto_e_bordo_assente_non_diventano_falso_zero_o_stabili():
+    from webui import vision_models
+
+    _, data = _scatto_ai()
+    with _Postazione(_tmp("visivo_ai_incerto")) as p:
+        w = p.server.workflow
+        _popola(w)
+        for missing in (False, True):
+            def detect(im, model, missing=missing):
+                result = _rilevamento_ai(im, model)
+                result["incerto"] = True
+                if missing:
+                    result.update(conteggio=None, oggetti=[], borsa={"rilevata": False})
+                return result
+            with patch.object(vision_models, "analizza", side_effect=detect):
+                w.controllo_visivo({"azione": "analizza_modello", "shipment_id": w.shipment_id, **data})
+                result = _stabilizza_ai(w, data)
+                assert not result["stabile"] and result["qualita"] == "incerta"
+                assert result["conteggio"] == (None if missing else 3)
+                _rifiuta(lambda: w.recupera_visivo({"shipment_id": w.shipment_id}, stop_event=threading.Event()), "stabile")
+                w.controllo_visivo({"azione": "correggi", "shipment_id": w.shipment_id, "centri": _scena()["centri"]})
+                assert _stabilizza_ai(w, data)["stabile"]
+
+
+def test_ai_movimento_locale_cambio_profilo_e_invalida_bloccano_recupero():
+    from PIL import ImageDraw
+
+    from webui import vision_models
+
+    im, data = _scatto_ai()
+    with _Postazione(_tmp("visivo_ai_movimento")) as p, patch.object(vision_models, "analizza", side_effect=_rilevamento_ai):
+        w = p.server.workflow
+        _popola(w)
+        for kind in ("movimento", "profilo", "invalida"):
+            w.controllo_visivo({"azione": "analizza_modello", "shipment_id": w.shipment_id, **data})
+            assert _stabilizza_ai(w, data)["stabile"]
+            changed = copy.deepcopy(data)
+            if kind == "movimento":
+                moved = im.copy()
+                ImageDraw.Draw(moved).rectangle((56, 60, 91, 89), fill="black")
+                changed["immagine_base64"] = vision_models.jpeg(moved)
+            elif kind == "profilo":
+                changed["profilo"]["area"] = [.06, .05, .95, .95]
+            else:
+                w.controllo_visivo({"azione": "invalida", "shipment_id": w.shipment_id})
+            result = w.controllo_visivo({"azione": "analizza", "shipment_id": w.shipment_id, **changed})
+            assert result["qualita"] == "da riconoscere" and result["conteggio"] is None
+            _rifiuta(lambda: w.recupera_visivo({"shipment_id": w.shipment_id}, stop_event=threading.Event()), "stabile")
+
+
+def test_ai_risposta_tardiva_e_errore_non_riutilizzano_il_risultato():
+    from webui import vision_models
+
+    _, data = _scatto_ai()
+    with _Postazione(_tmp("visivo_ai_tardivo")) as p:
+        w = p.server.workflow
+        _popola(w)
+        def late(im, model):
+            w.controllo_visivo({"azione": "invalida", "shipment_id": w.shipment_id})
+            return _rilevamento_ai(im, model)
+        with patch.object(vision_models, "analizza", side_effect=late):
+            _rifiuta(lambda: w.controllo_visivo({"azione": "analizza_modello", "shipment_id": w.shipment_id, **data}), "superato")
+        with patch.object(vision_models, "analizza", side_effect=RuntimeError("servizio occupato")):
+            _rifiuta(lambda: w.controllo_visivo({"azione": "analizza_modello", "shipment_id": w.shipment_id, **data}), "occupato")
+        _rifiuta(lambda: w.recupera_visivo({"shipment_id": w.shipment_id}, stop_event=threading.Event()), "stabile")
+
+
+def test_ponte_motori_http_validazione_e_calibrazione_prospettica():
+    import io
+    import json
+
+    from app.sam2_geometry import rettifica
+    from app.vision_preview import crea_server
+    from webui import vision_models
+
+    im, data = _scatto_ai()
+    cfg = data["profilo"]
+    cfg.update(modo="prospettiva", punti=[[.1,.1],[.9,.1],[.9,.9],[.1,.9]],
+               larghezza_cm=48, lunghezza_cm=26.5, altezza_camera_cm=64)
+    prepared, correction = vision_models.prepara(im, cfg)
+    assert correction["altezza_camera_cm"] == 64 and not correction["proporzioni_stimate"]
+    assert prepared.size == tuple(rettifica(im, {k: cfg[k] for k in ("punti", "larghezza_cm", "lunghezza_cm", "altezza_camera_cm")})["dimensioni"])
+    class Qwen:
+        def analizza_web(self, photo):
+            return _rilevamento_ai(photo, "qwen")
+    server, token = crea_server(0, qwen=Qwen())
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with patch.object(vision_models, "servizio", return_value={"base": f"http://127.0.0.1:{server.server_port}", "token": token}):
+            assert vision_models.analizza(prepared, "qwen")["conteggio"] == 3
+        malformed = _rilevamento_ai(prepared, "qwen")
+        for value in ([], {**malformed, "conteggio": True}, {**malformed, "oggetti": [1, 2, 3]},
+                      {**malformed, "dimensioni": [1, 2]}, {**malformed, "oggetti": [{"centro": [2, 0]}]*3}):
+            with patch.object(vision_models, "servizio", return_value={"base": "http://127.0.0.1:8772", "token": "test"}), patch("urllib.request.urlopen", return_value=io.BytesIO(json.dumps(value).encode())):
+                try:
+                    vision_models.analizza(prepared, "qwen")
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("risposta non valida accettata")
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
 
 
 def verifica_ottica():

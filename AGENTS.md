@@ -4,16 +4,31 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 
 ## Memoria di lavoro aggiornata
 
-Per riprendere il progetto, leggere [NOTE_SESSIONE_2026-10-01.md](NOTE_SESSIONE_2026-10-01.md),
-in particolare la sezione finale sulla ripresa dopo il limite: invii email con più
-colli, archivio distinte e SQLite schema 9. La successiva prova QR con webcam
-è ora integrata nella Ricezione; guida `docs/QR_WEBCAM.md`, **735/735 test superati**.
+Per riprendere il progetto, leggere [NOTE_SESSIONE_2026-10-02.md](NOTE_SESSIONE_2026-10-02.md),
+memoria di chiusura giornata e prossimi collaudi. La cronologia dettagliata
+resta in [NOTE_SESSIONE_2026-10-01.md](NOTE_SESSIONE_2026-10-01.md).
+La configurazione è ora in **Impostazioni Controllo Visivo**:
+videocamera, modello SAM 2 / Qwen, area, prospettiva e calibrazione sono nelle
+Impostazioni; il Sigillo usa le scelte salvate. Guida
+`docs/RICONOSCIMENTO_SIGILLO.md`: **754/754 test runner**, **781/781 pytest**.
+Email con più colli, archivio distinte e SQLite schema 9 sono già integrati;
+anche QR con webcam nella Ricezione, guida `docs/QR_WEBCAM.md`.
 La precedente [sessione del 6 settembre](NOTE_SESSIONE_2026-09-06.md) documenta
 l'accettazione giornaliera confermata dall'utente. Le sezioni storiche sottostanti
 non descrivono tutte le funzionalità attuali. Il collaudo email è simulato;
 la webcam nella Ricezione è stata confermata funzionante dall'utente
 («ok funziona»); vedere le note per i limiti del collaudo.
 Guida: [Accettazione giornaliera](docs/ACCETTAZIONE_GIORNALIERA.md).
+
+## Account GitHub di questo progetto
+
+Per **C:\PROGETTO-RFID** usare esclusivamente l'account GitHub
+**`danieleventuri2013-web`**, come richiesto dall'utente il 2 ottobre 2026.
+Non usare `danieleventuri2021-png` per le operazioni di questo repository.
+Questa scelta vale soltanto per questo progetto: non modificare account o
+credenziali degli altri progetti. Remote di pubblicazione: `origin`, ramo
+`codex`. Se l'accesso dell'account corretto è scaduto, rinnovarlo senza
+ricorrere a un account alternativo.
 
 ## What this is
 

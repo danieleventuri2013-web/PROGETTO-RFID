@@ -535,3 +535,131 @@ la casella effettiva e i colli sul lettore reale.
   https://github.com/danieleventuri2013-web/PROGETTO-RFID .
   Codice e storia visibili a chiunque; foto, log, DB, chiavi e modelli
   continuano a essere esclusi. Non è cambiata la proprietà dell'account.
+
+## Ripresa — riconoscimento oggetti nella Sigillatura, 2 ottobre 2026
+
+- Richiesta confermata dall'utente: inserire nella Sigillatura la stessa
+  metodica SAM 2 / Qwen provata oggi. Riprese e completate le modifiche locali
+  già presenti in `vision.py`, WebUI, HTML/JS e nuovo `vision_models.py`.
+- Sigillo: selettore SAM locale/Qwen3.8 27B/cerchi classici, scatto esplicito,
+  rianalisi della medesima foto cambiando motore, note/tempi, contorni SAM,
+  bordo e finestra interna di ricerca; centri blu Qwen. Il prompt riflessi e
+  il motore OpenVINO restano quelli del banco, tramite ponte HTTP loopback.
+- Calibrazione `rfid.sam2.area.v2.<deviceId>` riusata dallo stesso browser e
+  origine WebUI8770. Ritaglio ai pixel della sorgente PRIMA del limite Full HD,
+  compresa sorgente4K, margine prospettico e misure conservati. Configurazione
+  apre il banco sulla WebUI8770, spegnendo prima la webcam del Sigillo.
+- Correzioni e foto mostrano lo scatto ritagliato/rettificato, con proporzioni
+  corrette. Cambio motore conserva lo scatto per il confronto. Doppio clic
+  bloccato, risposte tardive scartate, comandi di modifica disabilitati durante
+  l'analisi; Stop e invalidazione rimangono disponibili.
+- Il controllo continuo della scena è locale: niente inferenza remota/video
+  continuo. Movimento rilevato anche vicino ai centri, cambio profilo o nuova
+  prova azzerano stabilità, correzioni, RFID e foto in attesa. Corretto inoltre
+  `_visual_reset`: la stabilità precedente non sopravvive a un'invalidazione.
+  È un controllo a soglia, non una garanzia di rilevare ogni sostituzione.
+- Bordo assente/conteggio indeterminato non diventa zero valido. Incertezza
+  del modello impedisce la stabilità fino alla correzione/verifica manuale.
+  I punti non identificano EPC; confronto e certificazione RFID invariati.
+- Foto e metadati (modello, tempo, nota, avvisi, correzione) nella prova cifrata,
+  inclusi nella distinta e consultabili in Ricezione. Guida nuova
+  `docs/RICONOSCIMENTO_SIGILLO.md`; aggiornati changelog e guide operative/Qwen.
+- Verifiche: runner **752/752**,36gruppi; pytest **779/779**,copertura82,38%;
+  sei suite Node UI e Ruff superati. Visual17/17, con cinque nuovi test:
+  percorso HTTP/Qwen simulato fino alla distinta, incertezza/null, movimento
+  locale/profilo/invalida, risposta tardiva/errore, ponteHTTP e prospettiva.
+  Log `logs/test-sigillo-modelli-suite.txt`, `test-sigillo-modelli-pytest.txt`.
+- Prova REALE del motore tramite la nuova API della Sigillatura, su archivio
+  temporaneo e foto6già analizzata oggi:5campioni,5centri/contorni, SAM
+  OpenVINO GPU F16,41,21s motore/42,52s HTTP,820×530. Nessun inventory e
+  nessun invio a OpenRouter. Non è uno scatto nuovo della webcam né una
+  convalida fisica del sigillo. Report locale
+  `demo-output/sigillo-modelli-20261002/verifica_sam_sigillo.json`.
+- Alla ripresa nessun servizio precedente era avviato. Avviati WebUI8770
+  (launcher20216, `logs/webui-sigillo-modelli.pid`) e SAM/Qwen8772
+  (launcher9536, `logs/sam2.pid`). Encoder/decoder GPU.0 verificati;
+  Qwen disponibile tramite chiave già nell'ambiente, mai stampata.
+  Log `webui_sigillo_modelli_stdout/stderr.log`,
+  `sam2_sigillo_modelli_stdout/stderr.log`. Collegamento WebUI aggiornato in
+  `logs/webui_url.txt`; servizio SAM con `--riusa-token`.
+- Verifica finale HTTP200 della WebUI: `state=stopped`, `ready=false`; nessun
+  collegamento al lettore effettuato. JavaScript e CSS aggiornati effettivamente
+  serviti dalla postazione, inclusa la vista della foto senza deformazione.
+- Browser non disponibile: inventario vuoto, creazione Chrome rifiutata
+  dal provider («Browser is not available: chrome»). Nessun controllo grafico
+  reale o recupero/invenzione di calibrazioni nel browser in questa ripresa.
+  La calibrazione dell'utente va riusata sul suo browser; se assente, salvarla
+  dal banco. Nessuna operazione RF fisica, email, nuova prova sulla webcam,
+  scrittura manuale dell'archivio reale, commit o push.
+
+### Verifica del pulsante «Scatta e cerca campioni»
+
+- Segnalazione utente: il pulsante non funziona. In questa verifica il browser
+  è tornato disponibile: Chrome, scheda425118352, WebUI8770.
+- Osservazione diretta: spedizione1 `received`, distinta già archiviata;
+  webcam attiva USB Camera0bda:5803, senza profilo dell'area salvato per questo
+  dispositivo. Immagine della stanza, nessun allestimento di campioni da
+  usare come calibrazione. La C920 non era nel menu dei dispositivi.
+- Errore in pagina: «spedizione non modificabile». Il polling ripetuto
+  sovrascriveva inoltre l'errore del comando quando mancava la calibrazione.
+- Corretto `visual.js` e HTML: blocco esplicito sulle spedizioni concluse o
+  archiviate, nessun polling/riconoscimento per quelle spedizioni, comandi
+  della prova disabilitati e istruzione per una scatola ancora da verificare.
+  Banco di calibrazione e consultazione della prova conservata disponibili.
+- Errori di scatto persistenti durante il polling; uno scatto senza profilo
+  non abilita più Rianalizza. Interruzione della webcam se la spedizione viene
+  archiviata mentre la pagina è aperta, anche a ID e contenuto invariati.
+- Nuove regressioni Node per questi quattro casi superate, insieme alla
+  suite visiva preesistente e controllo sintassi JS. Modifiche solo HTML/JS:
+  suite Python752/752 e779/779 della ripresa precedente non rieseguita.
+- Pagina dell'utente ricaricata e pannello Sigillo verificato nel browser:
+  messaggio di spedizione archiviata visibile, Scatta/Rianalizza disabilitati,
+  Configura area e prospettiva attivo. OperatoreDV conservato; webcam spenta
+  dal reload, nessun consenso cambiato. Nessuna nuova scatola creata,
+  nessun invio a Qwen, inferenza, RFID, modifica dell'archivio o riavvio server.
+
+
+### Impostazioni Controllo Visivo — richiesta del 2 ottobre
+
+- Richiesta utente: tutta la configurazione visiva nelle Impostazioni, nella
+  sottosezione «Impostazioni Controllo Visivo». Spostati videocamera, modello
+  SAM 2 / Qwen3.8 27B / cerchi, area e prospettiva, parametri e marcatori,
+  stampa dei marcatori e riferimenti della scatola aperta/con coperchio.
+- Nel Sigillo restano attivazione del controllo per la scatola, riepilogo
+  delle scelte, comandi operativi e collegamento diretto alla sottosezione.
+  La webcam del Sigillo rilegge i parametri salvati prima dell'acquisizione.
+- Area configurata nel riquadro incorporato sullo stesso indirizzo WebUI:
+  conserva la chiave locale per dispositivo già usata dal banco. Non apre
+  un'altra finestra e non offre comandi di invio foto a SAM/Qwen in questa
+  modalità. Videocamera/modello sono scelti solo nel pannello principale;
+  una camera specifica assente blocca l'avvio senza sostituirla in silenzio.
+- Calibrazione dei riferimenti e anteprima disponibili senza spedizione
+  aperta; nessun recupero RFID automatico e nessuna modifica alle prove già
+  conservate. Il passaggio ad altre sezioni scarica il riquadro e rilascia
+  la webcam. Tutti i parametri sono ancora protetti dal token/operatore.
+- Prova nel browser: nuova sottosezione e riquadro area verificati in Chrome,
+  con operatore DV e menu USB Camera 0bda:5803. Scoperto e corretto il blocco
+  X-Frame-Options: soltanto sam2-auto.html?impostazioni=1 è incorporabile
+  dalla stessa origine (SAMEORIGIN + frame-ancestors self); altre pagine DENY.
+  Layout controllato con screenshot. Nessuna area inventata/salvata, nessuna
+  acquisizione webcam o richiesta ai modelli durante questo collaudo UI.
+- Alla successiva verifica della navigazione al Sigillo il collegamento di
+  automazione Chrome è diventato indisponibile. Questa ultima navigazione
+  non è stata confermata visivamente; rilascio, caricamento delle scelte e
+  controlli nel Sigillo sono coperti dalle regressioni Node.
+- Validazione finale: runner 754/754 (36 gruppi), pytest 781/781, copertura
+  84,23% con --cov=src, sei suite Node e Ruff superati. Log:
+  logs/test-impostazioni-visive-suite.txt, test-impostazioni-visive-pytest.txt
+  e test-visivo-impostazioni.txt. Immagini e database sintetici nei test.
+- WebUI riavviata per caricare il backend aggiornato, dopo verifica del
+  lettore stopped/ready=false; ultimo PID14540, indicazione aggiornata in
+  logs/webui_url.txt. Banco SAM8772 lasciato attivo. Operatore DV ripristinato
+  tramite UI, nessuna radio collegata, scatola creata o invio esterno.
+- Guida docs/RICONOSCIMENTO_SIGILLO.md aggiornata con il nuovo percorso.
+  Modifiche non committate; nessun commit o push richiesto.
+
+### Chiusura della giornata
+
+L'utente ha successivamente richiesto commit, push e aggiornamento di tutta
+la documentazione per concludere oggi. Memoria corrente, verifiche e prossimi
+collaudi sono in [NOTE_SESSIONE_2026-10-02.md](NOTE_SESSIONE_2026-10-02.md).

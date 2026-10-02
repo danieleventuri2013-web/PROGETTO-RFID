@@ -29,6 +29,11 @@ credito API, indipendentemente dal motore SAM locale.
 
 ## Confronto sulle foto del 2 ottobre 2026
 
+Gli stessi motori sono disponibili nel controllo visivo della Sigillatura,
+con la calibrazione della webcam già salvata. Vedere
+[Riconoscimento nel Sigillo](RICONOSCIMENTO_SIGILLO.md) per scatto,
+rianalisi, confronto RFID e prova cifrata.
+
 Sei foto distinte, quantità verificate 8,8,8,8,6,5; due richieste per foto.
 Al modello non sono stati forniti nomi dei file, quantità attese o contorni SAM.
 

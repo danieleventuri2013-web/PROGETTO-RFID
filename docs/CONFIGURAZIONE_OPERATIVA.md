@@ -141,6 +141,16 @@ registrata resta valida.
 
 ## Verifiche e limiti
 
+Per usare SAM 2 locale o Qwen nella Sigillatura con area e prospettiva
+salvate nel banco webcam, configurare videocamera, modello e calibrazione in
+**Impostazioni → Impostazioni Controllo Visivo** e seguire
+[Riconoscimento dei campioni nel Sigillo](RICONOSCIMENTO_SIGILLO.md).
+
+Chiusura del 2 ottobre 2026: **754/754 test runner**, **781/781 pytest**,
+sei suite UI Node e Ruff superati. Calibrazione disponibile senza spedizione;
+il nuovo percorso completo webcam/RFID richiede ancora un collaudo fisico.
+Memoria e prossime prove: [nota del 2 ottobre](../NOTE_SESSIONE_2026-10-02.md).
+
 Ripresa del 1 ottobre 2026: **724/724 test automatici superati**, inclusi scambio
 HTTP di due colli, allegati, duplicati, errori radio, riavvio e migrazione schema 9.
 Superati Ruff sui file Python interessati e i controlli sintattici JavaScript.

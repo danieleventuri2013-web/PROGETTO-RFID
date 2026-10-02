@@ -805,7 +805,7 @@ class WebUIServer:
             "chiudi_riempimento", "conferma_invio", "importa_distinta",
             "conferma_ricezione", "importa_riscontro", "leggi_qr_distinta",
         }
-        mutazione = mutazione or (nome == "controllo_visivo" and dati.get("azione") not in {"analizza", "stato", "impostazioni", "archivio", "marcatori"})
+        mutazione = mutazione or (nome == "controllo_visivo" and dati.get("azione") not in {"analizza", "analizza_modello", "anteprima_configurazione", "stato", "impostazioni", "archivio", "marcatori"})
         if not radio and not mutazione:
             return self._esegui(nome, funzione, dati)
         try:
@@ -1076,10 +1076,18 @@ def _make_handler(server: WebUIServer) -> type[BaseHTTPRequestHandler]:
             self.send_response(stato)
             self.send_header("Content-Type", tipo)
             self.send_header("Content-Length", str(len(corpo)))
-            # L'interfaccia gira in locale e non deve poter essere inclusa
-            # altrove ne' caricare niente da fuori.
+            # Solo il riquadro di calibrazione può essere incluso nella WebUI
+            # dello stesso indirizzo. Le altre pagine restano non incorporabili.
+            parti = urllib.parse.urlsplit(self.path)
+            calibrazione = (
+                stato == HTTPStatus.OK and tipo.startswith("text/html")
+                and parti.path == "/sam2-auto.html"
+                and urllib.parse.parse_qs(parti.query).get("impostazioni") == ["1"]
+            )
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("X-Frame-Options", "DENY")
+            self.send_header("X-Frame-Options", "SAMEORIGIN" if calibrazione else "DENY")
+            if calibrazione:
+                self.send_header("Content-Security-Policy", "frame-ancestors 'self'")
             self.end_headers()
             if self.command != "HEAD":
                 self.wfile.write(corpo)

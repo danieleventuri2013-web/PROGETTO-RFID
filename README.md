@@ -29,6 +29,8 @@ espone entrambi).
 | [`docs/SAM2_LOCALE.md`](docs/SAM2_LOCALE.md) | prova conteggio e calibrazione webcam |
 | [`docs/SAM2_OPENVINO.md`](docs/SAM2_OPENVINO.md) | SAM su GPU Intel |
 | [`docs/OPENROUTER_VISION.md`](docs/OPENROUTER_VISION.md) | confronto Qwen/SAM sullo stesso scatto |
+| [`docs/RICONOSCIMENTO_SIGILLO.md`](docs/RICONOSCIMENTO_SIGILLO.md) | riconoscimento nel Sigillo e Impostazioni Controllo Visivo |
+| [`NOTE_SESSIONE_2026-10-02.md`](NOTE_SESSIONE_2026-10-02.md) | chiusura del 2 ottobre, verifiche e ripresa del lavoro |
 
 ## Collaborazione
 
@@ -136,6 +138,17 @@ tag, campagna, e il grafico del return loss per frequenza con la banda ETSI
 evidenziata — ogni scheda spiega cosa misura, come si esegue la prova e come si
 legge il risultato), **archivio**, **registro** e **impostazioni**.
 Date e ore in formato italiano.
+
+Il controllo visivo facoltativo del **Sigillo** riconosce i contenitori con
+SAM 2 locale, Qwen3.8 27B o cerchi classici e conserva la prova insieme alla
+distinta. Videocamera, modello, area e prospettiva, marcatori e riferimenti
+del coperchio si configurano in **Impostazioni → Impostazioni Controllo Visivo**.
+Lo scatto usa le scelte salvate; l'identificazione dei contenitori resta RFID.
+Guida: [Riconoscimento nel Sigillo](docs/RICONOSCIMENTO_SIGILLO.md).
+
+Verifiche al 2 ottobre 2026: **754/754 test del runner**, **781/781 pytest**
+e sei suite UI Node superati. Il collaudo fisico completo del nuovo Sigillo
+è ancora da svolgere; dettagli nella [nota di chiusura](NOTE_SESSIONE_2026-10-02.md).
 
 **Archivio** risponde alla domanda che arriva da fuori mesi dopo. Si cerca per
 cognome, nome, codice fiscale o numero di accettazione, e per ogni accettazione

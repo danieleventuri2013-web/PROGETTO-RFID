@@ -5,6 +5,35 @@ Sezioni: Added / Changed / Fixed / Security / Diagnostics / Documentation.
 
 ## [Unreleased]
 
+Chiusura del 2 ottobre 2026: 754/754 test runner, 781/781 pytest, sei suite
+UI Node e Ruff superati. Aggiornati indice README, piano e memoria di ripresa
+`NOTE_SESSIONE_2026-10-02.md`; collaudo fisico completo del nuovo Sigillo
+visivo/RFID ancora da svolgere.
+
+### Changed — Impostazioni Controllo Visivo
+
+- Videocamera, modello SAM/Qwen/cerchi, area e prospettiva, parametri e
+  marcatori, riferimenti aperto/coperchio riuniti nella sottosezione delle
+  Impostazioni. Il Sigillo mostra il riepilogo e i comandi operativi.
+- Calibrazione incorporata nella stessa pagina, disponibile senza spedizione
+  aperta; anteprima senza RFID e webcam rilasciata uscendo dalla sottosezione.
+- Regressioni per calibrazione globale, prove archiviate immutate, scelta
+  della webcam incorporata e assenza del dispositivo selezionato.
+
+### Added — riconoscimento SAM 2 / Qwen nella Sigillatura
+
+- Il controllo visivo del Sigillo usa gli stessi motori del banco webcam,
+  riusa area e prospettiva e consente la rianalisi dello stesso scatto.
+  Ritaglio prima del limite Full HD, contorni SAM e punti numerati Qwen.
+- Stabilità e riscontro RFID invalidati quando cambia la scena; incertezza,
+  errori e risposte tardive non producono una falsa concordanza. Foto e
+  metadati del riconoscimento accompagnano la prova cifrata nella distinta.
+- Regressioni HTTP, geometria e UI, inclusi movimento locale, foto
+  rettificata, doppio clic e cambio modello. Guida `docs/RICONOSCIMENTO_SIGILLO.md`.
+- Il pannello segnala le spedizioni già archiviate e impedisce nuove prove
+  su di esse; gli errori dello scatto restano visibili durante l'anteprima,
+  compresa l'area mancante per una webcam diversa.
+
 ### Added — GPU Intel e confronto Qwen dalla webcam
 
 - SAM 2 con OpenVINO su Intel GPU, ambiente separato, dispositivi effettivi
