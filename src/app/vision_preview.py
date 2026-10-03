@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from lims import vision
 
 
-def crea_server(port=8771, *, sam2=None, token=None, qwen=None):
+def crea_server(port=8771, *, sam2=None, token=None, qwen=None, yolo=None):
     token = token or secrets.token_urlsafe(24)
     static = Path(__file__).resolve().parents[1] / "webui" / "static"
     guard = threading.Lock()
@@ -54,7 +54,7 @@ def crea_server(port=8771, *, sam2=None, token=None, qwen=None):
                                  "text/html; charset=utf-8" if name.endswith("html") else "text/javascript; charset=utf-8")
 
         def do_POST(self):
-            if self.path not in ("/api/anteprima", "/api/sam2", "/api/sam2/automatico", "/api/sam2/prepara", "/api/qwen/automatico"):
+            if self.path not in ("/api/anteprima", "/api/sam2", "/api/sam2/automatico", "/api/sam2/prepara", "/api/qwen/automatico", "/api/yolo/automatico"):
                 return self.risposta(404, {"errore": "operazione assente"})
             if not secrets.compare_digest(self.headers.get("X-RFID-Token", ""), token):
                 return self.risposta(401, {"errore": "collegamento non valido"})
@@ -67,11 +67,23 @@ def crea_server(port=8771, *, sam2=None, token=None, qwen=None):
                 data = json.loads(self.rfile.read(length))
                 if not isinstance(data, dict):
                     raise ValueError("richiesta non valida")
+                if self.path == "/api/yolo/automatico":
+                    if yolo is None:
+                        return self.risposta(503, {"errore": "YOLO non avviato: installare ultralytics e i pesi nel servizio locale"})
+                    image = vision.immagine(data.get("immagine_base64"))
+                    if not guard.acquire(blocking=False):
+                        return self.risposta(409, {"errore": "analisi già in corso; attendere il risultato"})
+                    try:
+                        result = yolo.analizza_automatico(image)
+                    finally:
+                        guard.release()
+                    return self.risposta(200, result)
                 if self.path in ("/api/sam2", "/api/sam2/automatico", "/api/sam2/prepara", "/api/qwen/automatico"):
                     remote = self.path == "/api/qwen/automatico"
                     if remote and qwen is None:
                         return self.risposta(503, {"errore": "Qwen non configurato: impostare OPENROUTER_API_KEY nel servizio locale"})
-                    if not remote and sam2 is None:
+                    # La rettifica è solo geometria: serve anche a un servizio YOLO senza SAM.
+                    if not remote and sam2 is None and not (self.path.endswith("/prepara") and yolo is not None):
                         return self.risposta(503, {"errore": "avviare il servizio SAM 2 locale"})
                     from app.sam2_engine import valida_oggetti
                     automatico = self.path.endswith("/automatico")
@@ -115,11 +127,11 @@ def crea_server(port=8771, *, sam2=None, token=None, qwen=None):
             except (RuntimeError, OSError):
                 import traceback
                 traceback.print_exc()
-                name = "Qwen/OpenRouter" if self.path == "/api/qwen/automatico" else "SAM 2"
+                name = {"/api/qwen/automatico": "Qwen/OpenRouter", "/api/yolo/automatico": "YOLO"}.get(self.path, "SAM 2")
                 return self.risposta(503, {"errore": f"{name} non ha completato l'analisi; controllare il log del servizio"})
 
         def do_OPTIONS(self):
-            if self.path not in ("/api/anteprima", "/api/sam2", "/api/sam2/automatico", "/api/sam2/prepara", "/api/qwen/automatico") or self.headers.get("Origin") != allowed_origin:
+            if self.path not in ("/api/anteprima", "/api/sam2", "/api/sam2/automatico", "/api/sam2/prepara", "/api/qwen/automatico", "/api/yolo/automatico") or self.headers.get("Origin") != allowed_origin:
                 return self.risposta(403, {"errore": "origine non autorizzata"})
             self.send_response(204)
             self.send_header("Access-Control-Allow-Origin", allowed_origin)

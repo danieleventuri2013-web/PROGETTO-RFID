@@ -10,6 +10,7 @@ __pycache__/
 .venv-sam2/
 .venv-openvino/
 models/sam2/
+models/yolo/
 venv/
 .pytest_cache/
 

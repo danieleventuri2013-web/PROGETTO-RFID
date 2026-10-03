@@ -1,4 +1,4 @@
-"""Ponte locale verso gli stessi motori del banco webcam SAM 2 / Qwen."""
+"""Ponte locale verso gli stessi motori del banco webcam SAM 2 / Qwen / YOLO."""
 from __future__ import annotations
 
 import base64
@@ -12,7 +12,10 @@ from urllib.parse import parse_qs, urlencode, urlsplit
 
 from lims import vision
 
-MODELLI = ("cerchi", "sam2", "qwen")
+MODELLI = ("cerchi", "sam2", "qwen", "yolo")
+# Motori del servizio esterno sulla porta 8772: richiedono area e prospettiva salvate.
+MODELLI_AI = ("sam2", "qwen", "yolo")
+TIMEOUT = {"sam2": 300, "qwen": 120, "yolo": 60}
 LOGS = Path(__file__).resolve().parents[2] / "logs"
 
 
@@ -83,17 +86,16 @@ def jpeg(im):
 
 
 def analizza(im, modello):
-    if modello not in ("sam2", "qwen"):
-        raise ValueError("scegliere SAM 2 oppure Qwen")
+    if modello not in MODELLI_AI:
+        raise ValueError("scegliere SAM 2, Qwen oppure YOLO")
     target = servizio()
     if target is None:
-        raise RuntimeError("servizio di riconoscimento non avviato: aprire il banco SAM 2 / Qwen")
-    endpoint = "sam2" if modello == "sam2" else "qwen"
-    req = urllib.request.Request(target["base"] + f"/api/{endpoint}/automatico",
+        raise RuntimeError("servizio di riconoscimento non avviato: aprire il banco SAM 2 / Qwen / YOLO")
+    req = urllib.request.Request(target["base"] + f"/api/{modello}/automatico",
         data=json.dumps({"immagine_base64": jpeg(im)}).encode(),
         headers={"Content-Type": "application/json", "X-RFID-Token": target["token"]})
     try:
-        with urllib.request.urlopen(req, timeout=300 if modello == "sam2" else 120) as response:
+        with urllib.request.urlopen(req, timeout=TIMEOUT[modello]) as response:
             result = json.load(response)
     except urllib.error.HTTPError as exc:
         try:
@@ -102,7 +104,7 @@ def analizza(im, modello):
             error = "riconoscimento non riuscito"
         raise RuntimeError(str(error)[:300]) from None
     except OSError:
-        raise RuntimeError("servizio SAM 2 / Qwen non disponibile: avviare il banco di riconoscimento") from None
+        raise RuntimeError("servizio SAM 2 / Qwen / YOLO non disponibile: avviare il banco di riconoscimento") from None
     if not isinstance(result, dict) or result.get("dimensioni") != list(im.size):
         raise ValueError("risultato del motore non valido per questo scatto")
     count, objects = result.get("conteggio"), result.get("oggetti", [])

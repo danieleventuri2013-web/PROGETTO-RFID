@@ -1,0 +1,12 @@
+# YOLO locale nel servizio visivo (porta 8772). Si installa in .venv-openvino,
+# che riusa Torch/OpenCV di .venv-sam2 tramite sam2-locale.pth: --no-deps evita
+# che pip aggiunga opencv-python accanto a opencv-python-headless.
+#   python -m pip --python .venv-openvino/Scripts/python.exe install --no-deps ultralytics==8.4.171
+#   python -m pip --python .venv-openvino/Scripts/python.exe install -r requirements-yolo.txt
+cloudpickle>=3.1
+filelock>=3.16
+matplotlib>=3.3
+requests>=2.23
+psutil>=5.8
+polars>=0.20
+ultralytics-thop>=2.2.2

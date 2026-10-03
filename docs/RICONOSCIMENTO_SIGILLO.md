@@ -2,8 +2,8 @@
 
 In **Sigillo**, abilita **Controllo avanzato visivo / RFID**. La ricerca usa gli
 stessi motori della prova webcam: SAM 2 locale (OpenVINO sulla GPU Intel,
-se avviato così) oppure Qwen3.8 27B tramite OpenRouter. Rimane disponibile
-il rilevamento classico continuo dei cerchi.
+se avviato così), [YOLO locale](YOLO.md) oppure Qwen3.8 27B tramite
+OpenRouter. Rimane disponibile il rilevamento classico continuo dei cerchi.
 
 La scatola selezionata deve essere ancora da verificare: una spedizione già
 ricevuta, inviata o con distinta archiviata permette di consultare la prova,
@@ -15,7 +15,7 @@ spedizione usare **Impostazioni → Impostazioni Controllo Visivo**.
    `run-sam2-openvino.bat`. Per Qwen il banco deve trovare
    `OPENROUTER_API_KEY` nell'ambiente di avvio.
 2. Seleziona l'operatore e apri **Impostazioni → Impostazioni Controllo Visivo**.
-   Scegli una videocamera specifica e il modello (SAM 2, Qwen3.8 27B o cerchi classici),
+   Scegli una videocamera specifica e il modello (YOLO, predefinito; SAM 2, Qwen3.8 27B o cerchi classici),
    poi premi **Salva impostazioni controllo visivo**.
 3. L'area salvata oggi nel banco viene riutilizzata per la stessa webcam,
    nello stesso browser e all'indirizzo della WebUI (`127.0.0.1:8770`). Se
@@ -31,6 +31,7 @@ spedizione usare **Impostazioni → Impostazioni Controllo Visivo**.
    premi **Scatta e cerca campioni**. Il ritaglio precede l'eventuale limite
    Full HD; la rettifica usa gli stessi quattro angoli e le misure in cm.
    SAM mostra bordo e contorni, con la finestra di ricerca tratteggiata;
+   YOLO mostra riquadri verdi numerati con classe e confidenza;
    Qwen mostra centri blu numerati e la nota sui campioni e sui riflessi.
 5. **Rianalizza lo stesso scatto** ripete l'analisi della foto con il modello
    configurato. Per cambiare modello torna alle Impostazioni, salva la scelta

@@ -502,7 +502,7 @@
             <button type="button" class="bottone" id="visivo-rianalizza" disabled>Rianalizza lo stesso scatto</button>
             <button type="button" class="bottone bottone--sobrio" id="visivo-vai-impostazioni">Impostazioni Controllo Visivo</button>
           </div>
-          <p id="visivo-profilo">SAM 2 mostra contorni; Qwen mostra punti numerati e invia solo lo scatto richiesto a OpenRouter. Il rilevamento classico conserva il controllo continuo precedente.</p>
+          <p id="visivo-profilo">SAM 2 mostra contorni, YOLO riquadri; Qwen mostra punti numerati e invia solo lo scatto richiesto a OpenRouter. Il rilevamento classico conserva il controllo continuo precedente.</p>
           <p id="visivo-nota-modello" role="status"></p>
           <p id="visivo-blocco" role="status" hidden></p>
           <div class="email-azioni">
@@ -972,10 +972,10 @@
         <div class="modulo__griglia">
           <label class="campo"><span class="etichetta">Videocamera</span><select id="visivo-camera" aria-label="Videocamera del controllo visivo"><option value="">Predefinita</option></select></label>
           <label class="campo"><span class="etichetta">Modello di riconoscimento</span><select id="visivo-modello" aria-label="Modello di ricerca dei campioni">
-            <option value="sam2">SAM 2 — locale</option><option value="qwen">Qwen3.8 27B — OpenRouter</option><option value="cerchi">Rilevamento classico dei cerchi</option>
+            <option value="yolo">YOLO — locale, rapido (predefinito)</option><option value="sam2">SAM 2 — locale</option><option value="qwen">Qwen3.8 27B — OpenRouter</option><option value="cerchi">Rilevamento classico dei cerchi</option>
           </select></label>
         </div>
-        <p class="tenue">SAM 2 elabora sul PC. Qwen è il modello LLM remoto e invia a OpenRouter soltanto lo scatto richiesto, con punti numerati.</p>
+        <p class="tenue">SAM 2 e YOLO elaborano sul PC; YOLO risponde in meno di un secondo ma con i pesi base COCO non è addestrato sui contenitori. Qwen è il modello LLM remoto e invia a OpenRouter soltanto lo scatto richiesto, con punti numerati.</p>
         <div class="modulo__azioni">
           <button type="button" class="bottone" id="visivo-aggiorna-camera">Aggiorna videocamere</button>
           <button type="button" class="bottone bottone--primario" id="visivo-salva">Salva impostazioni controllo visivo</button>

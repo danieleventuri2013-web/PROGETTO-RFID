@@ -97,10 +97,10 @@ class VisualMixin:
         with self._visual_lock:
             s = self._visual_context(dati)
             model = dati.get("modello")
-            if model not in ("sam2", "qwen"):
-                raise ValueError("scegliere SAM 2 oppure Qwen")
+            if model not in vision_models.MODELLI_AI:
+                raise ValueError("scegliere SAM 2, Qwen oppure YOLO")
             if dati.get("profilo") is None:
-                raise ValueError("configurare prima l'area della webcam nel banco SAM 2 / Qwen")
+                raise ValueError("configurare prima l'area della webcam nel banco SAM 2 / Qwen / YOLO")
             raw = vision.immagine(dati.get("immagine_base64"))
             im, correction = vision_models.prepara(raw, dati.get("profilo"))
             self._visual_reset(s)
@@ -230,7 +230,7 @@ class VisualMixin:
                     return {"prova": self.visual_documento(sid)}
                 if azione == "anteprima_configurazione":
                     im = vision.immagine(dati.get("immagine_base64"))
-                    if dati.get("modello") in ("sam2", "qwen"):
+                    if dati.get("modello") in vision_models.MODELLI_AI:
                         im, _ = vision_models.prepara(im, dati.get("profilo"))
                     result = vision.analizza(im, self._visual_config(), area_manuale=dati.get("area_manuale"))
                     return {**{k: v for k, v in result.items() if k != "miniatura"},
@@ -240,7 +240,7 @@ class VisualMixin:
                     cfg = self._visual_config()
                     area = vision.punti(dati.get("area"), quattro=True)
                     im = vision.immagine(dati.get("immagine_base64"))
-                    if dati.get("modello") in ("sam2", "qwen"):
+                    if dati.get("modello") in vision_models.MODELLI_AI:
                         im, _ = vision_models.prepara(im, dati.get("profilo"))
                     result = vision.analizza(im, cfg, area_manuale=area)
                     if result["qualita"] != "leggibile":
@@ -313,7 +313,7 @@ class VisualMixin:
                     if not doc or doc.get("stato") != "concordante":
                         raise ValueError("confermare prima la foto del contenuto")
                     im = vision.immagine(dati.get("immagine_base64"))
-                    if dati.get("modello") in ("sam2", "qwen"):
+                    if dati.get("modello") in vision_models.MODELLI_AI:
                         im, _ = vision_models.prepara(im, dati.get("profilo"))
                     cfg = self._visual_config()
                     result = vision.analizza(im, cfg, area_manuale=dati.get("area_manuale"))

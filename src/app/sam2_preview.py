@@ -1,4 +1,4 @@
-"""Avvia il banco SAM 2 locale; solo foto e clic, senza RFID o database."""
+"""Avvia il banco SAM 2 / YOLO locale; solo foto e clic, senza RFID o database."""
 from __future__ import annotations
 
 import argparse
@@ -20,6 +20,15 @@ def main():
     parser.add_argument("--dispositivo", choices=("GPU", "CPU"), default="GPU", help="dispositivo esplicito per OpenVINO")
     parser.add_argument("--precisione", choices=("f32", "f16"), default="f32", help="precisione OpenVINO; F32 conserva la precisione dei pesi")
     parser.add_argument("--codifica", choices=("torch", "openvino"), default="openvino", help="codifica immagine; torch permette il motore misto CPU/GPU")
+    parser.add_argument("--yolo", default=None,
+                        help="pesi YOLO in models/yolo; predefinito: i pesi addestrati sui contenitori se presenti, altrimenti yolo11n.pt; 'nessuno' per non caricarlo")
+    parser.add_argument("--yolo-dispositivo", choices=("cpu", "intel:gpu", "intel:cpu"), default="cpu",
+                        help="intel:* richiede la cartella *_openvino_model esportata")
+    parser.add_argument("--yolo-confidenza", type=float, default=.25, help="soglia di confidenza YOLO")
+    parser.add_argument("--yolo-classi", nargs="*", default=None, help="classi del modello da contare; vuoto = tutte")
+    parser.add_argument("--yolo-prompt", nargs="*", default=None, help="solo YOLOE: descrizioni testuali degli oggetti")
+    parser.add_argument("--senza-sam", action="store_true", help="avvia solo YOLO/Qwen, senza caricare SAM 2")
+    parser.add_argument("--scarica-yolo", nargs="*", metavar="PESI", help="scarica i pesi base indicati in models/yolo ed esce")
     parser.add_argument("--riusa-token", action="store_true", help="riusa il collegamento locale esistente durante un aggiornamento del servizio")
     args = parser.parse_args()
     if args.download:
@@ -28,7 +37,41 @@ def main():
         snapshot_download(MODEL_ID, local_dir=str(MODEL_DIR), allow_patterns=["*.json", "*.safetensors"])
         print(f"Modello locale pronto: {MODEL_DIR}", flush=True)
         return
-    if args.motore == "openvino":
+    if args.scarica_yolo is not None:
+        from ultralytics import YOLO
+
+        from app.yolo_engine import MODEL_DIR as YOLO_DIR
+        YOLO_DIR.mkdir(parents=True, exist_ok=True)
+        os.chdir(YOLO_DIR)
+        for name in args.scarica_yolo or ["yolo11n.pt", "yolov8n.pt"]:
+            YOLO(name)
+            print(f"Pesi YOLO pronti: {YOLO_DIR / name}", flush=True)
+        return
+    yolo = None
+    if args.yolo != "nessuno":
+        from app.yolo_engine import YoloLocale, pesi_predefiniti
+
+        # I pesi addestrati sui contenitori, se presenti, sostituiscono il COCO base;
+        # il nome dei pesi compare comunque in ogni risultato.
+        if args.yolo is None:
+            args.yolo = pesi_predefiniti()
+
+        print(f"Caricamento YOLO {args.yolo} ({args.yolo_dispositivo})…", flush=True)
+        try:
+            yolo = YoloLocale(args.yolo, dispositivo=args.yolo_dispositivo, confidenza=args.yolo_confidenza,
+                              classi=args.yolo_classi, prompt=args.yolo_prompt)
+        except ImportError:
+            print("YOLO non disponibile: ultralytics non installato (requirements-yolo.txt).", flush=True)
+        except RuntimeError as exc:
+            # Pesi assenti: SAM e Qwen restano utilizzabili, YOLO risponde 503.
+            print(f"YOLO non disponibile: {exc}", flush=True)
+        else:
+            print(f"YOLO pronto: {yolo.description}", flush=True)
+    if args.senza_sam:
+        if yolo is None:
+            parser.error("--senza-sam richiede YOLO caricato")
+        engine = None
+    elif args.motore == "openvino":
         from app.sam2_openvino import Sam2OpenVino
         print(f"Caricamento SAM 2.1 Tiny con OpenVINO {args.dispositivo}…", flush=True)
         engine = Sam2OpenVino(args.dispositivo, precision=args.precisione, encoding=args.codifica)
@@ -48,7 +91,7 @@ def main():
         from app.openrouter_vision import OpenRouterVision
         qwen = OpenRouterVision(reasoning=True, provider="DekaLLM")
         print("Qwen3.8 27B disponibile su scelta esplicita; foto inviate a OpenRouter soltanto allo scatto/rianalisi.", flush=True)
-    server, token = crea_server(args.port, sam2=engine, token=previous_token, qwen=qwen)
+    server, token = crea_server(args.port, sam2=engine, token=previous_token, qwen=qwen, yolo=yolo)
     url = f"http://127.0.0.1:{server.server_port}/?t={token}"
     logs.mkdir(exist_ok=True)
     (logs / "sam2_url.txt").write_text(url, encoding="utf-8")

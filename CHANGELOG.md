@@ -5,6 +5,34 @@ Sezioni: Added / Changed / Fixed / Security / Diagnostics / Documentation.
 
 ## [Unreleased]
 
+### Added — YOLO locale nel riconoscimento (3 ottobre 2026)
+
+- Terzo motore accanto a SAM 2 e Qwen: `src/app/yolo_engine.py` (Ultralytics,
+  YOLOv8/YOLO11, CPU oppure OpenVINO su GPU Intel), endpoint
+  `/api/yolo/automatico` nel servizio della porta 8772, scelta `yolo` nel
+  banco webcam, nel Sigillo e nelle Impostazioni Controllo Visivo. Stesso
+  contratto, stesso ritaglio e prospettiva; riquadri con classe e confidenza.
+- Pesi soltanto locali in `models/yolo/` (esclusa da Git), nessun download
+  durante l'analisi. Risultato incerto con i pesi COCO, senza rilevamenti,
+  sotto 0,5 di confidenza o con un riquadro annidato scartato.
+- `run-yolo.bat` / `--senza-sam`: servizio con il solo YOLO, senza caricare
+  SAM (~30 s a freddo); la rettifica prospettica non richiede più SAM caricato.
+- `tools/confronta_yolo.py` (confronto ripetibile) e `tools/addestra_yolo.py`
+  (dataset dai contorni SAM, leave-one-out, pesi finali, rivalutazione).
+- Sei foto del 2 ottobre: modello base COCO 0/6 (0,07–0,5 s); YOLO11n
+  addestrato, foto esclusa: 5/6, 6/6 con la regola dei riquadri annidati
+  introdotta dopo l'unico errore. Guida `docs/YOLO.md`, test `test_yolo.py`.
+  Validazione: 762/762 runner, 789 pytest, sei suite UI Node.
+- `tools/scene_sintetiche.py`: scene composte in locale dai ritagli SAM dei
+  contenitori, incollati negli spazi liberi delle foto reali (che restano con i
+  loro contenitori ed etichette). `addestra_yolo.py --sintetiche/--riprendi/
+  --robustezza`. Leave-one-out con 100 scene per fold: 6/6; foto escluse in
+  otto orientamenti 47/48 grezzo e 48/48 con la regola (prima 33/48 e 40/48),
+  nessun errore non segnalato. Adottato secondo criteri fissati prima dei
+  risultati: `contenitori-sintetiche-yolo11n.pt` è il nuovo predefinito.
+- YOLO è il motore preselezionato nel banco webcam e nelle Impostazioni
+  Controllo Visivo quando non c'è una scelta salvata; le scelte salvate restano.
+
 Chiusura del 2 ottobre 2026: 754/754 test runner, 781/781 pytest, sei suite
 UI Node e Ruff superati. Aggiornati indice README, piano e memoria di ripresa
 `NOTE_SESSIONE_2026-10-02.md`; collaudo fisico completo del nuovo Sigillo

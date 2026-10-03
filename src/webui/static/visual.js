@@ -18,7 +18,7 @@
       return "Questa spedizione è già archiviata o conclusa. Per cercare i campioni nel Sigillo, apri una nuova scatola o seleziona una spedizione ancora da verificare. Puoi consultare la prova conservata.";
     return null;
   }
-  const modello=()=>["sam2","qwen"].includes(el("modello").value)?el("modello").value:"cerchi";
+  const modello=()=>["sam2","qwen","yolo"].includes(el("modello").value)?el("modello").value:"cerchi";
   function profiloCamera() {
     try {return JSON.parse(localStorage.getItem("rfid.sam2.area.v2."+el("camera").value));} catch(_e) {return null;}
   }
@@ -68,9 +68,9 @@
     if(aiBusy)el("foto").disabled=true;
     const p=profiloCamera();
     const label=Array.from(el("camera").children||[]).find(o=>o.value===el("camera").value)?.textContent||"Predefinita";
-    const nomeModello={sam2:"SAM 2 locale",qwen:"Qwen3.8 27B",cerchi:"Cerchi classici"}[modello()];
+    const nomeModello={sam2:"SAM 2 locale",qwen:"Qwen3.8 27B",yolo:"YOLO locale",cerchi:"Cerchi classici"}[modello()];
     el("profilo").textContent=modello()==="cerchi"?"Rilevamento classico continuo dei cerchi."
-      :p?`${p.modo==="prospettiva"?"Quattro angoli e prospettiva":"Area rettangolare"} salvati per questa webcam. ${modello()==="qwen"?"Solo lo scatto richiesto viene inviato a OpenRouter; verifica i punti numerati.":"SAM 2 locale: verifica i contorni e la finestra di ricerca tratteggiata."}`
+      :p?`${p.modo==="prospettiva"?"Quattro angoli e prospettiva":"Area rettangolare"} salvati per questa webcam. ${{qwen:"Solo lo scatto richiesto viene inviato a OpenRouter; verifica i punti numerati.",yolo:"YOLO locale, in meno di un secondo: verifica ogni riquadro numerato."}[modello()]??"SAM 2 locale: verifica i contorni e la finestra di ricerca tratteggiata."}`
       :"Area da configurare in Impostazioni → Impostazioni Controllo Visivo.";
     el("profilo").textContent=`${label} · ${nomeModello}. ${el("profilo").textContent}`;
     el("area-salvata").textContent=p?`${label}: ${p.modo==="prospettiva"?"quattro angoli e prospettiva":"ritaglio rettangolare"}, sorgente ${p.dimensioni?.join("×")||"—"}. ${p.larghezza_cm&&p.lunghezza_cm?`${p.larghezza_cm}×${p.lunghezza_cm} cm.`:"Dimensioni reali non indicate."}`:`${label}: nessuna area salvata in questo browser.`;
@@ -333,8 +333,8 @@
     if(reuse&&!aiShot) throw new Error("Acquisisci prima uno scatto da confrontare.");
     erroreScatto=null;aiBusy=true;editing="riconoscimento";clearTimeout(timer);controlliAI();
     const controller=new AbortController();request=controller;
-    const timeout=setTimeout(()=>controller.abort(),chosen==="qwen"?130000:310000);
-    note(chosen==="qwen"?"Qwen: invio dello scatto ritagliato a OpenRouter…":"SAM 2: riconoscimento locale dei campioni sullo scatto…");
+    const timeout=setTimeout(()=>controller.abort(),{qwen:130000,yolo:70000}[chosen]??310000);
+    note({qwen:"Qwen: invio dello scatto ritagliato a OpenRouter…",yolo:"YOLO: rilevamento locale dei contenitori sullo scatto…"}[chosen]??"SAM 2: riconoscimento locale dei campioni sullo scatto…");
     try {
       await analysisFlight?.catch(()=>{});if(turn!==generation)return;clearTimeout(timer);
       const candidato=reuse?aiShot:datiScena();
@@ -354,7 +354,7 @@
   bind("riconosci",()=>riconosci(false));bind("rianalizza",()=>riconosci(true));
   bind("configura-modelli",async()=>{
     if(!consoleModels) {const settings=await api("impostazioni");consoleModels=settings.console_modelli;}
-    if(!consoleModels)throw new Error("Avvia prima il banco SAM 2 / Qwen per configurare l'area.");
+    if(!consoleModels)throw new Error("Avvia prima il banco SAM 2 / Qwen / YOLO per configurare l'area.");
     const device=el("camera").value;
     if(!device)throw new Error("Seleziona la videocamera nell'elenco prima di configurare la sua area.");
     stop();configurando=false;

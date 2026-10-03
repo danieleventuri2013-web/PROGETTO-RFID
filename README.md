@@ -30,7 +30,9 @@ espone entrambi).
 | [`docs/SAM2_OPENVINO.md`](docs/SAM2_OPENVINO.md) | SAM su GPU Intel |
 | [`docs/OPENROUTER_VISION.md`](docs/OPENROUTER_VISION.md) | confronto Qwen/SAM sullo stesso scatto |
 | [`docs/RICONOSCIMENTO_SIGILLO.md`](docs/RICONOSCIMENTO_SIGILLO.md) | riconoscimento nel Sigillo e Impostazioni Controllo Visivo |
+| [`docs/YOLO.md`](docs/YOLO.md) | YOLO locale: confronto con SAM/Qwen e addestramento pilota |
 | [`NOTE_SESSIONE_2026-10-02.md`](NOTE_SESSIONE_2026-10-02.md) | chiusura del 2 ottobre, verifiche e ripresa del lavoro |
+| [`NOTE_SESSIONE_2026-10-03.md`](NOTE_SESSIONE_2026-10-03.md) | YOLO locale: confronto, addestramento pilota e ripresa |
 
 ## Collaborazione
 
@@ -140,7 +142,7 @@ legge il risultato), **archivio**, **registro** e **impostazioni**.
 Date e ore in formato italiano.
 
 Il controllo visivo facoltativo del **Sigillo** riconosce i contenitori con
-SAM 2 locale, Qwen3.8 27B o cerchi classici e conserva la prova insieme alla
+SAM 2 locale, YOLO locale, Qwen3.8 27B o cerchi classici e conserva la prova insieme alla
 distinta. Videocamera, modello, area e prospettiva, marcatori e riferimenti
 del coperchio si configurano in **Impostazioni → Impostazioni Controllo Visivo**.
 Lo scatto usa le scelte salvate; l'identificazione dei contenitori resta RFID.

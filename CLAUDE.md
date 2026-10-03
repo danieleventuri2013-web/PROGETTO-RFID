@@ -4,6 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Memoria di lavoro aggiornata
 
+Ultima sessione: [NOTE_SESSIONE_2026-10-03.md](NOTE_SESSIONE_2026-10-03.md) —
+YOLO locale come terzo motore del riconoscimento (`docs/YOLO.md`): il modello
+base COCO non riconosce i contenitori (0/6); addestrato sulle sei foto conta
+la foto esclusa 5/6; con scene sintetiche generate in locale
+(`tools/scene_sintetiche.py`) 6/6 e 47/48 sulle varianti ruotate: è il
+modello predefinito. Prima ancora,
+il 2 ottobre: [NOTE_SESSIONE_2026-10-02.md](NOTE_SESSIONE_2026-10-02.md).
+
 Prima di riprendere, leggere [NOTE_SESSIONE_2026-10-01.md](NOTE_SESSIONE_2026-10-01.md),
 in particolare la ripresa dopo il limite: email con più colli, distinte attese,
 SQLite schema 9. La successiva app `qr-webcam` è ora integrata nella Ricezione:

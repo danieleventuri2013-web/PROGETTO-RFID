@@ -442,6 +442,7 @@ def run_tests() -> int:
         test_transports,
         test_visual,
         test_webui,
+        test_yolo,
     )
 
     for mod in (
@@ -481,6 +482,7 @@ def run_tests() -> int:
         test_giornata,
         test_flusso_continuo,
         test_visual,
+        test_yolo,
     ):
         # Un modulo ripetuto per distrazione gonfierebbe il totale dei test
         # superati senza che nulla segnali l'errore.

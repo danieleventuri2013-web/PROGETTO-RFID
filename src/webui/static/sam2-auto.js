@@ -14,7 +14,7 @@
     for(const id of ["descrizione-modelli","conteggio","risultati","legenda"])el(id).hidden=true;
   }
   const endpoint=params.get("port")==="8772"?"http://127.0.0.1:8772/api/sam2/automatico":"/api/sam2/automatico";
-  try{el("motore").value=(params.get("motore")??localStorage.getItem("rfid.visione.motore.v1"))==="qwen"?"qwen":"sam2";}catch(_e){el("motore").value="sam2";}
+  try{const wanted=params.get("motore")??localStorage.getItem("rfid.visione.motore.v1");el("motore").value=["qwen","sam2"].includes(wanted)?wanted:"yolo";}catch(_e){el("motore").value="yolo";}
   el("manuale").href="sam2.html"+location.search;
   let stream=null, opening=false, generation=0, revision=0, raf=null, busy=false, request=null, deviceMissing=false;
   let profile=null, draft=null, corners=[], dragging=null, configuring=false, frozen=false, result=null, started=0;
@@ -155,8 +155,8 @@
     if(params.get("impostazioni")==="1"||busy||configuring||(reuse?(!frozen||!snapshot):(!stream||!profile||frozen||video.readyState<2)))return;
     if(!reuse&&!compatible(profile)){profile=null;describe();update();note("L’inquadratura è cambiata: seleziona di nuovo l’area.");return;}
     if(!reuse){crop(video);snapshot=null;snapshotCorrection=null;}let photo=reuse?snapshot:null;
-    const mode=el("motore").value==="qwen"?"qwen":"sam2";
-    const selectedEndpoint=mode==="qwen"?endpoint.replace("/sam2/automatico","/qwen/automatico"):endpoint;
+    const mode=["qwen","yolo"].includes(el("motore").value)?el("motore").value:"sam2";
+    const selectedEndpoint=mode==="sam2"?endpoint:endpoint.replace("/sam2/automatico",`/${mode}/automatico`);
     const perspective=!reuse&&profile.modo==="prospettiva";
     let correctedPoints=null;
     if(perspective){
@@ -172,8 +172,8 @@
     if(!reuse)for(const q of [.96,.90,.82,.74]){photo=source.toDataURL("image/jpeg",q).split(",")[1];if(photo.length<=2800000)break;}
     if(photo.length>2800000){note("Foto troppo grande: riduci l’area o la risoluzione della webcam.");return;}
     frozen=true;invalidate();render();busy=true;started=Date.now();const rev=revision,controller=new AbortController();request=controller;update();
-    const waiting=()=>note(`${mode==="qwen"?"Qwen: invio dello scatto a OpenRouter e conteggio visuale":"SAM 2: analisi locale del bordo e dei campioni"}. Trascorsi ${Math.round((Date.now()-started)/1000)} s.`);
-    waiting();const ticker=setInterval(()=>{if(rev===revision)waiting();},1000),timeout=setTimeout(()=>controller.abort(),mode==="qwen"?120000:300000);
+    const waiting=()=>note(`${{qwen:"Qwen: invio dello scatto a OpenRouter e conteggio visuale",yolo:"YOLO: rilevamento locale dei contenitori"}[mode]??"SAM 2: analisi locale del bordo e dei campioni"}. Trascorsi ${Math.round((Date.now()-started)/1000)} s.`);
+    waiting();const ticker=setInterval(()=>{if(rev===revision)waiting();},1000),timeout=setTimeout(()=>controller.abort(),{qwen:120000,yolo:60000}[mode]??300000);
     try{
       let correction=reuse?snapshotCorrection:null;
       if(perspective){

@@ -67,6 +67,15 @@ function bench(storage=new Map(),search="?t=token&port=8772"){
   assert.equal(quad.calls[2].data.immagine_base64,"RECTIFIED");
   assert.equal(quad.draws.slice(oldDraws).filter(d=>d.args[0]===quad.el("video")).length,0,"nessun nuovo scatto nella rianalisi");
   const remembered=bench(quad.storage);await tick();assert.equal(remembered.el("motore").value,"qwen");
+  // YOLO: terzo motore sulla stessa foto rettificata, endpoint dedicato.
+  quad.el("motore").value="yolo";quad.el("motore").events.change();
+  await quad.el("riconta").events.click();
+  assert.equal(quad.calls.length,4);
+  assert(quad.calls[3].url.endsWith("/yolo/automatico"),quad.calls[3].url);
+  assert.equal(quad.calls[3].data.immagine_base64,"RECTIFIED","YOLO analizza gli stessi byte di SAM e Qwen");
+  assert.equal(bench(quad.storage).el("motore").value,"yolo","la scelta YOLO è ricordata");
+  assert.equal(bench(new Map()).el("motore").value,"yolo","senza scelta salvata il motore predefinito è YOLO");
+  assert.equal(bench(new Map([["rfid.visione.motore.v1","sam2"]])).el("motore").value,"sam2","una scelta salvata resta valida");
   quad.el("nuova").events.click();assert.equal(quad.el("riconta").disabled,true,"la nuova anteprima invalida il vecchio scatto");
   const noDims=bench();await tick();await noDims.el("avvia").events.click();noDims.el("configura").events.click();noDims.rectangle();noDims.el("larghezza").value="60";noDims.el("salva").events.click();assert.equal(noDims.storage.size,0,"rifiuta dimensioni incomplete");
   const late=bench();await tick();let permission;late.media=new Promise(r=>{permission=r;});const opening=late.el("avvia").events.click();late.el("ferma").events.click();permission(late.stream);await opening;assert.equal(late.stops,1);

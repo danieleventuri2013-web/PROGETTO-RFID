@@ -203,6 +203,16 @@ function bench() {
   assert.equal(compared.modello,"sam2");
   assert.equal(compared.immagine_base64,shot.immagine_base64);
   assert.deepEqual(compared.profilo,shot.profilo);
+  ai.$("#visivo-modello").value="yolo";
+  await ai.$("#visivo-modello").events.change();await tick();
+  assert.equal(ai.$("#visivo-rianalizza").disabled,false,"YOLO è un motore del servizio, non i cerchi classici");
+  await ai.click("rianalizza");await tick();
+  const yolo=ai.payloads.filter(p=>p.azione==="analizza_modello").at(-1);
+  assert.equal(yolo.modello,"yolo");
+  assert.equal(yolo.immagine_base64,shot.immagine_base64,"YOLO confronta la stessa foto");
+  ai.$("#visivo-modello").value="sam2";
+  await ai.$("#visivo-modello").events.change();await tick();
+  await ai.click("rianalizza");await tick();
   ai.stable=true;ai.cycle();await tick();assert.equal(ai.reads,1);
   const lateAI=bench();lateAI.$("#visivo-modello").value="qwen";
   lateAI.storage.set("rfid.sam2.area.v2.cam1",JSON.stringify(profile));
