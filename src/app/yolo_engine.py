@@ -20,9 +20,11 @@ from pathlib import Path
 MODEL_DIR = Path(__file__).resolve().parents[2] / "models" / "yolo"
 PESI_PREDEFINITI = "yolo11n.pt"
 # Prodotti da tools/addestra_yolo.py --finale: una sola classe, «contenitore».
-# In ordine di preferenza: con scene sintetiche (leave-one-out 6/6, 48/48 nelle
-# varianti ruotate) e poi quello delle sole foto reali (5/6, 40/48).
-PESI_ADDESTRATI = ("contenitori-sintetiche-yolo11n.pt", "contenitori-yolo11n.pt")
+# In ordine di preferenza: con le foto del 5 ottobre (scatola vuota, 16
+# contenitori, ribaltati; 10/24 sulle foto di prova mai viste contro 4/24),
+# con scene sintetiche (leave-one-out 6/6, 48/48 nelle varianti ruotate) e poi
+# quello delle sole foto reali (5/6, 40/48).
+PESI_ADDESTRATI = ("contenitori-20261005-yolo11n.pt", "contenitori-sintetiche-yolo11n.pt", "contenitori-yolo11n.pt")
 
 
 def pesi_predefiniti(model_dir=MODEL_DIR):

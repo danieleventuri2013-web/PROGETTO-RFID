@@ -19,7 +19,15 @@ del fondo al loro posto lasciava dischi grigi dai bordi netti (ombre dei
 barattoli inclinati, griglia e pareti della borsa) che il modello avrebbe
 imparato come se fossero reali. Ogni pixel di fondo resta quindi una
 fotografia; per scene con pochi contenitori servono foto della scatola vuota
-(``--sfondi-vuoti``).
+(``--sfondi-vuoti``, oppure una foto con zero contenitori fra le fonti). Su
+una scatola vuota non c'è un contenitore vero a delimitare il fondo, e la
+maschera del foglio copre anche le pareti chiare: la zona in cui incollare va
+data a mano (``--zona-vuoti``), altrimenti la foto vuota non fa da sfondo.
+
+Le foto possono avere risoluzioni diverse (800 px le prime, 1400 px quelle
+del 5 ottobre) ma inquadrano tutte la borsa da bordo a bordo: ogni ritaglio
+è riscalato sulla larghezza dello sfondo, così un flaconcino resta un
+flaconcino anche incollato su una foto più grande.
 
 Il generatore non conosce le foto di prova: chi lo chiama passa solo le foto
 di addestramento (vedi ``tools/addestra_yolo.py --sintetiche``).
@@ -76,7 +84,7 @@ def carica_foto(photo, risultato, aggiunte=()):
 
 
 def ritagli(image, masks):
-    """Ritagli BGRA dei contenitori: alpha sfumato di un paio di pixel."""
+    """Ritagli BGRA dei contenitori, con la larghezza della foto d'origine: alpha sfumato di un paio di pixel."""
     patches = []
     for mask in masks:
         ys, xs = np.nonzero(mask)
@@ -84,7 +92,7 @@ def ritagli(image, masks):
         x1, y1 = max(0, xs.min()-pad), max(0, ys.min()-pad)
         x2, y2 = min(image.shape[1], xs.max()+pad+1), min(image.shape[0], ys.max()+pad+1)
         alpha = cv2.GaussianBlur(cv2.dilate(mask[y1:y2, x1:x2], np.ones((3, 3), np.uint8)), (5, 5), 0)
-        patches.append(np.dstack([image[y1:y2, x1:x2], alpha]))
+        patches.append((np.dstack([image[y1:y2, x1:x2], alpha]), image.shape[1]))
     return patches
 
 
@@ -117,9 +125,11 @@ def _sovrapposti(box, boxes, limite=.04):
 def componi(background, rng, extra):
     """Una scena: i contenitori veri dello sfondo più fino a ``extra`` ritagli incollati.
 
-    ``background`` = (immagine BGR, maschera del fondo, riquadri veri, ritagli).
+    ``background`` = (immagine BGR, maschera del fondo, riquadri veri, ritagli, zona).
+    ``zona`` (frazioni x1, y1, x2, y2 della foto) vale per gli sfondi vuoti; con
+    contenitori veri la zona è quella che occupano, allargata di ``MARGINE_ZONA``.
     """
-    image, floor, real, patches = background
+    image, floor, real, patches, zone = background
     scene = image.astype(np.float32)*rng.uniform(.88, 1.12)
     height, width = image.shape[:2]
     if real:
@@ -128,7 +138,7 @@ def componi(background, rng, extra):
         zx2 = min(width, max(b[2] for b in real)+MARGINE_ZONA*width)
         zy2 = min(height, max(b[3] for b in real)+MARGINE_ZONA*height)
     else:
-        zx1, zy1, zx2, zy2 = 0, 0, width, height
+        zx1, zy1, zx2, zy2 = zone[0]*width, zone[1]*height, zone[2]*width, zone[3]*height
     blocked = []
     for x1, y1, x2, y2 in real:
         mx, my = (x2-x1)*MARGINE_REALI, (y2-y1)*MARGINE_REALI
@@ -137,10 +147,10 @@ def componi(background, rng, extra):
     added = attempts = 0
     while added < extra and attempts < extra*60:
         attempts += 1
-        patch = patches[rng.integers(len(patches))]
+        patch, source_width = patches[rng.integers(len(patches))]
         if rng.random() < .5:
             patch = patch[:, ::-1]
-        patch = _ruota(patch, rng.uniform(0, 360), rng.uniform(.85, 1.15))
+        patch = _ruota(patch, rng.uniform(0, 360), rng.uniform(.85, 1.15)*width/source_width)
         alpha = patch[:, :, 3].astype(np.float32)/255
         ph, pw = patch.shape[:2]
         if pw >= width or ph >= height:
@@ -169,19 +179,25 @@ def componi(background, rng, extra):
     return np.clip(scene+noise, 0, 255).astype(np.uint8), boxes
 
 
-def prepara(fonti, sfondi_vuoti=()):
-    """``fonti``: (foto, risultato.json, aggiunte). Sfondi con i loro riquadri veri."""
+def prepara(fonti, sfondi_vuoti=(), zona_vuoti=None):
+    """``fonti``: (foto, risultato.json, aggiunte). Sfondi con i loro riquadri veri.
+
+    Una fonte senza contenitori è uno sfondo vuoto: senza ``zona_vuoti`` non
+    si usa come sfondo (i ritagli finirebbero sulle pareti).
+    """
     loaded = [carica_foto(*fonte) for fonte in fonti]
     patches = [patch for image, masks, _boxes in loaded for patch in ritagli(image, masks)]
-    backgrounds = [(image, fondo(image), boxes, patches) for image, _masks, boxes in loaded]
-    backgrounds += [(_rgb(path), fondo(_rgb(path)), [], patches) for path in sfondi_vuoti]
+    empty = [image for image, _masks, boxes in loaded if not boxes] + [_rgb(path) for path in sfondi_vuoti]
+    backgrounds = [(image, fondo(image), boxes, patches, None) for image, _masks, boxes in loaded if boxes]
+    if zona_vuoti is not None:
+        backgrounds += [(image, fondo(image), [], patches, tuple(zona_vuoti)) for image in empty]
     return patches, backgrounds
 
 
-def genera(fonti, destination, quante, *, seed=0, massimo=18, sfondi_vuoti=(), split=""):
+def genera(fonti, destination, quante, *, seed=0, massimo=18, sfondi_vuoti=(), zona_vuoti=None, split=""):
     """Scrive ``quante`` scene con le etichette YOLO (classe 0) in images/<split> e labels/<split>."""
     rng = np.random.default_rng(seed)
-    patches, backgrounds = prepara(fonti, sfondi_vuoti)
+    patches, backgrounds = prepara(fonti, sfondi_vuoti, zona_vuoti)
     images, labels = Path(destination)/"images"/split, Path(destination)/"labels"/split
     images.mkdir(parents=True, exist_ok=True)
     labels.mkdir(parents=True, exist_ok=True)
@@ -227,13 +243,17 @@ def main():
     parser.add_argument("--sam", type=Path, required=True, help="cartella con <foto>/risultato.json")
     parser.add_argument("--aggiunte", type=Path, help="JSON {nome_foto: [[x1,y1,x2,y2] px]} dei contenitori persi da SAM")
     parser.add_argument("--sfondi-vuoti", type=Path, nargs="*", default=[], help="foto reali della scatola vuota")
+    parser.add_argument("--zona-vuoti", type=float, nargs=4, metavar=("X1", "Y1", "X2", "Y2"),
+                        help="fondo della scatola vuota, in frazioni della foto: dove incollare i ritagli")
+    parser.add_argument("--massimo", type=int, default=18, help="contenitori al massimo per scena")
     parser.add_argument("--quante", type=int, default=200)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     extra = json.loads(args.aggiunte.read_text(encoding="utf-8")) if args.aggiunte else {}
     fonti = [(p, args.sam/p.stem/"risultato.json", extra.get(p.name, [])) for p in args.foto]
-    summary = genera(fonti, args.output, args.quante, seed=args.seed, sfondi_vuoti=args.sfondi_vuoti)
+    summary = genera(fonti, args.output, args.quante, seed=args.seed, massimo=args.massimo,
+                     sfondi_vuoti=args.sfondi_vuoti, zona_vuoti=args.zona_vuoti)
     anteprima(args.output, args.output/"anteprima.jpg")
     print(json.dumps(summary, ensure_ascii=False), flush=True)
 

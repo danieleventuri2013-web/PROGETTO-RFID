@@ -85,6 +85,8 @@ def test_pesi_predefiniti_preferiscono_scene_sintetiche():
     assert pesi_predefiniti(folder) == "contenitori-yolo11n.pt"
     (folder/"contenitori-sintetiche-yolo11n.pt").write_bytes(b"x")
     assert pesi_predefiniti(folder) == "contenitori-sintetiche-yolo11n.pt"
+    (folder/"contenitori-20261005-yolo11n.pt").write_bytes(b"x")
+    assert pesi_predefiniti(folder) == "contenitori-20261005-yolo11n.pt"
 
 
 def test_pesi_solo_locali_e_parametri_validati():

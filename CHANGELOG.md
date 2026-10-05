@@ -5,6 +5,21 @@ Sezioni: Added / Changed / Fixed / Security / Diagnostics / Documentation.
 
 ## [Unreleased]
 
+### Changed — YOLO riaddestrato con le foto del 5 ottobre 2026
+
+- Nuovo predefinito `contenitori-20261005-yolo11n.pt`: continua dal modello
+  con scene sintetiche, aggiungendo scatola vuota (esempio negativo e sfondo)
+  e due foto da 16 contenitori. Su tre foto mai viste (15, 18, 16 con
+  flaconi coricati) in otto orientamenti: 10/24 grezzo, 8/24 con la regola
+  dei riquadri annidati, 0 errori non segnalati; prima 4/24 con 3 non
+  segnalati. Con molti flaconi coricati conta ancora troppo (sempre incerto).
+- `tools/etichette_yolo_sam.py`: etichette da proposta YOLO + correzioni a
+  mano + contorni SAM a riquadro, controllate sul numero atteso.
+- `scene_sintetiche.py`: ritagli riscalati sulla larghezza dello sfondo
+  (foto a 800 e 1400 px), sfondi vuoti con `--zona-vuoti`, `--massimo`.
+- `addestra_yolo.py --prova/--attesi-prova/--pesi-prova`: insieme di prova
+  separato in otto orientamenti, modello vecchio e nuovo sulle stesse foto.
+
 ### Added — YOLO locale nel riconoscimento (3 ottobre 2026)
 
 - Terzo motore accanto a SAM 2 e Qwen: `src/app/yolo_engine.py` (Ultralytics,

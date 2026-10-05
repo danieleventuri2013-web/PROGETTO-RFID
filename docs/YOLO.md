@@ -17,8 +17,16 @@ scene sintetiche composte in locale dalle stesse cinque foto: **6 su 6**, e
 **47 su 48** anche con le foto escluse ruotate e capovolte (48/48 con la
 regola dei riquadri annidati), contro 33/48 senza scene sintetiche. Circa
 0,15–0,2 s per foto su CPU e 0,11–0,14 s sulla GPU Intel, contro 40 s di
-SAM 2 e 3,4 s di Qwen. `contenitori-sintetiche-yolo11n.pt` è il predefinito
-del servizio.
+SAM 2 e 3,4 s di Qwen.
+
+Le foto del 5 ottobre (15–18 contenitori, alcuni coricati) hanno mostrato il
+limite: su tre foto mai viste, in otto orientamenti, quel modello contava
+giusto **4 volte su 24**, con 3 errori non segnalati. Riaddestrato con la
+scatola vuota e due foto da 16: **10/24** (8/24 con la regola dei riquadri
+annidati, quella del servizio), nessun errore non segnalato, sempre giusto
+con 18 contenitori; resta inaffidabile con molti flaconi coricati (sezione
+[Foto del 5 ottobre](#foto-del-5-ottobre)). `contenitori-20261005-yolo11n.pt`
+è il predefinito del servizio.
 
 ## Installazione
 
@@ -39,6 +47,35 @@ un download silenzioso.
 
 ## Avvio
 
+Nel banco webcam puoi scegliere **Risoluzione**: massima disponibile, 4K,
+5 MP (4:3), QHD, 1600×1200, Full HD, HD o 640×480. La scelta resta salvata
+per videocamera nel browser. Il cambio riapre la webcam e richiede un nuovo
+scatto; un formato diverso richiede di selezionare nuovamente l'area.
+**Webcam effettiva** mostra i pixel realmente forniti, anche quando inferiori
+alla richiesta. Sorgenti oltre Full HD vengono ritagliate prima della
+riduzione al limite dell'analisi: un ritaglio piccolo può conservare più dettaglio.
+Più pixel non correggono sfocatura o illuminazione insufficiente.
+**Aggiorna videocamere** rinnova l'elenco senza aprire la camera. L'elenco si
+aggiorna anche al collegamento o scollegamento USB; una camera selezionata
+assente resta indicata come non disponibile, senza sostituirla automaticamente.
+
+**Regolazioni immagine** mostra i controlli esposti dalla webcam al browser:
+luminosità, contrasto, saturazione, nitidezza, esposizione, fuoco, temperatura
+colore e ISO, dove disponibili. **Automatico webcam** abilita le modalità
+automatiche supportate per esposizione, fuoco e bilanciamento del bianco.
+I valori effettivi sono riletti dopo la richiesta: un controllo ignorato dal
+driver viene segnalato. **Ripristina valori iniziali webcam** torna ai valori
+rilevati all'attivazione, non alle impostazioni di fabbrica.
+
+La **Correzione software della foto** funziona anche senza controlli del
+dispositivo: luminosità, contrasto e saturazione, oppure luminosità/contrasto
+automatici con variazioni moderate stimate dal ritaglio. Modifica gli stessi
+pixel mostrati nell'anteprima e inviati a YOLO/SAM/Qwen, una sola volta prima
+della rettifica. Non è una regolazione del sensore. I controlli sono bloccati
+durante l'analisi e sulla foto congelata: per modificarli premi **Torna
+all'anteprima** e acquisisci un nuovo scatto. Cambiare webcam azzera la
+correzione software; cambiare risoluzione sulla stessa camera la conserva.
+
 `run-sam2-openvino.bat` carica anche YOLO. `run-yolo.bat` avvia soltanto
 YOLO (`--senza-sam`), senza caricare e compilare SAM: pronto in circa 30 s
 a freddo (in gran parte l'import di PyTorch), con lo stesso collegamento
@@ -47,7 +84,7 @@ prima il servizio già attivo. Opzioni di `sam2_preview.py`:
 
 | Opzione | Effetto |
 | --- | --- |
-| `--yolo PESI` | pesi in `models/yolo`; predefinito il primo presente fra `contenitori-sintetiche-yolo11n.pt` e `contenitori-yolo11n.pt`, altrimenti `yolo11n.pt`; `nessuno` disattiva YOLO |
+| `--yolo PESI` | pesi in `models/yolo`; predefinito il primo presente fra `contenitori-20261005-yolo11n.pt`, `contenitori-sintetiche-yolo11n.pt` e `contenitori-yolo11n.pt`, altrimenti `yolo11n.pt`; `nessuno` disattiva YOLO |
 | `--yolo-dispositivo cpu\|intel:gpu\|intel:cpu` | `intel:*` usa OpenVINO e richiede la cartella `*_openvino_model` esportata |
 | `--yolo-confidenza 0.25` | soglia sotto cui un riquadro non è contato |
 | `--yolo-classi cup bowl` | conta solo queste classi del modello; vuoto = tutte |
@@ -180,9 +217,9 @@ addestramento sulla stessa CPU) le prime chiamate dalla WebUI hanno richiesto
 ventola i tempi CPU variano con il carico e il riscaldamento: la GPU Intel è
 la scelta più stabile.
 
-Per usare la GPU Intel: `run-yolo.bat --yolo contenitori-sintetiche-yolo11n_openvino_model
+Per usare la GPU Intel: `run-yolo.bat --yolo contenitori-20261005-yolo11n_openvino_model
 --yolo-dispositivo intel:gpu` (la cartella si crea con `tools/confronta_yolo.py
---dispositivo intel:gpu --pesi contenitori-sintetiche-yolo11n.pt`).
+--dispositivo intel:gpu --pesi contenitori-20261005-yolo11n.pt`; già creata).
 
 ## Scene sintetiche
 
@@ -264,6 +301,95 @@ per la velocità e per l'assenza di regressioni evidenti.
 Parte del miglioramento può venire dal numero maggiore di aggiornamenti, non
 solo dalla varietà delle scene: un addestramento di controllo con le sole
 foto reali e la stessa durata non è stato eseguito.
+
+## Foto del 5 ottobre
+
+Sei foto nuove a 1400 px (le prime erano a 800), stessa borsa, più
+contenitori e alcuni coricati. Divise **prima** di addestrare:
+
+| Uso | Foto | Contenitori |
+| --- | --- | --- |
+| addestramento | `contenitore-vuoto` | 0 (esempio negativo e sfondo delle scene) |
+| addestramento | `contenitore-n16`, `contenitore-n16-ribaltato` | 16, 16 |
+| prova, mai viste | `contenitori-n15`, `contenitori-n18`, `contenitori-n16-ribaltato-2` | 15, 18, 16 |
+
+`contenitori-n15.png` è uno screenshot di un risultato precedente: ha già
+disegnati riquadri verdi e numeri su 13 contenitori. È rimasta nella prova
+per tutti i modelli, ma la misura su quella foto è falsata; va sostituita
+con lo scatto originale.
+
+**Etichette** con `tools/etichette_yolo_sam.py`: il modello in uso propone i
+riquadri, si correggono a mano i soli errori (`--aggiunte` in pixel,
+`--togli` per numero), SAM 2 ricava il contorno di ogni riquadro con un
+prompt a riquadro. Scrive `<foto>/risultato.json` nel formato del conteggio
+SAM, quindi `addestra_yolo.py --sam` lo legge senza modifiche, e si rifiuta di
+finire se le etichette non sono quante attese. Su `contenitore-n16` il modello
+ne proponeva 14: i due flaconcini blu sovrapposti in basso a destra sono
+aggiunti a mano. Controllo a occhio su `etichette.png`.
+
+**Scene sintetiche**, due modifiche a `tools/scene_sintetiche.py`:
+
+- ogni ritaglio è riscalato sulla larghezza dello sfondo: tutte le foto
+  inquadrano la borsa da bordo a bordo, e senza questo un flaconcino da una
+  foto a 800 px diventerebbe minuscolo su uno sfondo a 1400;
+- una foto senza contenitori è uno sfondo vuoto, ma la maschera del foglio
+  copre anche le pareti chiare: la zona in cui incollare va data a mano
+  (`--zona-vuoti 0.071 0.19 0.782 0.774`, il fondo della scatola). Senza zona
+  la foto vuota resta esempio negativo ma non fa da sfondo.
+
+**Addestramento**: continua da `contenitori-sintetiche-yolo11n.pt`
+(`--base`) su tutte e nove le foto reali più 200 scene (fino a 20
+contenitori, `--massimo 20`), 12 epoche, 46 minuti su CPU.
+
+```powershell
+$d = "C:/Users/Daniele/Pictures/RFID"; $o = "demo-output/yolo-20261005"
+./.venv-openvino/Scripts/python.exe tools/addestra_yolo.py `
+  $d/esempio1.png ... $d/esempio6.png $d/contenitore-vuoto.png $d/contenitore-n16.png $d/contenitore-n16-ribaltato.png `
+  --sam $o/sam --aggiunte $o/aggiunte.json --attesi 8 8 8 8 6 5 0 16 16 `
+  --base contenitori-sintetiche-yolo11n.pt --sintetiche 200 --massimo 20 `
+  --zona-vuoti .071 .19 .782 .774 --epoche 12 --finale contenitori-20261005-yolo11n.pt `
+  --prova $d/contenitori-n15.png $d/contenitori-n18.png $d/contenitori-n16-ribaltato-2.png `
+  --attesi-prova 15 18 16 --output $o/addestramento
+```
+
+`--prova` conta le foto di prova negli otto orientamenti con i pesi appena
+addestrati e con quelli di `--pesi-prova`; rifiuta una foto che sia anche
+di addestramento. Senza `--finale` valuta soltanto (`prova-prima/prova.json`).
+
+Criterio fissato prima del risultato: più di 5/24 conteggi giusti (il
+migliore fra i modelli esistenti), non più errori non segnalati del
+predefinito di allora, nessuna regressione sulle foto di addestramento.
+
+Conteggi grezzi negli otto orientamenti, «?» = risultato marcato incerto:
+
+| Modello | n15 (15) | n18 (18) | n16 ribaltati (16) | Giusti | Errori non segnalati |
+| --- | --- | --- | --- | --- | --- |
+| solo foto reali | 12–14, tutti ? | 17–19, 4 giusti, tutti ? | 12–16, 1 giusto, tutti ? | 5/24 | 0 |
+| scene sintetiche (predefinito fino al 3/10) | 7–10, tutti ? | 16–18, 4 giusti | 12–15, 3 non segnalati | 4/24 | 3 |
+| **5 ottobre** | 11–15, 2 giusti, tutti ? | **18 in tutti e otto**, sicuri | 19–25, tutti ? | **10/24** | **0** |
+| 5 ottobre, regola annidati (servizio) | 10–14, tutti ? | 18 in tutti e otto | 17–19, tutti ? | 8/24 | 0 |
+
+Adottato secondo il criterio. Sulle nove foto di addestramento conta giusto
+9/9 (0,14–0,19 s su CPU); su GPU Intel OpenVINO 0,12 s.
+
+Cosa dicono gli errori:
+
+- **Flaconi coricati**: c'era un solo esempio nell'addestramento, nella
+  prova ce ne sono sei. Il modello ora li vede, ma spesso li spezza in due
+  (coperchio e corpo): da troppo pochi si è passati a troppi. Servono foto
+  con molti contenitori coricati.
+- **La regola dei riquadri annidati** toglie i doppioni sui coricati
+  (19–25 → 17–19) ma in `contenitori-n15` toglie contenitori veri: un
+  flaconcino davanti a un barattolo grande, nell'angolo affollato, viene
+  scambiato per un riquadro annidato. È la prudenza già prevista quando la
+  regola fu introdotta; ogni scarto rende il risultato incerto, quindi non
+  produce errori silenziosi. La soglia non è stata ritoccata: tre foto non
+  bastano a tararla.
+- Gli errori sono tutti segnalati come incerti: l'operatore viene avvisato,
+  ma su scene affollate l'avviso arriva quasi sempre.
+
+Report: `demo-output/yolo-20261005/` (`prima/`, `prova-prima/prova.json`,
+`addestramento/prova.json` con le immagini annotate, `regressione/`).
 
 ## Limiti e passo successivo
 

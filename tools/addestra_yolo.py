@@ -16,6 +16,15 @@ quella misurata sulle stesse foto dell'addestramento.
 addestramento di quel fold: la foto esclusa resta mai vista. ``--cartella``
 separa i pesi di prove diverse; ``--robustezza`` conta la foto esclusa di
 ogni fold anche ruotata e capovolta (8 varianti) per le cartelle indicate.
+
+Una foto con atteso 0 (scatola vuota) entra come esempio negativo e, con
+``--zona-vuoti``, come sfondo delle scene sintetiche. ``--base`` può essere un
+modello già addestrato: l'addestramento continua da lì, su tutte le foto.
+
+``--prova`` conta foto **mai usate nell'addestramento**, negli otto
+orientamenti, con i pesi di ``--pesi-prova`` e con quelli appena addestrati
+da ``--finale``: lo stesso insieme di prova per il modello vecchio e il nuovo.
+Senza ``--loo`` e ``--finale`` lo script valuta soltanto.
 """
 from __future__ import annotations
 
@@ -106,6 +115,56 @@ def addestra(yaml, base, epochs, project, name, riprendi=False):
     return weights
 
 
+def conta_varianti(weights, photo, expected, confidenza):
+    """Una foto negli otto orientamenti, senza e con la regola dei riquadri annidati."""
+    engines = {"annidati": YoloLocale(weights, confidenza=confidenza),
+               "grezzo": YoloLocale(weights, confidenza=confidenza, contenimento=None)}
+    original = Image.open(photo).convert("RGB")
+    rows = []
+    for name, ops in VARIANTI.items():
+        image = original
+        for op in ops:
+            image = image.transpose(op)
+        row = {"foto": Path(photo).name, "variante": name, "atteso": expected}
+        for label, engine in engines.items():
+            result = engine.analizza_automatico(image)
+            row[label] = {"conteggio": result["conteggio"], "incerto": result["incerto"],
+                          "confidenza_minima": min((o["confidenza"] for o in result["oggetti"]), default=None)}
+            if label == "annidati" and name == "originale":
+                row["_risultato"] = (original, result)
+        rows.append(row)
+    return rows
+
+
+def sintesi_varianti(rows):
+    return {label: {"corrette": sum(r[label]["conteggio"] == r["atteso"] for r in rows), "prove": len(rows),
+                    "errore_assoluto_medio": round(statistics.mean(abs(r[label]["conteggio"]-r["atteso"]) for r in rows), 3),
+                    "errate_non_segnalate": sum(r[label]["conteggio"] != r["atteso"] and not r[label]["incerto"] for r in rows),
+                    "corrette_marcate_incerte": sum(r[label]["conteggio"] == r["atteso"] and r[label]["incerto"] for r in rows)}
+            for label in ("grezzo", "annidati")}
+
+
+def prova(pesi, foto, attesi, output, confidenza):
+    """Insieme di prova separato: ogni modello sulle stesse foto mai viste, otto orientamenti."""
+    report = {"confidenza": confidenza, "varianti": list(VARIANTI), "foto": [p.name for p in foto],
+              "attesi": attesi, "modelli": {}}
+    for weights in pesi:
+        name = Path(weights).stem
+        rows = []
+        for photo, expected in zip(foto, attesi, strict=True):
+            for row in conta_varianti(weights, photo, expected, confidenza):
+                image, result = row.pop("_risultato", (None, None))
+                if result is not None:
+                    annota(image, result, output/f"prova-{name}-{photo.stem}.png")
+                rows.append(row)
+        per_photo = {p.name: {r["variante"]: r["grezzo"]["conteggio"] for r in rows if r["foto"] == p.name} for p in foto}
+        report["modelli"][name] = {"pesi": str(weights), "sintesi": sintesi_varianti(rows), "conteggi_grezzi": per_photo,
+                                   "prove": rows}
+        print(name, json.dumps(report["modelli"][name]["sintesi"], ensure_ascii=False), flush=True)
+        print(name, json.dumps(per_photo, ensure_ascii=False), flush=True)
+    (output/"prova.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def robustezza(labelled, attesi, output, confidenza, cartelle):
     """Foto esclusa di ogni fold in 8 orientamenti, per ciascuna cartella di pesi LOO."""
     report = {"confidenza": confidenza, "varianti": list(VARIANTI), "cartelle": {}}
@@ -113,24 +172,11 @@ def robustezza(labelled, attesi, output, confidenza, cartelle):
         rows = []
         for (photo, _boxes), expected in zip(labelled, attesi, strict=True):
             weights = output/folder/photo.stem/"weights"/"last.pt"
-            engines = {"annidati": YoloLocale(weights, confidenza=confidenza),
-                       "grezzo": YoloLocale(weights, confidenza=confidenza, contenimento=None)}
-            original = Image.open(photo).convert("RGB")
-            for name, ops in VARIANTI.items():
-                image = original
-                for op in ops:
-                    image = image.transpose(op)
-                row = {"foto_esclusa": photo.name, "variante": name, "atteso": expected}
-                for label, engine in engines.items():
-                    result = engine.analizza_automatico(image)
-                    row[label] = {"conteggio": result["conteggio"], "incerto": result["incerto"],
-                                  "confidenza_minima": min((o["confidenza"] for o in result["oggetti"]), default=None)}
+            for row in conta_varianti(weights, photo, expected, confidenza):
+                row.pop("_risultato", None)
+                row["foto_esclusa"] = row.pop("foto")
                 rows.append(row)
-        summary = {label: {"corrette": sum(r[label]["conteggio"] == r["atteso"] for r in rows), "prove": len(rows),
-                           "errore_assoluto_medio": round(statistics.mean(abs(r[label]["conteggio"]-r["atteso"]) for r in rows), 3),
-                           "errate_non_segnalate": sum(r[label]["conteggio"] != r["atteso"] and not r[label]["incerto"] for r in rows),
-                           "corrette_marcate_incerte": sum(r[label]["conteggio"] == r["atteso"] and r[label]["incerto"] for r in rows)}
-                   for label in ("grezzo", "annidati")}
+        summary = sintesi_varianti(rows)
         report["cartelle"][folder] = {"sintesi": summary, "prove": rows}
         print(folder, json.dumps(summary, ensure_ascii=False), flush=True)
     (output/"robustezza.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -182,10 +228,20 @@ def main():
                         help="non addestra: conta le foto escluse in 8 orientamenti con i pesi LOO di queste cartelle")
     parser.add_argument("--solo-valutazione", action="store_true",
                         help="non addestra: rivaluta i pesi LOO già presenti in --output, senza e con la regola dei riquadri annidati")
+    parser.add_argument("--zona-vuoti", type=float, nargs=4, metavar=("X1", "Y1", "X2", "Y2"),
+                        help="fondo della scatola nelle foto vuote, frazioni della foto (vedi scene_sintetiche.py)")
+    parser.add_argument("--massimo", type=int, default=18, help="contenitori al massimo per scena sintetica")
+    parser.add_argument("--prova", type=Path, nargs="+", default=[], help="foto mai usate nell'addestramento")
+    parser.add_argument("--attesi-prova", type=int, nargs="+", default=[])
+    parser.add_argument("--pesi-prova", nargs="*", default=[], help="pesi già esistenti da confrontare sulle foto di prova")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     if len(args.attesi) != len(args.foto):
         parser.error("un conteggio atteso per ogni foto")
+    if len(args.attesi_prova) != len(args.prova):
+        parser.error("un conteggio atteso per ogni foto di prova")
+    if {p.resolve() for p in args.prova} & {p.resolve() for p in args.foto}:
+        parser.error("una foto di prova non può essere anche di addestramento")
     extra = json.loads(args.aggiunte.read_text(encoding="utf-8")) if args.aggiunte else {}
     labelled = []
     for photo, expected in zip(args.foto, args.attesi, strict=True):
@@ -215,7 +271,8 @@ def main():
                 yaml = scrivi_dataset(dataset, {"train": train, "val": [labelled[i]]})
                 if args.sintetiche:
                     # Solo ritagli e sfondi delle foto di addestramento di questo fold.
-                    genera([fonti[p.name] for p, _b in train], yaml.parent, args.sintetiche, seed=i, split="train")
+                    genera([fonti[p.name] for p, _b in train], yaml.parent, args.sintetiche, seed=i, split="train",
+                           massimo=args.massimo, zona_vuoti=args.zona_vuoti)
             started = time.perf_counter()
             weights = addestra(yaml, args.base, args.epoche, args.output/args.cartella, photo.stem, args.riprendi)
             duration = time.perf_counter()-started
@@ -239,12 +296,16 @@ def main():
         else:
             yaml = scrivi_dataset(dataset, {"train": labelled, "val": labelled})
             if args.sintetiche:
-                genera(list(fonti.values()), yaml.parent, args.sintetiche, seed=100, split="train")
+                genera(list(fonti.values()), yaml.parent, args.sintetiche, seed=100, split="train",
+                       massimo=args.massimo, zona_vuoti=args.zona_vuoti)
         weights = addestra(yaml, args.base, args.epoche, args.output/args.cartella, "finale", args.riprendi)
         target = MODEL_DIR/args.finale
         shutil.copy(weights, target)
         report["finale"] = str(target)
         print(f"Pesi finali: {target}", flush=True)
+    if args.prova:
+        pesi = [MODEL_DIR/name for name in args.pesi_prova]+([MODEL_DIR/args.finale] if args.finale else [])
+        prova(pesi, args.prova, args.attesi_prova, args.output, args.confidenza)
     (args.output/f"report{suffix}.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     print(json.dumps({k: v for k, v in report.items() if k != "loo"}, ensure_ascii=False), flush=True)
 

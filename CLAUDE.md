@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Memoria di lavoro aggiornata
 
-Ultima sessione: [NOTE_SESSIONE_2026-10-03.md](NOTE_SESSIONE_2026-10-03.md) —
+Ultima sessione: [NOTE_SESSIONE_2026-10-05.md](NOTE_SESSIONE_2026-10-05.md) —
+YOLO riaddestrato con sei foto nuove (scatola vuota, 15–18 contenitori,
+coricati): sulle tre foto di prova mai viste 10/24 contro 4/24, nuovo
+predefinito `contenitori-20261005-yolo11n.pt`; i flaconi coricati restano il
+punto debole. Prima, il 3 ottobre: [NOTE_SESSIONE_2026-10-03.md](NOTE_SESSIONE_2026-10-03.md) —
 YOLO locale come terzo motore del riconoscimento (`docs/YOLO.md`): il modello
 base COCO non riconosce i contenitori (0/6); addestrato sulle sei foto conta
 la foto esclusa 5/6; con scene sintetiche generate in locale
