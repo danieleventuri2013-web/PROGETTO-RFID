@@ -44,7 +44,7 @@ def crea_server(port=8771, *, sam2=None, token=None, qwen=None, yolo=None):
             name = {"/": "sam2.html" if sam2 is not None else "prova-visiva.html",
                     "/prova-visiva.js": "prova-visiva.js", "/sam2.html": "sam2.html",
                     "/sam2.js": "sam2.js"}.get(url.path)
-            if url.path in ("/sam2-auto.html", "/sam2-auto.js"):
+            if url.path in ("/sam2-auto.html", "/sam2-auto.js", "/webcam-controls.js"):
                 name = url.path[1:]
             if name is None:
                 return self.risposta(404, {"errore": "pagina assente"})

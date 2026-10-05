@@ -133,7 +133,11 @@ def test_http_automatico_e_preparazione():
                 pending.join(5)
             assert first_result[0][0] == 200
         with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/sam2-auto.html?t={token}") as response:
-            assert b"sam2-auto.js" in response.read()
+            page = response.read()
+            assert b"sam2-auto.js" in page and b"webcam-controls.js" in page
+        with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/webcam-controls.js") as response:
+            assert "javascript" in response.headers["Content-Type"]
+            assert b"RFIDCameraControls" in response.read()
     finally:
         server.shutdown()
         server.server_close()
