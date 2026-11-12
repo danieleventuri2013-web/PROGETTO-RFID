@@ -56,3 +56,6 @@ demo-output/
 .tmp/
 tmp/
 kernel.errors.txt
+
+# Generato da tools/profilo_hardware.py: dipende dalla postazione.
+avvia-riconoscimento.bat

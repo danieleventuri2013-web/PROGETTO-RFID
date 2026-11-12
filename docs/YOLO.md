@@ -407,3 +407,40 @@ vicini. Le etichette si ottengono come qui: proposta automatica (SAM o il
 YOLO già addestrato), correzione dell'operatore, controllo che il numero
 coincida con la distinta. Un insieme di foto mai usato per l'addestramento
 misura poi l'accuratezza.
+
+## Parametri per la postazione: `tools/profilo_hardware.py`
+
+Su un PC nuovo, o dopo un aggiornamento dei driver grafici, i parametri del
+servizio visivo non si scelgono dal nome della scheda grafica: si misurano.
+
+```powershell
+./.venv-openvino/Scripts/python.exe tools/profilo_hardware.py
+```
+
+Lo strumento rileva processore, RAM, schede grafiche e dispositivi OpenVINO,
+poi esegue YOLO (`cpu` con i pesi `.pt`, `intel:cpu` e `intel:gpu` con
+l'esportazione OpenVINO) sulle foto di `%USERPROFILE%\Pictures\RFID` e la
+codifica di SAM 2 su CPU F32, GPU F16 e GPU F32. Vince il più veloce **a
+parità di risultato**: per YOLO gli stessi conteggi del riferimento `cpu`,
+per SAM 2 feature dell'encoder entro l'1% della CPU F32 (soglia prudente su
+un ingresso sintetico, non una misura sui conteggi). Scrive
+`avvia-riconoscimento.bat` con i parametri scelti (escluso da Git: dipende
+dalla postazione) e il rapporto in `logs/profilo-hardware.json`.
+
+Prima misura, 12/11/2026, Core m3-8100Y + UHD Graphics 615, 8 foto:
+
+| Motore | Tempo | Esito |
+|---|---|---|
+| YOLO `cpu` (`.pt`) | 0,147 s/foto | scelto |
+| YOLO `intel:cpu` (OpenVINO) | 0,256 s/foto | conteggi diversi su 1 foto: scartato |
+| YOLO `intel:gpu` (OpenVINO) | 0,087 s/foto | conteggi diversi su 2 foto (13 vs 12, 17 vs 18): scartato |
+| SAM 2 CPU F32 | 4,84 s/codifica | riferimento |
+| SAM 2 GPU F16 | 2,72 s/codifica | scarto 2,6%: scartato |
+| SAM 2 GPU F32 | 3,51 s/codifica | scarto 1e-5: scelto |
+
+L'esportazione OpenVINO di `contenitori-20261005-yolo11n` quindi **non conta
+come i pesi originali** sui casi al limite, e la GPU F16 usata da
+`run-sam2-openvino.bat` si scosta dalla CPU più della F32. Nessuno dei due
+effetti è stato ancora misurato sui conteggi SAM delle foto reali.
+Una scheda NVIDIA viene segnalata ma non usata: Torch installato è solo CPU e
+OpenVINO usa solo GPU Intel.
